@@ -1,5 +1,6 @@
 // 운영 — 오퍼레이터 루프(미션) 화면
 // 사용자 지시 → 오퍼레이터 계획 → 담당 Agent 수행 → Codex 리뷰 → Claude 재검토 → 오퍼레이터 판단 → (반복 | 사용자 확인 | 완료)
+import type { ReactNode } from 'react';
 import { autoLayout, needsLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -328,8 +329,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           )}
         </div>
       </div>
-      <div className="mission-prompt">
-        <small className="muted">지시</small>
+      <Fold id="prompt" title="지시" className="mission-prompt" summary={m.prompt}>
         <div>{m.prompt}</div>
         {m.summary && (
           <>
@@ -337,7 +337,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
             <div>{m.summary}</div>
           </>
         )}
-      </div>
+      </Fold>
       {act.error && <Banner>{act.error}</Banner>}
       {live && m.limitUntil && (
         <div className="limit-card" role="status">
@@ -352,32 +352,47 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       )}
       {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
-      <div className="card">
-        <div className="row between">
-          <h3>결과물 파일</h3>
-          <span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>
-        </div>
+      <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
         <FileList files={d.files} />
-      </div>
-      <div className="card">
-        <h3>진행 기록</h3>
+      </Fold>
+      <Fold id="timeline" title="진행 기록" count={d.events.length}>
         <Timeline events={d.events} files={d.files} />
-      </div>
-      <div className="card">
-          <div className="row between">
-            <h3>이번 사이클 작업 흐름</h3>
-            {d.currentRun && (
+      </Fold>
+      <Fold id="flow" title="이번 사이클 작업 흐름" extra={d.currentRun && (
               <span className="row gap">
                 <Badge tone={runTone(d.currentRun.run.status)}>{RUN_STATUS_LABEL[d.currentRun.run.status]}</Badge>
                 {d.currentRun.run.executor === 'mock' && <Badge tone="mock">모의 실행</Badge>}
               </span>
-            )}
-          </div>
+            )}>
           {d.currentRun ? <CycleFlow detail={d.currentRun} agents={agents} /> : <div className="muted small pad">아직 실행된 사이클이 없습니다. 오퍼레이터가 계획을 세우면 여기에 작업 흐름이 나타납니다.</div>}
           <CycleList detail={d} onOpenRun={onOpenRun} />
           <SnapshotCard mission={m} />
-      </div>
+      </Fold>
     </div>
+  );
+}
+
+/**
+ * 접었다 펼 수 있는 운영 화면 구역. 제목 줄을 누르면 접히고, 접힌 상태는 다음에 열 때도 유지된다(이 컴퓨터에만 저장).
+ * 접혀 있으면 제목 옆에 개수나 첫 줄 요약을 보여 준다.
+ */
+function Fold({ id, title, count, summary, extra, className = 'card', children }: { id: string; title: string; count?: number; summary?: string; extra?: ReactNode; className?: string; children: ReactNode }) {
+  const key = `crewgenai.fold.${id}`;
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem(key) !== '0'; } catch { return true; } });
+  const toggle = () => setOpen((o) => { try { localStorage.setItem(key, o ? '0' : '1'); } catch { /* 저장 안 됨 */ } return !o; });
+  return (
+    <section className={`fold ${className} ${open ? 'open' : 'closed'}`}>
+      <div className="fold-head">
+        <button type="button" className="fold-toggle" aria-expanded={open} onClick={toggle}>
+          <span className="fold-caret" aria-hidden="true">{open ? '▾' : '▸'}</span>
+          <span className="fold-title">{title}</span>
+          {count !== undefined && <span className="fold-count">{count}</span>}
+          {!open && summary && <span className="fold-summary">{summary}</span>}
+        </button>
+        {open && extra && <span className="fold-extra">{extra}</span>}
+      </div>
+      {open && <div className="fold-body">{children}</div>}
+    </section>
   );
 }
 
