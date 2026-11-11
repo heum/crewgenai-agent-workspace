@@ -1,5 +1,6 @@
+import LearningsModal from './LearningsModal';
 import { useEffect, useState } from 'react';
-import type { AppSettings, CliStatus, CodexStatus, Project } from '../../shared/types';
+import type { AppSettings, CliStatus, CodexStatus, Project, Attention } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
 import { Markdown } from '../markdown';
 import type { QueueInfo } from '../App';
@@ -10,13 +11,14 @@ export default function Sidebar(props: {
   loading: boolean;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  attention?: Attention | null;
   cli: CliStatus | null;
   setCli: (c: CliStatus) => void;
   settings: AppSettings | null;
   setSettings: (s: AppSettings) => void;
   queue: QueueInfo | null;
 }) {
-  const [modal, setModal] = useState<null | 'cli' | 'settings' | 'help'>(null);
+  const [modal, setModal] = useState<null | 'cli' | 'settings' | 'help' | 'learn'>(null);
   // 운영 탭의 준비 항목에서 '설정 열기'를 누르면 설정 창을 연다
   useEffect(() => { const h = () => setModal('settings'); window.addEventListener('crewgenai:open-settings', h); return () => window.removeEventListener('crewgenai:open-settings', h); }, []);
   const { cli, settings, queue } = props;
@@ -31,6 +33,8 @@ export default function Sidebar(props: {
       .catch(() => setCodex({ path: null, version: null, loggedIn: null, ready: false, problem: 'Codex 상태를 확인하지 못했습니다.', fix: null }));
   }, []);
   const mock = settings?.executor === 'mock';
+  const count = (pid: string) => props.attention?.items.filter((x) => x.projectId === pid).length ?? 0;
+  const toReview = props.attention?.learningsToReview ?? 0;
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <button className="side-toggle" onClick={toggle} title={collapsed ? '프로젝트 목록 펼치기' : '프로젝트 목록 접기'} aria-label={collapsed ? '프로젝트 목록 펼치기' : '프로젝트 목록 접기'} aria-expanded={!collapsed}>
@@ -43,12 +47,14 @@ export default function Sidebar(props: {
             {props.projects.map((p) => (
               <button key={p.id} className={`rail-btn ${props.selectedId === p.id ? 'active' : ''}`} onClick={() => props.onSelect(p.id)} title={`${p.plan.name || '(이름 없음)'}\n${p.plan.folder}`}>
                 {(p.plan.name || '?').trim().slice(0, 1)}
+                {count(p.id) > 0 && <span className="attn-dot" aria-label={`확인 필요 ${count(p.id)}건`} />}
               </button>
             ))}
           </div>
           <div className="rail-bottom">
             <button className={`rail-btn rail-dot ${cli?.ready ? 'ok' : cli ? 'bad' : ''}`} onClick={() => setModal('cli')} title={`Claude CLI · ${!cli ? '확인 중…' : cli.ready ? '준비됨' : cli.problem ?? '준비 안 됨'}`}><span className="dot" /></button>
             <button className={`rail-btn rail-dot ${codex?.ready ? 'ok' : codex ? 'bad' : ''}`} onClick={() => setModal('settings')} title={`Codex 리뷰 · ${!codex ? '확인 중…' : codex.ready ? '준비됨' : codex.problem ?? '준비 안 됨'}`}><span className="dot" /></button>
+            <button className="rail-btn" onClick={() => setModal('learn')} title={`배운 것${toReview ? ` · 검토 필요 ${toReview}` : ''}`}>✎{toReview > 0 && <span className="attn-dot" />}</button>
             <button className="rail-btn" onClick={() => setModal('settings')} title="설정">⚙</button>
             <button className="rail-btn" onClick={() => setModal('help')} title="사용법·검증 결과">?</button>
           </div>
@@ -68,7 +74,7 @@ export default function Sidebar(props: {
         {!props.loading && props.projects.length === 0 && <div className="muted small pad">아직 프로젝트가 없습니다.</div>}
         {props.projects.map((p) => (
           <button key={p.id} className={`project-item ${props.selectedId === p.id ? 'active' : ''}`} onClick={() => props.onSelect(p.id)} title={p.plan.folder}>
-            <strong className="ellipsis">{p.plan.name || '(이름 없음)'}</strong>
+            <span className="row between gap"><strong className="ellipsis">{p.plan.name || '(이름 없음)'}</strong>{count(p.id) > 0 && <span className="attn-badge" title="확인이 필요한 일">{count(p.id)}</span>}</span>
             <small className="ellipsis">{p.plan.goal || p.plan.folder || '목표 미입력'}</small>
           </button>
         ))}
@@ -94,6 +100,9 @@ export default function Sidebar(props: {
             Codex 리뷰 · {!codex ? '확인 중…' : codex.ready ? `준비됨${codex.version ? ` · ${codex.version}` : ''}` : codex.problem ?? '준비 안 됨'}
           </small>
         </button>
+        <button className="btn block learn-btn" onClick={() => setModal('learn')} title="지시·답변에서 배운 것 — 다음 지시와 다른 프로젝트에 반영">
+          배운 것{toReview > 0 && <span className="attn-badge">검토 {toReview}</span>}
+        </button>
         <div className="row gap">
           <button className="btn grow" onClick={() => setModal('settings')}>
             설정
@@ -113,6 +122,7 @@ export default function Sidebar(props: {
         </Modal>
       )}
       {modal === 'help' && <HelpModal onClose={() => setModal(null)} />}
+      {modal === 'learn' && <LearningsModal projects={props.projects} onClose={() => setModal(null)} />}
     </aside>
   );
 }
@@ -238,6 +248,11 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
       <Field label="동시 실행 한도" hint="등록된 직원 수와 별개입니다. 이 수를 넘는 작업은 대기열에서 차례로 실행됩니다.">
         <NumberInput value={s.maxConcurrent} min={1} onChange={(v) => setS({ ...s, maxConcurrent: Math.max(1, v ?? 1) })} />
       </Field>
+      <h3>배우기</h3>
+      <label className="check">
+        <input type="checkbox" checked={s.learning !== false} onChange={(e) => setS({ ...s, learning: e.target.checked })} /> 대화에서 배우기 (권장)
+      </label>
+      <p className="muted small">미션을 끝내거나 종료할 때 지시·답변·추가 지시에서 배운 것을 정리해 이 PC에 저장하고, 다음 지시와 다른 프로젝트에 반영합니다. 정리할 때 Claude를 한 번 더 호출합니다. 배운 것은 왼쪽 아래 ‘배운 것’에서 고치거나 지울 수 있습니다.</p>
       <h3>git 커밋·스냅샷</h3>
       <label className="check">
         <input type="checkbox" checked={!!s.gitCommits} onChange={(e) => setS({ ...s, gitCommits: e.target.checked })} /> 직원별 git 커밋·미션 스냅샷 사용 (권장)

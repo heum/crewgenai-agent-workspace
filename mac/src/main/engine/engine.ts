@@ -43,6 +43,8 @@ export interface EngineOptions {
   limitGraceMs?: number;
   /** 해제 시각을 알 수 없을 때 다시 시도하기까지 기다리는 시간(기본 30분) */
   limitFallbackMs?: number;
+  /** 사용자에 대해 배운 것(직원 지시에 붙인다) */
+  learningsFor?: (projectId: string) => string;
 }
 
 /** 실행 메타에 남기는 사용 한도 대기 정보 */
@@ -847,7 +849,7 @@ export class Engine {
     const isolate = role === 'author' && tools.includes('Bash');
     const workDir = isolate ? isolatedDir(`${runId}:${node.id}`) : plan.folder;
     const args = buildClaudeArgs({
-      prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}`.slice(0, 4000),
+      prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000),
       cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : agent.allowedCommands,
       readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, maxBudgetUsd: agent.maxBudgetUsd,
     });

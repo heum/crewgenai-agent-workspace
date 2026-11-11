@@ -1757,3 +1757,26 @@ textarea.input {
 .denial-target { word-break: break-all; color: var(--sub); }
 .denial-input { max-width: 260px; }
 .ok-text { color: #1a7f37; }
+
+.blocker-kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: #fde2e1; color: #b42318; }
+.blocker-kind.repeated { background: #fff1d6; color: #9a6700; }
+
+/* 확인이 필요한 일 — 가장 먼저 보이게 */
+.attention-bar { display: flex; align-items: center; gap: 10px; margin: 8px 14px 0; padding: 8px 12px; border-radius: 8px; background: #fef3f2; border: 1.5px solid #f04438; min-width: 0; }
+.attention-count { background: #d92d20; color: #fff; font-weight: 700; font-size: 12px; border-radius: 999px; padding: 2px 9px; flex: none; }
+.attention-kind { font-weight: 700; color: #b42318; flex: none; }
+.attention-label { min-width: 0; flex: 1; }
+.attn-badge { background: #d92d20; color: #fff; font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 7px; flex: none; margin-left: 6px; }
+.attn-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: #d92d20; }
+.rail-btn { position: relative; }
+.mission-item.needs-you { border-color: #f04438; box-shadow: 0 0 0 1px #f04438 inset; }
+.learn-btn { display: flex; justify-content: center; align-items: center; }
+/* 배운 것 */
+.learn-actions { margin: 6px 0 10px; }
+.learn-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.learn-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.learn-item.new { border-color: #f79009; background: #fffaeb; }
+.learn-item.off { opacity: 0.6; }
+.learn-text { font-size: 14px; }
+.learn-form { display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.btn-sm { padding: 3px 9px; font-size: 12px; }

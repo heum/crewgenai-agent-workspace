@@ -71,7 +71,7 @@ function useMissionDetail(missionId: string | null) {
   return detail;
 }
 
-export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraftUsed }: { project: Project; onOpenRun: (runId: string) => void; onGoTab?: (tab: 'plan' | 'agents' | 'settings') => void; draft?: string | null; onDraftUsed?: () => void }) {
+export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraftUsed, focusMissionId }: { project: Project; onOpenRun: (runId: string) => void; onGoTab?: (tab: 'plan' | 'agents' | 'settings') => void; draft?: string | null; onDraftUsed?: () => void; focusMissionId?: { id: string; n: number } | null }) {
   const list = useMissionList(project.id);
   const ready = useLoad(() => ws().missionReadiness(project.id), [project.id, project.planVersion]);
   // 미션 상태가 바뀌면(시작·중단·완료) 단일 실행 규칙을 다시 확인한다
@@ -98,6 +98,10 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
   useEffect(() => {
     if (sel === null && list.data) setSel(list.data[0]?.id ?? NEW);
   }, [list.data, sel]);
+  // '확인 필요' 막대에서 넘어오면 그 미션을 연다
+  useEffect(() => { if (focusMissionId && list.data?.some((m) => m.id === focusMissionId.id)) setSel(focusMissionId.id); }, [focusMissionId, list.data]);
+  // 확인이 필요한 미션(사용자 답변 대기)을 맨 위에
+  const ordered = useMemo(() => (list.data ? [...list.data].sort((a, b) => Number(b.status === 'waiting_user') - Number(a.status === 'waiting_user')) : null), [list.data]);
   const mission = sel && sel !== NEW ? list.data?.find((m) => m.id === sel) ?? null : null;
 
   return (
@@ -109,10 +113,10 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
         {list.error && <Banner>{list.error}</Banner>}
         {list.data && list.data.length === 0 && <div className="muted small pad">아직 지시한 미션이 없습니다.</div>}
         <div className="mission-list">
-          {list.data?.map((m) => (
-            <button key={m.id} className={`mission-item ${sel === m.id ? 'active' : ''}`} onClick={() => setSel(m.id)}>
+          {ordered?.map((m) => (
+            <button key={m.id} className={`mission-item ${sel === m.id ? 'active' : ''} ${m.status === 'waiting_user' ? 'needs-you' : ''}`} onClick={() => setSel(m.id)}>
               <div className="row between">
-                <Badge tone={missionTone(m.status)}>{MISSION_STATUS_LABEL[m.status]}</Badge>
+                {m.status === 'waiting_user' ? <span className="attn-badge">확인 필요</span> : <Badge tone={missionTone(m.status)}>{MISSION_STATUS_LABEL[m.status]}</Badge>}
                 <small className="muted">사이클 {m.cycle}</small>
               </div>
               <div className="ellipsis2">{m.prompt}</div>
@@ -194,7 +198,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const st = mission?.status ?? null;
   const live = !!st && ACTIVE.includes(st);
   const gaps = st === 'waiting_user' && !!mission?.gaps?.length;
-  const denied = st === 'waiting_user' && !!mission?.denials?.length;
+  const denied = st === 'waiting_user' && (!!mission?.denials?.length || !!mission?.blockers?.length);
   const mode: 'new' | 'live' | 'answer' | 'done' | 'stopped' = !mission || st === 'failed' ? 'new' : live ? 'live' : st === 'waiting_user' ? 'answer' : st === 'done' ? 'done' : 'stopped';
   const active = ready?.activeMission ?? null;
   const blockedNew = mode === 'new' && !!active;
@@ -234,7 +238,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   });
 
   const primary = mode === 'new' ? startNew : mode === 'live' ? () => directive('next') : mode === 'stopped' ? () => answer('continue') : () => answer('continue');
-  const label = mode === 'new' ? '새 지시' : mode === 'live' ? '진행 중 추가 지시' : mode === 'answer' ? (gaps ? '근거 문서 보완 후 다시 확인' : denied ? '권한 허용 후 다시 시도' : '오퍼레이터 질문에 답변') : mode === 'done' ? '완료 보고 — 추가 지시' : '중단된 미션';
+  const label = mode === 'new' ? '새 지시' : mode === 'live' ? '진행 중 추가 지시' : mode === 'answer' ? (gaps ? '근거 문서 보완 후 다시 확인' : denied ? '확인한 뒤 다시 시도' : '오퍼레이터 질문에 답변') : mode === 'done' ? '완료 보고 — 추가 지시' : '중단된 미션';
   const placeholder = mode === 'new' ? '무엇을 만들거나 고칠지 적어 주세요. 예: 공고 목록 화면에 마감일 정렬을 추가하고, 정렬 기준을 문서로 남겨 줘'
     : mode === 'live' ? '추가 지시 — 예: 표 대신 목록으로 정리하고, 근거 줄 번호를 꼭 달아 줘'
     : mode === 'answer' ? (gaps ? '보완한 내용을 적거나(선택), 문서를 올린 뒤 비워 두고 다시 확인을 누르세요' : denied ? '위에서 허용했으면 비워 두고 다시 시도를 누르세요. 다른 방법으로 하려면 바꿀 지시를 적으세요' : '답변을 입력하세요')
@@ -285,7 +289,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
           {(mode === 'answer' || mode === 'done') && (
             <>
               <button className="btn" disabled={act.busy} onClick={() => void answer('stop')}>여기서 종료</button>
-              <button className="btn btn-primary" disabled={act.busy} onClick={() => void answer('continue')}>{mode === 'done' ? '추가 지시하고 계속' : gaps ? '보완했으니 다시 확인' : denied ? '허용했으니 다시 시도' : '답변하고 계속'}</button>
+              <button className="btn btn-primary" disabled={act.busy} onClick={() => void answer('continue')}>{mode === 'done' ? '추가 지시하고 계속' : gaps ? '보완했으니 다시 확인' : denied ? (mission?.blockers?.length ? '해결했으니 다시 시도' : '허용했으니 다시 시도') : '답변하고 계속'}</button>
             </>
           )}
           {mode === 'stopped' && (
@@ -489,9 +493,10 @@ function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }
   const stopped = mission.status === 'stopped';
   const gaps = mission.status === 'waiting_user' ? mission.gaps ?? [] : [];
   const denials = mission.status === 'waiting_user' ? mission.denials ?? [] : [];
+  const blockers = mission.status === 'waiting_user' ? mission.blockers ?? [] : [];
   return (
     <div className="answer-card">
-      <strong>{stopped ? '중단된 미션 — 아래에서 이어서 다시 시작할 수 있습니다' : done ? '완료 보고 — 아래에서 추가 지시하거나 종료하세요' : gaps.length ? '근거 문서를 보완해 주세요 — 오퍼레이터가 멈췄습니다' : denials.length ? '권한 때문에 멈췄습니다 — 지시문으로는 권한이 바뀌지 않습니다' : '오퍼레이터가 확인을 요청했습니다'}</strong>
+      <strong>{stopped ? '중단된 미션 — 아래에서 이어서 다시 시작할 수 있습니다' : done ? '완료 보고 — 아래에서 추가 지시하거나 종료하세요' : gaps.length ? '근거 문서를 보완해 주세요 — 오퍼레이터가 멈췄습니다' : denials.length ? '권한 때문에 멈췄습니다 — 지시문으로는 권한이 바뀌지 않습니다' : blockers.length ? '에이전트가 해결할 수 없는 문제로 멈췄습니다 — 확인이 필요합니다' : '오퍼레이터가 확인을 요청했습니다'}</strong>
       {stopped ? (
         <div className="muted small">같은 미션 안에서 다음 사이클부터 다시 계획합니다. 이전 판단·답변·추가 지시와 스냅샷을 이어받고, 중단 때 멈춘 작업은 다시 하지 않고 필요한 일만 계획합니다.</div>
       ) : gaps.length ? (
@@ -509,6 +514,22 @@ function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }
         </>
       ) : denials.length ? (
         <DenialList mission={mission} agents={agents} />
+      ) : blockers.length ? (
+        <>
+          <ul className="gap-list">
+            {blockers.map((b, i) => (
+              <li key={i}>
+                <div><span className={`blocker-kind ${b.kind}`}>{b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}</span> <strong>{b.step}</strong></div>
+                <div className="mono small denial-target">{b.reason}</div>
+              </li>
+            ))}
+          </ul>
+          <div className="muted small">
+            {blockers.some((b) => b.kind === 'environment')
+              ? '명령·프로그램 설치, 경로, 로그인, 네트워크처럼 이 PC에서 직접 고쳐야 하는 문제입니다. 고친 뒤 아래에서 다시 시도를 누르세요. 다른 방법으로 진행하려면 바꿀 지시를 적으세요.'
+              : '같은 원인으로 다시 실패했습니다. 지시·완료 조건·검사 명령을 바꾸거나 원인을 고친 뒤 다시 시도하세요.'}
+          </div>
+        </>
       ) : (
         mission.question && <div className="answer-q">{mission.question}</div>
       )}
@@ -529,6 +550,7 @@ function DenialList({ mission, agents }: { mission: Mission; agents: Agent[] }) 
     const pr = (await ws().listProjects()).find((x) => x.id === mission.projectId);
     if (!pr) throw new Error('프로젝트를 찾을 수 없습니다.');
     if (!pr.plan.referenceDocs.includes(path)) await ws().updatePlan(pr.id, { ...pr.plan, referenceDocs: [...pr.plan.referenceDocs, path] });
+    await ws().saveLearning(null, { scope: 'project', projectId: mission.projectId, kind: 'environment', text: `프로젝트 밖 자료 ${path}는 참고 문서로 읽을 수 있다(사용자가 허용함)` }).catch(() => {});
     setDone((d) => ({ ...d, [sig]: `기획의 참고 문서에 넣었습니다(읽기 전용으로 열림).` }));
   });
   return (

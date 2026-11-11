@@ -10,6 +10,7 @@
 //   [[mock:limit-once:이름]]  처음 한 번만 사용 한도 도달(rate_limit_event rejected + is_error)로 끝남. 오퍼레이터가 먼저 맞고, 작업 지시에는 '이름-agent'로 넘긴다
 //   [[mock:todo-first]]      첫 작성에는 TODO를 남기고 재작업 요청을 받으면 제거
 //   [[mock:deny:bash:명령]] / [[mock:deny:read:경로]] 작성 직원이 권한 거부로 실패(오퍼레이터가 작업 지시에 넘김)
+//   [[mock:learn:global|project:preference|environment|rule|fact:문장]] 학습 정리 때 배운 것으로 돌려줌
 //   [[mock:dir:NAME]]        오퍼레이터가 NAME/docs/mission 아래에 쓰도록 계획(여러 저장소 시험)
 //   [[mock:write-outside:경로]] 권한 엔진을 거치지 않고 범위 밖 파일을 직접 기록(사후 탐지 시험)
 //   [[mock:try-edit:경로]]   허용 규칙 밖 파일 편집 시도 → 권한 거부로 보고
@@ -69,6 +70,13 @@ async function main() {
     out({ type: 'assistant', session_id: sessionId, error: 'rate_limit', message: { content: [{ type: 'text', text: "You've hit your limit · resets soon" }] } });
     out({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, result: "You've hit your limit · resets soon", permission_denials: [] });
     process.exit(1);
+  }
+  // 학습 정리: 대화에 [[mock:learn:범위:종류:문장]]이 있으면 그 항목을 배운 것으로 돌려준다
+  if (prompt.includes('# 학습 정리')) {
+    const items = [...prompt.matchAll(/\[\[mock:learn:(global|project):(preference|environment|rule|fact):([^\]]+)\]\]/g)].map(([, scope, kind, text]) => ({ scope, kind, text }));
+    const res = { items };
+    out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(res), structured_output: res, permission_denials: [] });
+    process.exit(0);
   }
   // [[mock:deny:bash:명령]] / [[mock:deny:read:경로]] — 권한 거부로 작업을 끝내지 못함(작성 직원만)
   const denyMarks = isOperator || schema ? [] : [...prompt.matchAll(/\[\[mock:deny:(bash|read):([^\]]+)\]\]/g)];

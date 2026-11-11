@@ -9,7 +9,7 @@ const methods = [
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',
   'startRun', 'rerunFrom', 'pauseRun', 'resumeRun', 'cancelRun', 'resolveInterrupted', 'listRuns', 'runDetail', 'attemptEvents',
   'submitReview', 'cliStatus', 'pickCliPath', 'openLoginTerminal', 'getSettings', 'saveSettings', 'helpDocs',
-  'codexStatus', 'listMissions', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryMissionLimit', 'workingNow',
+  'codexStatus', 'listMissions', 'attention', 'listLearnings', 'saveLearning', 'deleteLearning', 'markLearningsReviewed', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryMissionLimit', 'workingNow',
 ] as const;
 
 const api: Record<string, unknown> = {};

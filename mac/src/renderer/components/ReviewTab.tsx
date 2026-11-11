@@ -11,6 +11,7 @@ export default function ReviewTab({ project, initialRunId, onOpenRun }: { projec
   const runs = useRunList(project.id);
   const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [runId, setRunId] = useState<string | null>(initialRunId);
+  useEffect(() => { if (initialRunId) setRunId(initialRunId); }, [initialRunId]); // '확인 필요'에서 넘어오면 그 실행을 연다
 
   useEffect(() => {
     if (!runId && runs.data?.length) {

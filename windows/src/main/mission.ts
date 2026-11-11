@@ -6,13 +6,14 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDenial, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
 import { allowedRoots, escapes, normRel, validateGraph } from './engine/validate';
 import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
+import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { missionCommitsSince, revertCommits, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 
 const PLAN_SCHEMA = {
@@ -47,6 +48,9 @@ export interface MissionDeps {
   ensureAgents: (projectId: string) => Agent[];
   /** 프로젝트 완성 문서(근거 문서) — 오퍼레이터가 계획 전에 근거가 충분한지 판단한다 */
   projectDocs?: (projectId: string) => ProjectDoc[];
+  /** 배운 것 — 지시·답변에서 배운 사실을 저장하고 오퍼레이터 지시에 붙인다 */
+  learnings?: LearningStore;
+  learnEnabled?: () => boolean;
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
@@ -66,6 +70,15 @@ export function commandPrefix(command: string): string | null {
     if (v && !v.startsWith('-') && /^[\w.=:-]{1,12}$/.test(v) && !/[\/\\]/.test(v) && t.length === 2 && /^-[a-z]$/i.test(t) && /^\d+$|^[a-z]+$/i.test(v) && toks[0] !== 'git') { out.push(v); i++; }
   }
   return out.join(' ');
+}
+
+/** 에이전트가 고칠 수 없는 내 PC 환경 문제로 보이는 실패(명령·프로그램 없음, 접근 거부, 네트워크·로그인) */
+// 프로세스·도구 수준의 신호만 본다(앱 기능을 설명하는 'authentication' 같은 단어로 잘못 멈추지 않게)
+export const ENV_FAILURE = /\b(ENOENT|EACCES|EPERM|ENOTFOUND|ECONNREFUSED|EAI_AGAIN)\b|command not found|is not recognized as an internal or external command|검사를 실행하지 못함|프로세스 시작 실패|실행 파일\(.*\)을 해석하지 못했습니다|Claude CLI가 준비되지 않았습니다|not logged in|로그인되지 않았습니다|network is unreachable/i;
+/** 실패 원인을 비교용 문자열로: 숫자·경로·해시를 지워 같은 원인이면 같은 값이 되게 */
+export function failureSig(reason: string, step = ''): string {
+  const exit = /종료 코드 (-?\d+|없음)/.exec(reason)?.[1] ?? '';
+  return `${step.replace(/\d+/g, '').trim()}|${exit}|` + reason.toLowerCase().replace(/[a-z]:\\[^\s]+|\/[^\s]+/gi, '<경로>').replace(/[0-9a-f]{7,}/g, '<값>').replace(/\d+/g, '<수>').replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
 export class MissionRunner {
@@ -233,11 +246,11 @@ export class MissionRunner {
     }
     if (text.trim()) this.event(m, m.status === 'stopped' ? 'directive' : 'answer', text.trim());
     if (m.status === 'stopped') this.event(m, 'system', `중단했던 미션을 이어서 다시 시작합니다(이전 판단·답변·추가 지시와 스냅샷을 이어받음).`);
-    if (action === 'stop') { this.event(m, 'system', '사용자가 미션을 종료했습니다.'); return this.set(id, { status: 'stopped', stage: 'stopped', question: null }); }
+    if (action === 'stop') { this.event(m, 'system', '사용자가 미션을 종료했습니다.'); const st = this.set(id, { status: 'stopped', stage: 'stopped', question: null }); void this.learn(id); return st; }
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, gaps: null, denials: null, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1) });
+    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, gaps: null, denials: null, blockers: null, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1) });
     void this.loop(id);
     return next;
   }
@@ -276,6 +289,70 @@ export class MissionRunner {
       }
     }
     return out.slice(0, 20);
+  }
+
+  // ───── 배운 것 ─────
+  private learningNow = new Set<string>();
+  private learnAgain = new Set<string>();
+  private learnedSection(projectId: string): string[] {
+    if (!this.d.learnings || !(this.d.learnEnabled?.() ?? true)) return [];
+    const s = this.d.learnings.promptSection(projectId);
+    return s ? [s, ''] : [];
+  }
+  /**
+   * 이 미션에서 사용자가 한 말(지시·추가 지시·답변)과 그 맥락을 오퍼레이터가 읽고, 다음 지시·다른 프로젝트에 쓸 사실만 뽑아 저장한다.
+   * 저장한 것은 바로 반영하고 '검토 필요'로 표시한다. 실패해도 미션 진행에는 영향이 없다.
+   */
+  private async learn(id: string) {
+    if (!this.d.learnings || !(this.d.learnEnabled?.() ?? true) || this.closed) return;
+    // 정리 중이면 끝난 뒤 한 번 더 정리한다(그사이 들어온 답변을 놓치지 않게)
+    if (this.learningNow.has(id)) { this.learnAgain.add(id); return; }
+    const m = this.get(id);
+    const evs = this.events(id).filter((e) => e.seq > (m.learnedSeq ?? 0));
+    if (!evs.some((e) => ['user', 'directive', 'answer'].includes(e.kind))) return;
+    this.learningNow.add(id);
+    try {
+      const project = this.d.store.getProject(m.projectId);
+      const label: Record<string, string> = { user: '사용자 지시', directive: '사용자 추가 지시', answer: '사용자 답변', question: '오퍼레이터 질문', operator_judge: '오퍼레이터 판단' };
+      // 대화는 앞에서부터 8,000자까지 보내고, 보낸 기록까지만 정리한 것으로 표시한다(잘린 뒤쪽은 다음에 이어서 정리)
+      const lines: string[] = []; let used = 0; let lastSent = m.learnedSeq ?? 0;
+      for (const e of evs) {
+        if (!label[e.kind]) { lastSent = e.seq; continue; }
+        const line = `- [${label[e.kind]}] ${e.text.slice(0, 600)}`;
+        if (used + line.length > 8000 && lines.length) break;
+        lines.push(line); used += line.length + 1; lastSent = e.seq;
+      }
+      const convo = lines.join('\n');
+      const known = this.d.learnings.applicable(m.projectId).map((l) => `- ${l.text}`).join('\n') || '- (없음)';
+      const prompt = [
+        '# 학습 정리', '',
+        '당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. 아래는 이번 미션에서 사용자와 주고받은 내용이다. 다음 지시와 다른 프로젝트에서 사용자를 더 잘 이해하는 데 쓸 사실만 뽑는다. 파일은 수정하지 않는다.', '',
+        `## 프로젝트: ${project.plan.name}`, '',
+        '## 이번 미션의 대화', convo, '',
+        '## 이미 알고 있는 것(중복으로 넣지 않는다)', known, '',
+        '## 규칙',
+        '- 사용자가 직접 말했거나 분명히 보여 준 것만 쓴다. 추측하지 않는다.',
+        '- 이번 한 번에만 해당하는 작업 내용은 빼고, 반복해서 쓸 수 있는 것만 쓴다: 선호(문체·형식·진행 방식)=preference, 내 PC 환경(설치된 도구·허용된 명령·경로)=environment, 하지 말 것=rule, 프로젝트 사실=fact.',
+        '- 모든 프로젝트에 해당하면 scope=global, 이 프로젝트에만 해당하면 scope=project.',
+        '- 한 항목은 한 문장, 80자 안팎. 비밀값·개인 정보·고객 원문은 쓰지 않는다. 최대 6개. 없으면 빈 배열.',
+      ].join('\n');
+      const out = await this.callOperator<{ items: { scope: 'global' | 'project'; kind: 'preference' | 'environment' | 'rule' | 'fact'; text: string }[] }>(m, project.plan, prompt, LEARN_SCHEMA, `${id}:learn`);
+      let n = 0;
+      for (const it of (Array.isArray(out?.items) ? out.items : []).slice(0, 6)) {
+        if (!it || typeof it.text !== 'string') continue;
+        const r = this.d.learnings.add({ scope: it.scope === 'project' ? 'project' : 'global', projectId: m.projectId, kind: it.kind, text: it.text }, { source: `미션: ${redact(m.prompt).slice(0, 60)}`, reviewed: false });
+        if (r) n++;
+      }
+      this.set(id, { learnedSeq: lastSent });
+      if (lastSent < Math.max(...evs.map((e) => e.seq))) this.learnAgain.add(id);
+      if (n) {
+        this.event(this.get(id), 'system', `배운 것 ${n}개를 저장했습니다. 다음 지시부터 반영하며, 왼쪽 아래 '배운 것'에서 검토·수정할 수 있습니다.`);
+        this.d.emit({ type: 'learning' });
+      }
+    } catch { /* 학습 정리 실패는 미션에 영향 없음 */ } finally {
+      this.learningNow.delete(id);
+      if (this.learnAgain.delete(id) && !this.closed) void this.learn(id);
+    }
   }
 
   // ───── 스냅샷·되돌리기 ─────
@@ -422,7 +499,9 @@ export class MissionRunner {
     this.procs.get(id)?.cancel();
     if (m.currentRunId && (this.d.engine.isActive(m.currentRunId) || this.d.engine.limitOf(m.currentRunId))) await this.d.engine.cancel(m.currentRunId);
     this.event(m, 'system', '사용자가 미션을 중단했습니다. 진행 중이던 작업을 취소했습니다.');
-    return this.set(id, { status: 'stopped', stage: 'stopped', question: null, limitUntil: null });
+    const st = this.set(id, { status: 'stopped', stage: 'stopped', question: null, limitUntil: null });
+    void this.learn(id);
+    return st;
   }
 
   /** 앱 종료: 오퍼레이터 호출을 취소하고 루프가 새 작업을 시작하지 않게 한다. */
@@ -530,6 +609,22 @@ export class MissionRunner {
           }
           this.set(id, { denialSigs: blocks.map((b) => b.sig) });
         }
+        // 실패가 내 PC 환경 문제이거나 지난 사이클과 같은 원인으로 반복되면, 다시 계획해도 같은 실패가 나므로 멈추고 사용자 검토를 받는다
+        if (!this.replan.has(id)) {
+          const failed = fin.status === 'failed' ? this.d.store.runNodes(run.id).filter((n) => n.status === 'failed' && n.failureReason) : [];
+          const labels = new Map(built.graph.nodes.map((n) => [n.id, n.label]));
+          const items = failed.map((n) => ({ step: labels.get(n.nodeId) ?? n.nodeId, reason: n.failureReason.slice(0, 600) }));
+          if (fin.status === 'failed' && !items.length && fin.reason) items.push({ step: '실행', reason: fin.reason.slice(0, 600) });
+          const prev = this.get(id).failSigs ?? [];
+          const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
+          if (blockers.length) {
+            const q = `에이전트가 스스로 해결할 수 없는 문제로 멈췄습니다. 같은 설정으로 다시 시도해도 같은 결과가 나오므로 확인이 필요합니다.\n${blockers.map((b) => `- [${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}] ${b.step}: ${b.reason}`).join('\n')}`;
+            this.event(m, 'question', q, { blockers });
+            this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, blockers, failSigs: items.map((x) => failureSig(x.reason, x.step)) });
+            return;
+          }
+          this.set(id, { failSigs: items.map((x) => failureSig(x.reason, x.step)) });
+        }
         if (this.replan.has(id)) {
           // '지금 반영' 추가 지시: 이번 사이클 판단을 건너뛰고 지시를 반영해 다음 사이클을 바로 계획한다
           this.replan.delete(id);
@@ -546,6 +641,7 @@ export class MissionRunner {
         if (judge.decision === 'done') {
           this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}` });
           this.event(m, 'question', '완료 보고 — 결과물을 검토하고 추가 지시하거나 종료하세요.');
+          void this.learn(id);
           return;
         }
         if (judge.decision === 'ask_user') {
@@ -685,6 +781,7 @@ export class MissionRunner {
       '# 오퍼레이터 계획', '',
       '당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. 사용자 지시를 이번 사이클의 작업으로 나누고, 기능에 맞는 담당 직원을 배정한다. 파일은 수정하지 않는다(읽기만).', '',
       '## 사용자 지시', m.prompt, '',
+      ...this.learnedSection(m.projectId),
       `## 사이클: ${m.cycle} / 상한 ${m.maxCycles}`, '',
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
@@ -721,6 +818,7 @@ export class MissionRunner {
     return [
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
+      ...this.learnedSection(m.projectId),
       '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} / 상한 ${m.maxCycles}`, '',
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
       `## 실행 결과: ${d.run.status}${d.run.reason ? ` — ${d.run.reason}` : ''}`, ...(failed.length ? ['### 실패 단계', ...failed.map((f) => `- ${f}`)] : []), '',
@@ -736,7 +834,8 @@ export class MissionRunner {
   }
 
   /** 오퍼레이터 호출: Claude CLI(읽기 전용 도구, 구조화 출력). 모의 실행이면 모의 CLI를 쓴다. */
-  private async callOperator<T>(m: Mission, plan: PlanFields, prompt: string, schema: object): Promise<T> {
+  /** key: 프로세스 관리 칸(기본은 미션 ID). 배운 것 정리는 계획 호출과 칸을 나눠 서로의 정리 과정이 겹치지 않게 한다. */
+  private async callOperator<T>(m: Mission, plan: PlanFields, prompt: string, schema: object, key: string = m.id): Promise<T> {
     const ex = this.d.executor();
     const op = this.d.store.listAgents(m.projectId).find((a) => a.code === '00');
     const args = buildClaudeArgs({
@@ -750,13 +849,13 @@ export class MissionRunner {
     const sink: StreamSink = { sessionId: null, result: null, limit: null };
     const h = startProcess(file, argv, { cwd: plan.folder, env: cleanEnv(ex.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1' } : {}), stdin: prompt, timeoutSec: 900,
       onStdoutLine: (l) => { interpretLine(l, sink); }, onStderrLine: () => {} });
-    this.procs.set(m.id, h);
+    this.procs.set(key, h);
     const sid = args[args.indexOf('--session-id') + 1] ?? '';
     const ps = await processStart(h.pid);
-    if (!this.closed) this.d.store.db.prepare('INSERT OR REPLACE INTO mission_procs VALUES(?,?,?,?)').run(m.id, h.pid, ps, sid);
+    if (!this.closed) this.d.store.db.prepare('INSERT OR REPLACE INTO mission_procs VALUES(?,?,?,?)').run(key, h.pid, ps, sid);
     const done = await h.done;
-    this.procs.delete(m.id);
-    if (!this.closed) this.d.store.db.prepare('DELETE FROM mission_procs WHERE mission_id=?').run(m.id);
+    this.procs.delete(key);
+    if (!this.closed) this.d.store.db.prepare('DELETE FROM mission_procs WHERE mission_id=?').run(key);
     if (this.closed) throw new Error('앱 종료');
     const r = sink.result;
     if (done.cancelled) throw new Error('오퍼레이터 호출이 취소됐습니다.');

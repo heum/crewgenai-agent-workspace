@@ -333,6 +333,7 @@ export interface AppSettings {
   codexModel: string; // 리뷰 모델(기본 gpt-6.1-sol)
   codexEffort: string; // 추론 강도(기본 high)
   missionMaxCycles: number; // 오퍼레이터 루프가 사용자 확인 없이 도는 최대 사이클 수
+  learning?: boolean; // 대화에서 배우기(기본 켬): 지시·답변에서 배운 것을 저장해 다음 지시·다른 프로젝트에 반영
   gitCommits: boolean; // 직원별 git 커밋·미션 스냅샷 사용
 }
 
@@ -345,7 +346,8 @@ export type LiveEvent =
   | { type: 'queue'; running: number; waiting: number; max: number; paused: string[] }
   | { type: 'cli'; status: CliStatus }
   | { type: 'mission'; mission: Mission }
-  | { type: 'missionEvent'; event: MissionEvent };
+  | { type: 'missionEvent'; event: MissionEvent }
+  | { type: 'learning' };
 
 // ───────── preload가 노출하는 API ─────────
 export interface WorkspaceApi {
@@ -399,6 +401,11 @@ export interface WorkspaceApi {
   // 운영(오퍼레이터 루프)
   codexStatus(refresh: boolean): Promise<CodexStatus>;
   listMissions(projectId: ID): Promise<Mission[]>;
+  attention(): Promise<Attention>;
+  listLearnings(): Promise<Learning[]>;
+  saveLearning(id: ID | null, fields: LearningFields & { active?: boolean }): Promise<Learning>;
+  deleteLearning(id: ID): Promise<void>;
+  markLearningsReviewed(ids: ID[]): Promise<void>;
   missionReadiness(projectId: ID, refresh?: boolean): Promise<MissionReadiness>;
   startMission(projectId: ID, prompt: string): Promise<Mission>;
   missionDetail(missionId: ID): Promise<MissionDetail>;
@@ -478,6 +485,9 @@ export interface Mission {
   gaps?: MissionGap[] | null;
   denials?: MissionDenial[] | null; // 권한 거부로 멈춘 경우 거부 항목
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
+  blockers?: MissionBlocker[] | null; // 에이전트가 스스로 풀 수 없는 실패로 멈춘 경우
+  failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
+  learnedSeq?: number; // 배운 것을 정리한 마지막 기록 번호
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */
   limitUntil?: string | null;
   createdAt: string;
@@ -486,6 +496,8 @@ export interface Mission {
 
 /** 근거 문서 보완 요청 한 건 */
 export interface MissionGap { doc: string; issue: string; need: string }
+/** 에이전트가 스스로 풀 수 없는 실패: 내 PC 환경 문제(명령·프로그램 없음, 접근 거부, 네트워크·로그인)이거나 같은 실패의 반복 */
+export interface MissionBlocker { step: string; reason: string; kind: 'environment' | 'repeated' }
 /** 직원이 권한 때문에 막힌 행위(명령·경로). 앱 설정으로만 허용할 수 있다. */
 export interface MissionDenial {
   agentId: ID | null;
@@ -582,3 +594,19 @@ export interface MissionSnapshot { name: string; tag: string; sha: string; cycle
 
 export type AgentTemplateSetId = 'dev' | 'general';
 export interface AgentTemplateSetInfo { id: AgentTemplateSetId; label: string; description: string; agents: { code: string; name: string; role: string }[] }
+
+// ───────── 배운 것 ─────────
+/** 사용자의 지시·답변·권한 허용에서 배운 사실. 이 PC에만 저장하고 다음 지시·다른 프로젝트에 자동 반영한다. */
+export interface LearningFields { scope: 'global' | 'project'; projectId: ID | null; kind: 'preference' | 'environment' | 'rule' | 'fact'; text: string }
+export interface Learning extends LearningFields { id: ID; source: string; reviewed: boolean; active: boolean; createdAt: string; updatedAt: string }
+
+// ───────── 검토가 필요한 항목 ─────────
+/** 사용자가 확인해야 진행되는 항목(에이전트가 스스로 해결할 수 없는 것) */
+export interface AttentionItem {
+  projectId: ID;
+  kind: 'denied' | 'blocked' | 'gaps' | 'question' | 'review' | 'resume';
+  label: string;
+  missionId?: ID;
+  runId?: ID;
+}
+export interface Attention { items: AttentionItem[]; learningsToReview: number }

@@ -46,6 +46,7 @@ export default function RunTab({
   const graph = useLoad(() => ws().latestGraph(project.id), [project.id]);
   const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [selRun, setSelRun] = useState<string | null>(focusRunId);
+  useEffect(() => { if (focusRunId) setSelRun(focusRunId); }, [focusRunId]); // '확인 필요'에서 넘어오면 그 실행을 연다
   const act = useAction();
 
   useEffect(() => {

@@ -17,7 +17,16 @@ const logFile = join(dataDir, 'app.log');
 const log = (m: string) => { try { writeFileSync(logFile, `${new Date().toISOString()} ${m}\n`, { flag: 'a' }); } catch { /* 무시 */ } };
 
 let win: BrowserWindow | null = null;
-const emit = (e: LiveEvent) => { if (win && !win.isDestroyed()) win.webContents.send('ws:live', e); };
+const emit = (e: LiveEvent) => { if (win && !win.isDestroyed()) win.webContents.send('ws:live', e); if (e.type === 'mission' || e.type === 'run' || e.type === 'learning') scheduleBadge(); };
+// 확인이 필요한 항목 수를 Dock 아이콘에 표시한다(macOS. 다른 운영체제에서는 무시됨)
+let badgeTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleBadge() {
+  if (badgeTimer) return;
+  badgeTimer = setTimeout(() => {
+    badgeTimer = null;
+    try { const a = svc?.attention(); if (a) app.setBadgeCount(a.items.length); } catch { /* 표시 실패는 무시 */ }
+  }, 500);
+}
 
 const secretFile = join(dataDir, 'langsmith.key.enc');
 const secretStore = {
@@ -142,6 +151,11 @@ function register() {
   h('saveSettings', (p, key) => s().saveSettings(p, key));
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));
+  h('attention', () => s().attention());
+  h('listLearnings', () => s().learnings.list());
+  h('saveLearning', (id, f) => { const r = s().saveLearning(id, f); emit({ type: 'learning' }); return r; });
+  h('deleteLearning', (id) => { s().learnings.remove(id); emit({ type: 'learning' }); });
+  h('markLearningsReviewed', (ids) => { s().learnings.markReviewed(ids); emit({ type: 'learning' }); });
   h('workingNow', (pid) => s().missions.working(pid));
   h('missionReadiness', (pid, refresh) => s().missionReadiness(pid, !!refresh));
   h('startMission', (pid, prompt) => s().startMission(pid, prompt));

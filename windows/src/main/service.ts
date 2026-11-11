@@ -4,10 +4,11 @@ import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha } from './engine/fsutil';
-import type { DocItem, ProjectDoc } from '../shared/types';
+import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc } from '../shared/types';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
 import { gitRoot, gitShutdown, workspaceRepos } from './git';
+import { LearningStore } from './learning';
 import { MissionRunner } from './mission';
 import { autoLayout, needsLayout } from '../shared/layout';
 import { checkCli } from './cli/claudeCli';
@@ -32,7 +33,7 @@ export interface ServiceDeps {
 }
 
 const DEFAULT_SETTINGS: Omit<AppSettings, 'langsmithKeySet'> = {
-  cliPath: null, executor: 'claude', maxConcurrent: 3, codexPath: null, codexModel: 'gpt-6.1-sol', codexEffort: 'high', missionMaxCycles: 5, gitCommits: true, langsmithEnabled: false, langsmithProject: 'crewgenai-agent-workspace', langsmithEndpoint: 'https://api.smith.langchain.com',
+  cliPath: null, executor: 'claude', maxConcurrent: 3, codexPath: null, codexModel: 'gpt-6.1-sol', codexEffort: 'high', missionMaxCycles: 5, learning: true, gitCommits: true, langsmithEnabled: false, langsmithProject: 'crewgenai-agent-workspace', langsmithEndpoint: 'https://api.smith.langchain.com',
 };
 
 export function normalizePlan(p: PlanFields): PlanFields {
@@ -56,12 +57,14 @@ export class Service {
   readonly store: Store;
   readonly engine: Engine;
   readonly missions: MissionRunner;
+  readonly learnings: LearningStore;
   private cli: CliStatus | null = null;
   private codex: CodexStatus | null = null;
   private memSecret: string | null = null;
 
   constructor(private d: ServiceDeps) {
     this.store = new Store(d.dbFile);
+    this.learnings = new LearningStore(this.store.db);
     const saver = new NodeSqliteSaver(this.store.db);
     // 실행 이벤트를 화면으로 보내면서 미션 루프 다이어그램의 현재 단계도 갱신한다
     const emit = (e: LiveEvent) => { d.emit(e); try { this.missions?.onLive(e); } catch { /* 미션 갱신 실패는 실행에 영향 없음 */ } };
@@ -73,6 +76,7 @@ export class Service {
       gitCommits: () => this.settings().gitCommits !== false,
       tracer: d.tracer?.(this),
       limitGraceMs: d.limitGraceMs, limitFallbackMs: d.limitFallbackMs,
+      learningsFor: (pid) => (this.settings().learning !== false ? this.learnings.promptSection(pid, 1200) : ''),
     });
     this.missions = new MissionRunner({
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
@@ -81,6 +85,8 @@ export class Service {
       gitCommits: () => this.settings().gitCommits !== false,
       ensureAgents: (pid) => (this.store.listAgents(pid).length ? this.store.listAgents(pid) : this.loadAgentTemplates(pid)),
       projectDocs: (pid) => this.projectDocs(pid),
+      learnings: this.learnings,
+      learnEnabled: () => this.settings().learning !== false,
     });
   }
 
@@ -203,6 +209,35 @@ export class Service {
     if (a.code === '00' && this.missions.list(a.projectId).some((m) => ['planning', 'running', 'evaluating'].includes(m.status))) throw new Error('작동 중인 미션의 오퍼레이터(00 총괄)는 해고할 수 없습니다. 미션을 먼저 중단하세요.');
     return { cleared: this.store.fireAgent(agentId) };
   }
+  /** 사용자가 확인해야 진행되는 항목(모든 프로젝트). 에이전트가 스스로 풀 수 없는 것을 먼저 보여 주는 데 쓴다. */
+  attention(): Attention {
+    const items: AttentionItem[] = [];
+    for (const p of this.store.listProjects()) {
+      for (const m of this.missions.list(p.id)) {
+        if (m.status !== 'waiting_user') continue;
+        const kind: AttentionItem['kind'] = m.denials?.length ? 'denied' : m.blockers?.length ? 'blocked' : m.gaps?.length ? 'gaps' : 'question';
+        items.push({ projectId: p.id, kind, label: (m.question ?? '').split('\n')[0].slice(0, 140) || '오퍼레이터가 확인을 요청했습니다', missionId: m.id });
+      }
+      const missionRuns = new Set(this.missions.list(p.id).map((m) => m.currentRunId).filter(Boolean));
+      for (const r of this.store.listRuns(p.id)) {
+        if (r.status === 'review_wait') items.push({ projectId: p.id, kind: 'review', label: '팀장 검토를 기다립니다', runId: r.id });
+        else if (r.status === 'needs_resume' && !this.engine.limitOf(r.id) && !missionRuns.has(r.id)) items.push({ projectId: p.id, kind: 'resume', label: '중단된 실행 — 재개 방법을 골라야 합니다', runId: r.id });
+      }
+    }
+    const order: AttentionItem['kind'][] = ['denied', 'blocked', 'gaps', 'question', 'resume', 'review'];
+    items.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+    return { items, learningsToReview: this.learnings.toReview() };
+  }
+
+  /** 배운 것 직접 추가·수정(사용자가 한 것이므로 검토한 것으로 본다) */
+  saveLearning(id: string | null, f: LearningFields & { active?: boolean }): Learning {
+    if (f.scope === 'project' && !f.projectId) throw new Error('프로젝트를 고르세요.');
+    if (id) return this.learnings.update(id, { text: f.text, scope: f.scope, projectId: f.projectId, kind: f.kind, active: f.active ?? true, reviewed: true });
+    const r = this.learnings.add(f, { source: '직접 입력', reviewed: true });
+    if (!r) throw new Error('같은 내용이 이미 있거나 내용이 비어 있습니다.');
+    return r;
+  }
+
   agentTemplateSets() {
     return Object.values(TEMPLATE_SETS).map((t) => ({ id: t.id, label: t.label, description: t.description, agents: t.agents.map((a) => ({ code: a.code, name: a.name, role: a.role })) }));
   }

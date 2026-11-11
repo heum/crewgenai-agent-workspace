@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AppSettings, CliStatus, LiveEvent, Project } from '../shared/types';
+import type { AppSettings, Attention, AttentionItem, CliStatus, LiveEvent, Project } from '../shared/types';
 import { errMsg, useLoad, ws } from './api';
 import { Banner, Empty, Loading } from './components/common';
 import Sidebar from './components/Sidebar';
@@ -35,6 +35,21 @@ export default function App() {
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
   const [connected, setConnected] = useState(true);
+  // 확인이 필요한 항목(에이전트가 스스로 풀 수 없는 것) — 실행·미션·배운 것이 바뀔 때마다 다시 읽는다
+  const [attn, setAttn] = useState<Attention | null>(null);
+  const [focusMission, setFocusMission] = useState<{ id: string; n: number } | null>(null);
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const load = () => { ws().attention().then(setAttn).catch(() => {}); };
+    load();
+    const off = ws().onLive((e: LiveEvent) => { if (e.type === 'mission' || e.type === 'run' || e.type === 'learning') { if (t) clearTimeout(t); t = setTimeout(load, 400); } });
+    return () => { off(); if (t) clearTimeout(t); };
+  }, []);
+  const openAttention = (it: AttentionItem) => {
+    setSelectedId(it.projectId);
+    if (it.missionId) { setTab('mission'); setFocusMission({ id: it.missionId, n: Date.now() }); }
+    else if (it.runId) { setFocusRunId(it.runId); setTab(it.kind === 'review' ? 'review' : 'run'); }
+  };
 
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -86,6 +101,7 @@ export default function App() {
         selectedId={selectedId}
         onSelect={(id) => {
           setSelectedId(id);
+          setFocusMission(null);
           if (id === 'new') setTab('plan');
         }}
         cli={cli}
@@ -93,6 +109,7 @@ export default function App() {
         settings={settings}
         setSettings={setSettings}
         queue={queue}
+        attention={attn}
       />
       <main className="main">
         {!connected && <Banner kind="error">앱 내부 연결이 끊겼습니다. 앱을 다시 실행하세요.</Banner>}
@@ -134,11 +151,13 @@ export default function App() {
                 ))}
               </nav>
             </header>
+            <AttentionBar attn={attn} projectId={project.id} projects={projects.data ?? []} onOpen={openAttention} />
             <div className="page-body">
               {tab === 'mission' && (
                 <MissionTab
                   key={project.id}
                   project={project}
+                  focusMissionId={focusMission}
                   onOpenRun={(runId) => {
                     setFocusRunId(runId);
                     setTab('run');
@@ -171,6 +190,26 @@ export default function App() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+const ATTN_LABEL: Record<AttentionItem['kind'], string> = { denied: '권한 필요', blocked: '해결 필요', gaps: '근거 문서 보완', question: '답변 필요', resume: '재개 선택', review: '팀장 검토' };
+/** 확인이 필요한 일 — 에이전트가 스스로 풀 수 없어 멈춘 것을 화면 맨 위에 가장 먼저 보여 준다 */
+function AttentionBar({ attn, projectId, projects, onOpen }: { attn: Attention | null; projectId: string; projects: Project[]; onOpen: (it: AttentionItem) => void }) {
+  if (!attn || !attn.items.length) return null;
+  const here = attn.items.filter((x) => x.projectId === projectId);
+  const others = attn.items.filter((x) => x.projectId !== projectId);
+  const first = here[0] ?? others[0];
+  const pname = (id: string) => projects.find((p) => p.id === id)?.plan.name ?? '';
+  return (
+    <div className="attention-bar" role="alert">
+      <span className="attention-count">확인 필요 {attn.items.length}</span>
+      <span className="attention-kind">{ATTN_LABEL[first.kind]}</span>
+      <span className="attention-label ellipsis">{first.projectId !== projectId ? `[${pname(first.projectId)}] ` : ''}{first.label}</span>
+      <button className="btn btn-sm btn-primary" onClick={() => onOpen(first)}>지금 확인</button>
+      {here.length > 1 && <span className="muted small">이 프로젝트 {here.length}건</span>}
+      {others.length > 0 && first.projectId === projectId && <span className="muted small">다른 프로젝트 {others.length}건</span>}
     </div>
   );
 }
