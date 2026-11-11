@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // 모의 Codex CLI — 시험 전용. 실제 Codex와 같은 인자(exec ... --output-schema F -o F -)를 받아 구조화 리뷰 결과를 -o 파일에 쓴다.
 // "## 검토 대상" 목록의 파일에 TODO가 있으면 수정 요청, 없으면 승인.
+// Windows: 파이프 출력이 비동기라 process.exit 전에 내용이 잘릴 수 있어 동기 쓰기로 바꾼다
+for (const s of [process.stdout, process.stderr]) { try { if (s._handle && s._handle.setBlocking) s._handle.setBlocking(true); } catch { /* 무시 */ } }
 const fs = require('node:fs');
 const path = require('node:path');
 const argv = process.argv.slice(2);

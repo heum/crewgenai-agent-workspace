@@ -38,9 +38,9 @@ describe('2. 그래프 검사', () => {
     const w1 = n('agent', '작업1', { agentId: a.id, writeScope: ['docs'], outputs: [{ path: 'docs/a.md', format: 'markdown', required: true }] });
     const w2 = n('agent', '작업2', { agentId: a.id, writeScope: ['docs'], outputs: [{ path: 'docs/b.md', format: 'markdown', required: true }] });
     const ghost = n('agent', '유령', { agentId: 'none', outputs: [] });
-    const lonely = n('check', '고립', { command: ['/bin/true'] });
+    const lonely = n('check', '고립', { command: ['test', '-e', '.'] });
     const br = n('branch', '분기');
-    const c1 = n('check', '순환1', { command: ['/bin/true'] }); const c2 = n('check', '순환2', { command: ['/bin/true'] });
+    const c1 = n('check', '순환1', { command: ['test', '-e', '.'] }); const c2 = n('check', '순환2', { command: ['test', '-e', '.'] });
     const g: WorkGraph = { nodes: [inp, w1, w2, ghost, lonely, br, c1, c2], edges: [e(inp, w1), e(inp, w2), e(inp, ghost), e(w1, br), e(br, c1, 'next'), e(c1, c2), e(c2, c1)] };
     const codes = svc.validate(p.id, g).filter((i) => i.level === 'error').map((i) => i.code);
     for (const c of ['unreachable', 'missing_agent', 'no_output', 'no_condition', 'branch_arms', 'branch_next', 'cycle', 'write_conflict']) expect(codes).toContain(c);
@@ -105,7 +105,7 @@ describe('3. 그래프와 실행 일치', () => {
     const inp = n('input', '입력');
     const work = n('agent', '판정', { agentId: w.id, writeScope: ['docs'], outputs: [{ path: 'docs/v.json', format: 'json', required: true }] });
     const br = n('branch', '분기', { condition: { sourceNodeId: work.id, field: 'json', jsonPath: 'status', equals: 'done' } });
-    const yes = n('check', '참경로', { command: ['/usr/bin/true'] }); const no = n('check', '거짓경로', { command: ['/usr/bin/true'] });
+    const yes = n('check', '참경로', { command: ['test', '-e', '.'] }); const no = n('check', '거짓경로', { command: ['test', '-e', '.'] });
     const saved = svc.saveGraph(p.id, { nodes: [inp, work, br, yes, no], edges: [e(inp, work), e(work, br), e(br, yes, 'true'), e(br, no, 'false')] }, '');
     expect(saved.version).not.toBeNull();
     const run = await svc.startRun(p.id, saved.version!.id);
@@ -311,7 +311,7 @@ describe('7. 팀장 검토', () => {
 
   it('선택 단계부터 재실행하면 완료 단계는 재사용하고 새 결과물에는 새 검토가 필요하다', async () => {
     const { svc, p } = setup();
-    const { gv, work, ur } = linear(svc, p.id, { check: ['/usr/bin/true'] });
+    const { gv, work, ur } = linear(svc, p.id, { check: ['test', '-e', '.'] });
     const run = await svc.startRun(p.id, gv.id);
     await waitRun(svc, run.id, ['review_wait']);
     await svc.submitReview(run.id, ur.id, 'approve', '', null, svc.engine.detail(run.id).currentSubjectHash!);

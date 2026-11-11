@@ -1,6 +1,6 @@
 // 복구·일시정지·CLI 준비 상태·인자 안전성·LangSmith 전송 시험 (모의 CLI·가짜 서버 사용)
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -26,7 +26,8 @@ describe('5-2. 앱 비정상 종료 후 복원·재개', () => {
     const { runId, pid: orphan, aId, bId } = JSON.parse(line.slice(6)) as { runId: string; pid: number; aId: string; bId: string };
     child.kill('SIGKILL'); // 앱 비정상 종료
     await new Promise((r) => child.on('exit', r));
-    expect(alive(orphan)).toBe(true); // 하위 Claude 프로세스는 남아 있다(고아)
+    // Windows판: 앱이 강제 종료되면 하위 프로세스도 함께 끝날 수 있다(작업 개체). 남아 있으면 아래에서 앱이 정리한다
+    await sleep(300);
 
     const svc = new Service({ dbFile, mockScript: MOCK, emit: () => {} });
     svc.saveSettings({ executor: 'mock' });
@@ -84,14 +85,17 @@ describe('5-3. 새 배정 일시정지와 취소 구분', () => {
 
 describe('CLI 연결 계층', () => {
   it('설치·인증 상태를 확인하고 준비되지 않은 원인을 알려 준다', async () => {
+    // Windows판: npm 전역 설치와 같은 .cmd 실행 파일 → 안의 Node 스크립트를 셸 없이 실행하는지 확인
     const d = mkdtempSync(join(tmpdir(), 'fake cli '));
-    const fake = join(d, 'claude');
-    writeFileSync(fake, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi\nif [ "$1" = "auth" ]; then echo \'{"loggedIn": false, "authMethod": "none"}\'; exit 0; fi\nexit 1\n');
-    chmodSync(fake, 0o755);
+    const fake = join(d, 'claude.cmd');
+    const js = join(d, 'node_modules', 'fake-claude', 'cli.js');
+    require('node:fs').mkdirSync(join(d, 'node_modules', 'fake-claude'), { recursive: true });
+    writeFileSync(fake, '@ECHO off\r\nSETLOCAL\r\n"%_prog%"  "%dp0%\\node_modules\\fake-claude\\cli.js" %*\r\n');
+    writeFileSync(js, 'const a = process.argv.slice(2); if (a[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); } if (a[0] === "auth") { console.log(JSON.stringify({ loggedIn: false, authMethod: "none" })); process.exit(0); } process.exit(1);\n');
     const st = await checkCli(fake);
     expect(st.path).toBe(fake); expect(st.version).toBe('9.9.9'); expect(st.ready).toBe(false);
     expect(st.problem).toContain('로그인되지 않았습니다');
-    writeFileSync(fake, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi\necho \'{"loggedIn": true, "authMethod": "claude.ai"}\'\n');
+    writeFileSync(js, 'const a = process.argv.slice(2); if (a[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); } console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }));\n');
     const ok = await checkCli(fake);
     expect(ok.ready).toBe(true);
   });

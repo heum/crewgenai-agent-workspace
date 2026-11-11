@@ -129,7 +129,7 @@ describe('Codex 리뷰 반영', () => {
 
   it('#11 검사 노드도 필수 산출물이 없으면 통과하지 않는다', async () => {
     const { svc, p } = setup();
-    const inp = n('input', '입력'); const c = n('check', '검사', { command: ['/usr/bin/true'], outputs: [{ path: 'docs/report.json', format: 'json', required: true }] });
+    const inp = n('input', '입력'); const c = n('check', '검사', { command: ['test', '-e', '.'], outputs: [{ path: 'docs/report.json', format: 'json', required: true }] });
     const v = svc.saveGraph(p.id, { nodes: [inp, c], edges: [e(inp, c)] }, '').version!;
     const run = await svc.startRun(p.id, v.id);
     expect((await waitRun(svc, run.id, ['failed', 'succeeded'])).status).toBe('failed');
@@ -190,7 +190,7 @@ describe('Codex 재검토 반영', () => {
     const w = svc.saveAgent(p.id, null, agentFields('01', '작성자'));
     const inp = n('input', '입력'); const a = n('agent', 'A', { agentId: w.id, writeScope: ['.'], outputs: [{ path: 'a.md', format: 'markdown', required: true }] });
     expect(svc.validate(p.id, { nodes: [inp, a], edges: [e(inp, a)] }).filter((i) => i.level === 'error')).toEqual([]);
-    const c = n('check', '검사', { command: ['/usr/bin/true'], outputs: [{ path: '../../outside.json', format: 'json', required: true }] });
+    const c = n('check', '검사', { command: ['test', '-e', '.'], outputs: [{ path: '../../outside.json', format: 'json', required: true }] });
     expect(svc.validate(p.id, { nodes: [inp, c], edges: [e(inp, c)] }).map((i) => i.code)).toContain('path_escape');
     svc.close();
   });

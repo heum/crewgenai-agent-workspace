@@ -12,6 +12,7 @@ import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
 import { allowedRoots, escapes, normRel, validateGraph } from './engine/validate';
 import { autoLayout } from '../shared/layout';
+import { BUILTIN_CHECK } from './checks';
 import { missionCommitsSince, revertCommits, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 
 const PLAN_SCHEMA = {
@@ -610,7 +611,7 @@ export class MissionRunner {
     const bin = (a[0].split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat)$/i, '').toLowerCase(); // Windows: 경로 구분자 \\, 확장자 .exe/.cmd
     if (['sh', 'bash', 'zsh', 'fish', 'env', 'osascript', 'eval', 'xargs', 'sudo', 'cmd', 'powershell', 'pwsh', 'wscript', 'cscript', 'mshta', 'rundll32', 'start'].includes(bin)) return null;
     if (/^(node|python\d*|ruby|perl|php|deno|bun)$/.test(bin) && a.some((x) => ['-e', '-c', '--eval', '-p', '--print'].includes(x))) return null;
-    if (['grep', 'test'].includes(bin)) return a;
+    if (BUILTIN_CHECK.has(a[0])) return a; // 내장 검사는 정확한 이름만(test.cmd·grep.bat 같은 프로젝트 파일은 해당하지 않음)
     const line = a.join(' ');
     return author.allowedCommands.some((c) => c.trim() && (line === c.trim() || line.startsWith(`${c.trim()} `))) ? a : null;
   }

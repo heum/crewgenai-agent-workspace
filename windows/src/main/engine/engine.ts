@@ -14,6 +14,7 @@ import {
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
+import { BUILTIN_CHECK } from '../checks';
 import { agentIdentity, commitWorkspace, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
@@ -326,7 +327,8 @@ export class Engine {
     for (const a of this.s.attemptsWithStatus('running')) {
       // 앱이 시작한 고아 프로세스만 종료: PID + 기록한 프로세스 시작 시각 + 명령줄 표식이 모두 일치해야 한다(PID 재사용 대비)
       const oIdx = a.argvRedacted.indexOf('-o');
-      const marker = a.role === 'check' ? (a.argvRedacted[0] ?? '\u0000') : a.role === 'codex' ? (a.argvRedacted[oIdx + 1] ?? '\u0000') : (a.sessionId ?? '\u0000');
+      // Windows: .cmd·이름만 적은 명령은 node.exe 등으로 바뀌어 실행되므로 첫 인자 대신 나머지 인자로 확인한다
+      const marker = a.role === 'check' ? (a.argvRedacted.slice(1).join(' ') || (a.argvRedacted[0] ?? '\u0000').split(/[\\/]/).pop()!.replace(/\.(exe|cmd|bat)$/i, '')) : a.role === 'codex' ? (a.argvRedacted[oIdx + 1] ?? '\u0000') : (a.sessionId ?? '\u0000');
       if (a.pid && a.procStart && await isOurProcess(a.pid, marker, a.procStart)) await killGroupAndWait(a.pid); // 실제로 끝난 뒤에 재개 가능(격리 복사본 오염 방지)
       this.s.saveAttempt({ ...a, status: 'interrupted', error: '앱 종료로 중단됨', finishedAt: now() });
       this.s.updateRunNode(a.runId, a.nodeId, { status: 'needs_resume', failureReason: '앱이 종료될 때 실행 중이었습니다.', nextAction: '재개 방법을 선택하세요: 새 시도 / 세션 이어서 / 산출물만 확인' });
@@ -1023,8 +1025,8 @@ export class Engine {
     const t0 = Date.now(); let output = '';
     try {
       // Windows: test·grep은 앱에 포함된 내장 검사(Node)로 실행한다(Windows에는 해당 명령이 없음)
-      const bin0 = (node.command[0].split(/[\\/]/).pop() ?? '').replace(/\.exe$/i, '').toLowerCase();
-      const builtin = bin0 === 'test' || bin0 === 'grep';
+      const builtin = BUILTIN_CHECK.has(node.command[0]); // 정확한 이름만(프로젝트의 test.cmd 등은 해당하지 않음)
+      const bin0 = node.command[0].split('/').pop() ?? '';
       const h = startProcess(builtin ? process.execPath : node.command[0], builtin ? [join(dirname(this.o.mockScript), 'check-builtin.cjs'), bin0, ...node.command.slice(1)] : node.command.slice(1), {
         cwd: plan.folder, env: cleanEnv(builtin ? { ELECTRON_RUN_AS_NODE: '1' } : {}), stdin: '', timeoutSec: node.timeoutSec,
         onStdoutLine: (l) => { if (output.length < 200000) output += `${l}\n`; }, onStderrLine: (l) => { if (output.length < 200000) output += `${l}\n`; },

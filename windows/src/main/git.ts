@@ -201,7 +201,8 @@ export async function workspaceRepos(folder: string): Promise<Workspace> {
     if (!existsSync(join(abs, '.git'))) continue;
     const root = await gitRoot(abs);
     let same = false;
-    try { same = !!root && realpathSync(root) === realpathSync(abs); } catch { /* 무시 */ }
+    // Windows: git은 /로 된 긴 경로를, 임시 폴더 등은 8.3 짧은 이름(RUNNER~1)을 줄 수 있어 실제 경로로 바꿔 대소문자 없이 비교한다
+    try { same = !!root && realpathSync.native(root).toLowerCase() === realpathSync.native(abs).toLowerCase(); } catch { /* 무시 */ }
     if (same) repos.push({ rel: n, abs, hasCommit: await gitHasCommit(abs) });
   }
   return repos.length ? { mode: 'multi', repos } : { mode: 'none', repos: [] };

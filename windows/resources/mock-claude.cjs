@@ -12,6 +12,8 @@
 //   [[mock:dir:NAME]]        오퍼레이터가 NAME/docs/mission 아래에 쓰도록 계획(여러 저장소 시험)
 //   [[mock:write-outside:경로]] 권한 엔진을 거치지 않고 범위 밖 파일을 직접 기록(사후 탐지 시험)
 //   [[mock:try-edit:경로]]   허용 규칙 밖 파일 편집 시도 → 권한 거부로 보고
+// Windows: 파이프 출력이 비동기라 process.exit 전에 내용이 잘릴 수 있어 동기 쓰기로 바꾼다
+for (const s of [process.stdout, process.stderr]) { try { if (s._handle && s._handle.setBlocking) s._handle.setBlocking(true); } catch { /* 무시 */ } }
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');

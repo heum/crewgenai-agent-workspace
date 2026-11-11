@@ -267,14 +267,15 @@ describe('git 안전장치(Codex 6차)', () => {
   it('경로는 문자 그대로 해석해 다른 파일을 함께 커밋하지 않는다', async () => {
     const dir = tmpProject(); const g = gitInit(dir); const fs = require('node:fs');
     fs.mkdirSync(join(dir, 'docs'), { recursive: true });
-    fs.writeFileSync(join(dir, 'docs/other.md'), '사용자 문서'); g('add', '-A'); g('commit', '-q', '-m', 'other');
-    fs.writeFileSync(join(dir, 'docs/other.md'), '사용자 수정 중');
-    fs.writeFileSync(join(dir, 'docs/*.md'), '이름이 별표인 파일');
+    // Windows판: 파일 이름에 *를 쓸 수 없어 [a](글롭이면 a.md에도 일치)로 시험한다
+    fs.writeFileSync(join(dir, 'docs/a.md'), '사용자 문서'); g('add', '-A'); g('commit', '-q', '-m', 'other');
+    fs.writeFileSync(join(dir, 'docs/a.md'), '사용자 수정 중');
+    fs.writeFileSync(join(dir, 'docs/[a].md'), '이름에 대괄호가 있는 파일');
     const { commitPaths } = await import('../src/main/git');
-    const r = await commitPaths(dir, ['docs/*.md'], { name: 'CREWGENAI 01 시험', email: 'a@b' }, '시험', {});
+    const r = await commitPaths(dir, ['docs/[a].md'], { name: 'CREWGENAI 01 시험', email: 'a@b' }, '시험', {});
     expect(r.sha).not.toBeNull();
-    expect(g('show', '--name-only', '--format=', 'HEAD').trim()).toBe('docs/*.md');
-    expect(g('status', '--porcelain')).toContain(' M docs/other.md');
+    expect(g('show', '--name-only', '--format=', 'HEAD').trim()).toBe('docs/[a].md');
+    expect(g('status', '--porcelain')).toContain(' M docs/a.md');
   });
 
   it("다른 미션이 작동 중이면 확인 대기 미션에 '계속'으로 답해도 진행하지 않는다", async () => {

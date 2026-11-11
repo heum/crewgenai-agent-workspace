@@ -40,22 +40,32 @@ function winExtraPath(): string[] {
  * 실행 방법 해석: Windows의 .cmd/.bat(npm 전역 설치 실행 파일)은 셸 없이 바로 실행할 수 없으므로
  * 그 안에 적힌 Node 스크립트를 찾아 node로 직접 실행한다(인자를 셸에 넘기지 않는다).
  */
-export function launchSpec(file: string, args: string[]): { file: string; args: string[]; env?: Record<string, string> } {
+export function launchSpec(file0: string, args: string[]): { file: string; args: string[]; env?: Record<string, string> } {
+  // 확장자 없이 이름만 적은 명령(npm 등)은 PATH에서 .exe → .cmd/.bat 순으로 찾는다
+  let file = file0;
+  if (!extname(file0) && !/[\\/]/.test(file0)) {
+    const all = whereAll(file0);
+    file = all.find((p) => /\.exe$/i.test(p)) ?? all.find((p) => /\.(cmd|bat)$/i.test(p)) ?? file0;
+  }
   const ext = extname(file).toLowerCase();
   if (ext !== '.cmd' && ext !== '.bat') return { file, args };
   let script: string | null = null;
   try {
     const body = readFileSync(file, 'utf8');
-    const m = /"%(?:~dp0|dp0)%\\([^"]+?\.(?:c?js|mjs))"/i.exec(body);
-    if (m) script = join(dirname(file), m[1]);
+    // npm 실행 파일 형식: "%dp0%\…\cli.js" 또는 SET "X=%~dp0\node_modules\npm\bin\npm-cli.js"
+    const m = /%~?dp0%?\\?([^"%\r\n]+?\.(?:c?js|mjs))/i.exec(body);
+    if (m) script = join(dirname(file), ...m[1].split(/[\\/]/).filter(Boolean));
   } catch { /* 읽지 못함 */ }
   if (!script || !existsSync(script)) throw new Error(`실행 파일(${file})을 해석하지 못했습니다. 설정에서 .exe 실행 파일을 직접 지정하세요.`);
   const nodeExe = [join(dirname(file), 'node.exe'), whereFirst('node')].find((p) => !!p && existsSync(p));
   // Node가 없으면 이 앱(Electron)을 Node 모드로 써서 실행한다
   return nodeExe ? { file: nodeExe, args: [script, ...args] } : { file: process.execPath, args: [script, ...args], env: { ELECTRON_RUN_AS_NODE: '1' } };
 }
+function whereAll(name: string): string[] {
+  try { return execFileSync('where.exe', [name], { encoding: 'utf8', windowsHide: true, timeout: 5000, env: cleanEnv() }).split(/\r?\n/).map((x) => x.trim()).filter(Boolean); } catch { return []; }
+}
 function whereFirst(name: string): string | null {
-  try { return execFileSync('where.exe', [name], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).split(/\r?\n/).map((x) => x.trim()).find(Boolean) ?? null; } catch { return null; }
+  return whereAll(name).find((p) => /\.exe$/i.test(p)) ?? null;
 }
 
 function run(file0: string, args0: string[], timeoutMs = 15000): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -310,7 +320,8 @@ export function startProcess(file: string, args: string[], opts: { cwd: string; 
   try { spec = launchSpec(file, args); } catch (e) { spec = { file, args }; opts.onStderrLine(`프로세스 시작 실패: ${(e as Error).message}`); }
   const child = spawn(spec.file, spec.args, { cwd: opts.cwd, env: spec.env ? { ...opts.env, ...spec.env } : opts.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let timedOut = false, cancelled = false;
-  const terminate = () => { if (child.pid) killTree(child.pid, false); setTimeout(() => { if (child.pid) killTree(child.pid, true); }, 5000).unref(); };
+  // 창 없는 프로세스는 정상 종료 요청을 받지 못하므로 바로 강제 종료한다: 직접 자식은 즉시 종료하고, 하위 프로세스는 taskkill /T /F
+  const terminate = () => { try { child.kill(); } catch { /* 이미 종료 */ } if (child.pid) killTree(child.pid, true); };
   const timer = setTimeout(() => { timedOut = true; terminate(); }, Math.max(1, opts.timeoutSec) * 1000);
   const lines = (stream: NodeJS.ReadableStream, cb: (l: string) => void) => {
     let buf = '';
@@ -355,17 +366,15 @@ export async function isOurProcess(pid: number, marker: string, startedAt: strin
   return !!info && info.start === startedAt && info.command.includes(marker);
 }
 export function killGroup(pid: number) {
-  killTree(pid, false);
-  setTimeout(() => killTree(pid, true), 3000).unref();
+  try { process.kill(pid); } catch { /* 없음 */ }
+  killTree(pid, true);
 }
-/** 프로세스 트리를 종료하고 실제로 끝날 때까지 기다린다(3초 뒤 강제 종료, 최대 timeoutMs). */
+/** 프로세스 트리를 강제 종료하고 실제로 끝날 때까지 기다린다(최대 timeoutMs). */
 export async function killGroupAndWait(pid: number, timeoutMs = 6000): Promise<boolean> {
   const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  killTree(pid, false);
-  const t0 = Date.now(); let killed = false;
-  while (alive() && Date.now() - t0 < timeoutMs) {
-    if (!killed && Date.now() - t0 > 3000) { killTree(pid, true); killed = true; }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  killTree(pid, true);
+  try { process.kill(pid); } catch { /* 없음 */ }
+  const t0 = Date.now();
+  while (alive() && Date.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 100));
   return !alive();
 }
