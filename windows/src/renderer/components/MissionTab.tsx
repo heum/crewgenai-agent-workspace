@@ -99,7 +99,13 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
     if (sel === null && list.data) setSel(list.data[0]?.id ?? NEW);
   }, [list.data, sel]);
   // '확인 필요' 막대에서 넘어오면 그 미션을 연다
-  useEffect(() => { if (focusMissionId && list.data?.some((m) => m.id === focusMissionId.id)) setSel(focusMissionId.id); }, [focusMissionId, list.data]);
+  // 한 번 연 뒤에는 다시 적용하지 않는다(사용자가 다른 미션을 고르면 그대로 둔다)
+  const focusApplied = useRef(0);
+  useEffect(() => {
+    if (!focusMissionId || focusApplied.current === focusMissionId.n || !list.data?.some((m) => m.id === focusMissionId.id)) return;
+    focusApplied.current = focusMissionId.n;
+    setSel(focusMissionId.id);
+  }, [focusMissionId, list.data]);
   // 확인이 필요한 미션(사용자 답변 대기)을 맨 위에
   const ordered = useMemo(() => (list.data ? [...list.data].sort((a, b) => Number(b.status === 'waiting_user') - Number(a.status === 'waiting_user')) : null), [list.data]);
   const mission = sel && sel !== NEW ? list.data?.find((m) => m.id === sel) ?? null : null;

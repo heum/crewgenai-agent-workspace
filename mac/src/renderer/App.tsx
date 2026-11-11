@@ -34,6 +34,7 @@ export default function App() {
   const [queue, setQueue] = useState<QueueInfo | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
+  const [focusKey, setFocusKey] = useState(0); // 같은 항목을 다시 눌러도 그 실행으로 돌아가게
   const [connected, setConnected] = useState(true);
   // 확인이 필요한 항목(에이전트가 스스로 풀 수 없는 것) — 실행·미션·배운 것이 바뀔 때마다 다시 읽는다
   const [attn, setAttn] = useState<Attention | null>(null);
@@ -48,7 +49,7 @@ export default function App() {
   const openAttention = (it: AttentionItem) => {
     setSelectedId(it.projectId);
     if (it.missionId) { setTab('mission'); setFocusMission({ id: it.missionId, n: Date.now() }); }
-    else if (it.runId) { setFocusRunId(it.runId); setTab(it.kind === 'review' ? 'review' : 'run'); }
+    else if (it.runId) { setFocusRunId(it.runId); setFocusKey(Date.now()); setTab(it.kind === 'review' ? 'review' : 'run'); }
   };
 
   useEffect(() => {
@@ -102,6 +103,7 @@ export default function App() {
         onSelect={(id) => {
           setSelectedId(id);
           setFocusMission(null);
+          setFocusRunId(null);
           if (id === 'new') setTab('plan');
         }}
         cli={cli}
@@ -179,13 +181,14 @@ export default function App() {
                   settings={settings}
                   queue={queue}
                   focusRunId={focusRunId}
+                  focusKey={focusKey}
                   onOpenReview={(runId) => {
                     setFocusRunId(runId);
                     setTab('review');
                   }}
                 />
               )}
-              {tab === 'review' && <ReviewTab key={project.id} project={project} initialRunId={focusRunId} onOpenRun={(id) => { setFocusRunId(id); setTab('run'); }} />}
+              {tab === 'review' && <ReviewTab key={project.id} project={project} initialRunId={focusRunId} focusKey={focusKey} onOpenRun={(id) => { setFocusRunId(id); setTab('run'); }} />}
             </div>
           </div>
         )}

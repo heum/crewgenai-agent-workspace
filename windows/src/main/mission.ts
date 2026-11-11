@@ -315,11 +315,13 @@ export class MissionRunner {
       const project = this.d.store.getProject(m.projectId);
       const label: Record<string, string> = { user: '사용자 지시', directive: '사용자 추가 지시', answer: '사용자 답변', question: '오퍼레이터 질문', operator_judge: '오퍼레이터 판단' };
       // 대화는 앞에서부터 8,000자까지 보내고, 보낸 기록까지만 정리한 것으로 표시한다(잘린 뒤쪽은 다음에 이어서 정리)
+      // 사용자가 한 말(지시·추가 지시·답변)은 잘라내지 않고 그대로 보낸다(맥락용 질문·판단만 600자로 줄임)
+      const mine = new Set(['user', 'directive', 'answer']);
       const lines: string[] = []; let used = 0; let lastSent = m.learnedSeq ?? 0;
       for (const e of evs) {
         if (!label[e.kind]) { lastSent = e.seq; continue; }
-        const line = `- [${label[e.kind]}] ${e.text.slice(0, 600)}`;
-        if (used + line.length > 8000 && lines.length) break;
+        const line = `- [${label[e.kind]}] ${mine.has(e.kind) ? e.text : e.text.slice(0, 600)}`;
+        if (used + line.length > 24000 && lines.length) break;
         lines.push(line); used += line.length + 1; lastSent = e.seq;
       }
       const convo = lines.join('\n');

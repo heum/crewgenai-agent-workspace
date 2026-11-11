@@ -33,6 +33,7 @@ export default function RunTab({
   settings,
   queue,
   focusRunId,
+  focusKey,
   onOpenReview,
 }: {
   project: Project;
@@ -40,13 +41,14 @@ export default function RunTab({
   settings: AppSettings | null;
   queue: QueueInfo | null;
   focusRunId: string | null;
+  focusKey?: number;
   onOpenReview: (runId: string) => void;
 }) {
   const runs = useRunList(project.id);
   const graph = useLoad(() => ws().latestGraph(project.id), [project.id]);
   const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [selRun, setSelRun] = useState<string | null>(focusRunId);
-  useEffect(() => { if (focusRunId) setSelRun(focusRunId); }, [focusRunId]); // '확인 필요'에서 넘어오면 그 실행을 연다
+  useEffect(() => { if (focusRunId) setSelRun(focusRunId); }, [focusRunId, focusKey]); // '확인 필요'에서 넘어오면 그 실행을 연다
   const act = useAction();
 
   useEffect(() => {
