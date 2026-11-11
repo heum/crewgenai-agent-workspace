@@ -32,11 +32,17 @@ function test(args) {
 function breToJs(p) {
   let out = '';
   let atStart = true; // 그룹이나 패턴의 맨 앞인지(^·* 해석용)
-  let inBracket = false;
   for (let i = 0; i < p.length; i++) {
     const c = p[i];
-    if (inBracket) { out += c === '\\' ? '\\\\' : c; if (c === ']' && !/\[\^?$/.test(out.slice(0, -1).slice(-2))) inBracket = false; continue; }
-    if (c === '[') { inBracket = true; out += c; if (p[i + 1] === '^') { out += '^'; i++; } if (p[i + 1] === ']') { out += '\\]'; i++; } atStart = false; continue; }
+    if (c === '[') {
+      // 대괄호 식: [ 다음의 ^, 그다음 맨 앞 ]는 글자로 보고, 그 뒤 첫 ]에서 닫는다. 안의 \와 [는 글자 그대로
+      let j = i + 1; let body = '';
+      if (p[j] === '^') { body += '^'; j++; }
+      if (p[j] === ']') { body += '\\]'; j++; }
+      while (j < p.length && p[j] !== ']') { body += p[j] === '\\' || p[j] === '[' ? '\\' + p[j] : p[j]; j++; }
+      if (j >= p.length) throw new Error('닫히지 않은 [');
+      out += '[' + body + ']'; i = j; atStart = false; continue;
+    }
     if (c === '\\' && i + 1 < p.length) {
       const n = p[++i];
       if (/[1-9]/.test(n)) throw new Error('역참조(\\1~\\9)는 지원하지 않습니다');

@@ -73,6 +73,10 @@ describe('내장 검사', () => {
     expect(check(['grep', '-q', 'a^b', join(d, 'l.txt')])).toBe(0); // 중간의 ^·$는 글자 그대로
     expect(check(['grep', '-q', 'x$y', join(d, 'l.txt')])).toBe(0);
     expect(check(['grep', '-q', '*star', join(d, 'l.txt')])).toBe(0); // 맨 앞의 *는 글자 그대로
-    expect(check(['grep', '-q', '^\\(a\\)*b\\1$', r])).toBe(2); // 역참조는 뜻이 달라 지원하지 않음(통과로 처리하지 않음)
+    expect(check(['grep', '-q', '^\\(a\\)*b\\1$', r])).toBe(2);
+    writeFileSync(join(d, 'br.txt'), '[aaa\n');
+    expect(check(['grep', '-q', '[[]a\\+', join(d, 'br.txt')])).toBe(0); // 대괄호 안의 [는 글자
+    expect(check(['grep', '-q', '[]a]', join(d, 'br.txt')])).toBe(0); // 맨 앞 ]는 글자
+    expect(check(['grep', '-q', 'a[\\]b', join(d, 'br.txt')])).toBe(1); // 역참조는 뜻이 달라 지원하지 않음(통과로 처리하지 않음)
   });
 });

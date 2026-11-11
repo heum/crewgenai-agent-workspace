@@ -65,7 +65,7 @@ async function main() {
     const flag = path.join(require('node:os').tmpdir(), `crewgenai-mock-limit-${m[1]}`);
     if (fs.existsSync(flag)) continue;
     fs.writeFileSync(flag, String(Date.now()));
-    const resetsAt = Math.floor(Date.now() / 1000) + 1;
+    const resetsAt = Math.floor(Date.now() / 1000) + 3; // Windows판: 느린 환경에서도 미션이 한도 상태를 볼 수 있게 3초
     out({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: 'five_hour' }, session_id: sessionId });
     out({ type: 'assistant', session_id: sessionId, error: 'rate_limit', message: { content: [{ type: 'text', text: "You've hit your limit · resets soon" }] } });
     out({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, result: "You've hit your limit · resets soon", permission_denials: [] });
