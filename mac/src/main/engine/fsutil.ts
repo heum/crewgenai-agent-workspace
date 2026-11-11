@@ -62,7 +62,8 @@ export function checkOutput(root: string, spec: OutputSpec): { ok: boolean; deta
   if (st.isDirectory()) {
     // 폴더 산출물: 형식이 any면 폴더가 있으면 되고, 그 밖에는 폴더 안(하위 포함)에 그 형식의 파일이 하나 이상 있어야 한다
     if (spec.format === 'any') return { ok: true, detail: '폴더 존재' };
-    const files = [...snapshot(p, 5000).keys()].filter((r) => !r.split('/').pop()!.startsWith('.'));
+    // 일반 파일만 본다(링크는 따라가지 않음 — 자기 자신을 가리키는 링크로 검사가 멈추지 않게)
+    const files = [...snapshot(p, 5000).entries()].filter(([r, v]) => !v.startsWith('link:') && !r.split('/').pop()!.startsWith('.')).map(([r]) => r);
     const hits = files.filter((r) => checkOutput(p, { ...spec, path: r, required: true }).ok);
     return hits.length ? { ok: true, detail: `폴더 안 ${spec.format} 파일 ${hits.length}개` } : { ok: false, detail: `폴더 안에 ${spec.format} 형식 파일이 없습니다(파일 ${files.length}개).` };
   }

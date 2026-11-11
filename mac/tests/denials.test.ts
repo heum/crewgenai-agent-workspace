@@ -62,3 +62,15 @@ describe('폴더 산출물', () => {
     expect(checkOutput(d, { path: 'screens', format: 'any', required: true }).ok).toBe(true);
   });
 });
+
+describe('폴더 산출물 — 링크 고리', () => {
+  it('자기 자신을 가리키는 링크가 있어도 멈추지 않고 일반 파일만 본다', () => {
+    const d = tmpProject();
+    const { symlinkSync } = require('node:fs') as typeof import('node:fs');
+    mkdirSync(join(d, 'out'));
+    try { symlinkSync('.', join(d, 'out', 'a')); symlinkSync('.', join(d, 'out', 'b')); } catch { /* 링크 불가 환경 */ }
+    const t0 = Date.now();
+    expect(checkOutput(d, { path: 'out', format: 'image', required: true }).ok).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+});

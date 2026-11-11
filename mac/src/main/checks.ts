@@ -16,16 +16,21 @@ function insideProject(folder: string, p: string): boolean {
   try { const root = realpathSync(folder); const real = realpathSync(abs); return real === root || real.startsWith(root + sep); } catch { return false; }
 }
 
-/** test·grep의 파일 인자(옵션·grep 패턴 제외) */
-function fileArgs(args: string[], grep: boolean): string[] {
-  const out: string[] = []; let pattern = !grep; let opts = true;
-  for (const x of args) {
-    if (opts && x === '--') { opts = false; continue; }
-    if (opts && (x.startsWith('-') || x === '!')) continue;
-    if (!pattern) { pattern = true; opts = !grep ? opts : false; continue; }
-    out.push(x);
+/**
+ * 내장 test·grep의 파일 인자. 정해진 형식만 받는다(다른 옵션이 있으면 null):
+ * - test [!] -e|-f|-d|-s 경로
+ * - grep [-q|-i|-F|-E|-c 조합] [--] 패턴 파일…  (값을 받는 옵션 -e·-f 등은 받지 않는다)
+ */
+function fileArgs(args: string[], grep: boolean): string[] | null {
+  if (!grep) {
+    const a = args[0] === '!' ? args.slice(1) : args;
+    return a.length === 2 && /^-[efds]$/.test(a[0]) ? [a[1]] : null;
   }
-  return out;
+  let i = 0;
+  while (i < args.length && args[i] !== '--' && args[i].startsWith('-')) { if (!/^-[qiFEc]+$/.test(args[i])) return null; i++; }
+  if (args[i] === '--') i++;
+  const files = args.slice(i + 1);
+  return i < args.length && files.length ? files : null;
 }
 
 /**
@@ -43,7 +48,7 @@ export function checkArgv(argv: string[], allowed: string[], folder: string): st
   if (/^(node|python\d*|ruby|perl|php|deno|bun)$/.test(bin) && a.some((x) => ['-e', '-c', '--eval', '-p', '--print'].includes(x))) return null;
   if (BUILTIN_CHECK.has(a[0])) {
     const files = fileArgs(a.slice(1), bin === 'grep');
-    if (!files.length || !files.every((f) => insideProject(folder, f))) return null;
+    if (!files || !files.every((f) => insideProject(folder, f))) return null;
     return [BUILTIN_CHECK.get(a[0])!, ...a.slice(1)];
   }
   for (const c of allowed.map((x) => x.trim()).filter(Boolean)) {

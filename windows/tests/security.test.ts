@@ -25,6 +25,13 @@ describe('검사 명령 제한', () => {
     expect(checkArgv(['grep', 'x', join(outside, 'secret.txt')], [], d)).toBeNull();
     expect(checkArgv(['grep', 'x', 'link-out/secret.txt'], [], d)).toBeNull(); // 링크로 밖을 가리키는 경로
     expect(checkArgv(['grep', 'x'], [], d)).toBeNull(); // 파일 없이 표준 입력 읽기 금지
+    // 값을 받는 옵션·이상한 옵션으로 패턴 자리를 바꿔 밖의 파일을 읽게 하는 형태
+    expect(checkArgv(['grep', '-e.', '/etc/hosts', 'docs/a.md'], [], d)).toBeNull();
+    expect(checkArgv(['grep', '-*', join(outside, 'secret.txt'), 'docs/a.md'], [], d)).toBeNull();
+    expect(checkArgv(['grep', '-f', '/etc/hosts', 'docs/a.md'], [], d)).toBeNull();
+    expect(checkArgv(['grep', '-q', '--', '-x', 'docs/a.md'], [], d)).not.toBeNull(); // -- 뒤의 - 패턴은 허용
+    expect(checkArgv(['test', '-s', 'docs/a.md', '/etc/hosts'], [], d)).toBeNull();
+    expect(checkArgv(['test', '-nt', 'docs/a.md'], [], d)).toBeNull();
   });
 
   it('허용 명령 뒤에는 옵션·대입 없는 평범한 인자만 붙일 수 있다', () => {

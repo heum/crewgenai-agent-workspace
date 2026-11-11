@@ -4,7 +4,7 @@
 import { Annotation, Command, END, START, StateGraph, interrupt, isGraphInterrupt } from '@langchain/langgraph';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type {
   AcceptanceResult, Agent, Attempt, AttemptEvent, Billing, GraphNode, LiveEvent, NodeStatus, PlanFields, ReviewRecord, Run, RunDetail, RunNodeState, WorkGraph,
 } from '../../shared/types';
@@ -824,23 +824,22 @@ export class Engine {
     const ex = this.o.executor();
     const run = this.s.getRun(runId);
     const tools = role === 'reviewer' ? (['Read', 'Grep', 'Glob'] as const).slice() : agent.tools.filter((t) => t !== 'WebFetch');
-    // 프로젝트 밖 참고 자료 폴더만 --add-dir로 연다. 프로젝트를 포함하는 상위 폴더는 열지 않는다(상위 전체가 Bash 쓰기 영역이 되므로).
+    // 참고 자료: 프로젝트 밖 '폴더'만 --add-dir로(읽기) 연다. '파일'은 그 파일만 읽기 전용 사본으로 준다(부모 폴더 전체를 열지 않음).
+    // 프로젝트를 포함하는 상위 폴더는 열지 않는다(상위 전체가 Bash 쓰기 영역이 되므로).
     const projReal = realFolder(plan.folder);
-    const readDirs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs].filter((p) => isAbsolute(p) && !within(p, plan.folder))
-      .map((p) => (existsSync(p) && statSync(p).isDirectory() ? p : dirname(p))))]
-      .filter((d) => { const r = realFolder(d); return !(projReal === r || projReal.startsWith(r + '/')); });
-    // 프로젝트 상위 폴더에 있는 참고 파일은 읽기 전용 사본 폴더로 제공한다(상위 폴더 전체를 열지 않음)
-    const ancestorRefs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs])].filter((p) => isAbsolute(p) && !within(p, plan.folder) && existsSync(p)
-      && (() => { const r = realFolder(statSync(p).isDirectory() ? p : dirname(p)); return projReal === r || projReal.startsWith(r + '/'); })());
+    const refs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs])].filter((p) => isAbsolute(p) && !within(p, plan.folder) && existsSync(p));
+    const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
+    const ancestor = (p: string) => { const r = realFolder(p); return projReal === r || projReal.startsWith(r + '/'); };
+    const readDirs = refs.filter((p) => isDir(p) && !ancestor(p));
+    const fileRefs = refs.filter((p) => !isDir(p));
+    const blockedDirs = refs.filter((p) => isDir(p) && ancestor(p));
     const refNotes: string[] = [];
-    if (ancestorRefs.length) {
+    if (fileRefs.length || blockedDirs.length) {
       const refDir = join(tmpdir(), 'crewgenai-refs', sha256(`${runId}:${node.id}:${visit}:${attemptNo}:${role}`).slice(0, 16));
       mkdirSync(refDir, { recursive: true });
-      for (const p of ancestorRefs) {
-        if (statSync(p).isFile()) { const dst = join(refDir, `${sha256(p).slice(0, 8)}-${p.split('/').pop()}`); _copy(p, dst); refNotes.push(`- ${p} → 사본 ${dst}`); }
-        else refNotes.push(`- ${p} → 프로젝트를 포함하는 상위 폴더라 열지 않음(필요한 파일을 직접 참고 자료로 지정)`);
-      }
-      readDirs.push(refDir);
+      for (const p of fileRefs) { const dst = join(refDir, `${sha256(p).slice(0, 8)}-${basename(p)}`); _copy(p, dst); refNotes.push(`- ${p} → 사본 ${dst}`); }
+      for (const p of blockedDirs) refNotes.push(`- ${p} → 프로젝트를 포함하는 상위 폴더라 열지 않음(필요한 파일을 직접 참고 자료로 지정)`);
+      if (fileRefs.length) readDirs.push(refDir);
     }
     if (refNotes.length) prompt = `${prompt}\n\n## 참고 자료 사본(읽기 전용)\n${refNotes.join('\n')}`;
     const sessionId = resumeSession ? null : randomUUID();
