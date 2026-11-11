@@ -98,5 +98,8 @@
       "deleteAppDataOnUninstall": false
     }
   },
-  "author": "CREWGENAI"
+  "author": "CREWGENAI",
+  "overrides": {
+    "minimatch@10": "^11.0.8"
+  }
 }

@@ -104,5 +104,8 @@
       "artifactName": "CREWGENAI-Agent-Workspace-review-20261110-${arch}.${ext}"
     }
   },
-  "author": "CREWGENAI"
+  "author": "CREWGENAI",
+  "overrides": {
+    "minimatch@10": "^11.0.8"
+  }
 }
