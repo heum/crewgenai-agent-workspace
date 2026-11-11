@@ -328,7 +328,8 @@ export class Engine {
       // 앱이 시작한 고아 프로세스만 종료: PID + 기록한 프로세스 시작 시각 + 명령줄 표식이 모두 일치해야 한다(PID 재사용 대비)
       const oIdx = a.argvRedacted.indexOf('-o');
       // Windows: .cmd·이름만 적은 명령은 node.exe 등으로 바뀌어 실행되므로 첫 인자 대신 나머지 인자로 확인한다
-      const marker = a.role === 'check' ? (a.argvRedacted.slice(1).join(' ') || (a.argvRedacted[0] ?? '\u0000').split(/[\\/]/).pop()!.replace(/\.(exe|cmd|bat)$/i, '')) : a.role === 'codex' ? (a.argvRedacted[oIdx + 1] ?? '\u0000') : (a.sessionId ?? '\u0000');
+      // (공백·따옴표가 있는 인자는 Windows 명령줄에서 따옴표로 감싸지므로, 그런 문자가 없는 인자 하나를 표식으로 쓴다)
+      const marker = a.role === 'check' ? (a.argvRedacted.slice(1).find((x) => x && !/[\s"]/.test(x)) || (a.argvRedacted[0] ?? '\u0000').split(/[\\/]/).pop()!.replace(/\.(exe|cmd|bat)$/i, '')) : a.role === 'codex' ? (a.argvRedacted[oIdx + 1] ?? '\u0000') : (a.sessionId ?? '\u0000');
       if (a.pid && a.procStart && await isOurProcess(a.pid, marker, a.procStart)) await killGroupAndWait(a.pid); // 실제로 끝난 뒤에 재개 가능(격리 복사본 오염 방지)
       this.s.saveAttempt({ ...a, status: 'interrupted', error: '앱 종료로 중단됨', finishedAt: now() });
       this.s.updateRunNode(a.runId, a.nodeId, { status: 'needs_resume', failureReason: '앱이 종료될 때 실행 중이었습니다.', nextAction: '재개 방법을 선택하세요: 새 시도 / 세션 이어서 / 산출물만 확인' });

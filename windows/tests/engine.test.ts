@@ -135,7 +135,7 @@ describe('4. 자동 검사와 교차검토', () => {
 
   it('재작업 상한을 넘으면 실패로 끝나고 완료로 표시하지 않는다', async () => {
     const { svc, p } = setup();
-    const { gv } = linear(svc, p.id, { check: ['/usr/bin/false'], maxVisits: 2 });
+    const { gv } = linear(svc, p.id, { check: ['test', '-e', '__no_such_file__'], maxVisits: 2 });
     const run = await svc.startRun(p.id, gv.id);
     const fin = await waitRun(svc, run.id, ['failed', 'succeeded', 'review_wait']);
     expect(fin.status).toBe('failed');

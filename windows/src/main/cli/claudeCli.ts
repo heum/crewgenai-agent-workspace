@@ -28,6 +28,13 @@ export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
   return { ...env, ...extra };
 }
 
+/** Windows 기본 도구는 전체 경로로 실행한다(현재 폴더의 같은 이름 파일이 먼저 실행되지 않게) */
+const SYS32 = join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32');
+export const WHERE_EXE = join(SYS32, 'where.exe');
+const TASKKILL_EXE = join(SYS32, 'taskkill.exe');
+const POWERSHELL_EXE = join(SYS32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const SYS_OPTS = { windowsHide: true, cwd: SYS32 };
+
 /** Windows에서 CLI가 자주 설치되는 폴더(사용자 bin, npm 전역, Node.js) */
 function winExtraPath(): string[] {
   const home = homedir();
@@ -41,11 +48,11 @@ function winExtraPath(): string[] {
  * 그 안에 적힌 Node 스크립트를 찾아 node로 직접 실행한다(인자를 셸에 넘기지 않는다).
  */
 export function launchSpec(file0: string, args: string[]): { file: string; args: string[]; env?: Record<string, string> } {
-  // 확장자 없이 이름만 적은 명령(npm 등)은 PATH에서 .exe → .cmd/.bat 순으로 찾는다
+  // 경로 없이 이름만 적은 명령(npm, npm.cmd 등)은 PATH에서 찾는다: 확장자가 없으면 .exe → .cmd/.bat 순
   let file = file0;
-  if (!extname(file0) && !/[\\/]/.test(file0)) {
+  if (!/[\\/]/.test(file0)) {
     const all = whereAll(file0);
-    file = all.find((p) => /\.exe$/i.test(p)) ?? all.find((p) => /\.(cmd|bat)$/i.test(p)) ?? file0;
+    file = extname(file0) ? (all[0] ?? file0) : (all.find((p) => /\.exe$/i.test(p)) ?? all.find((p) => /\.(cmd|bat)$/i.test(p)) ?? file0);
   }
   const ext = extname(file).toLowerCase();
   if (ext !== '.cmd' && ext !== '.bat') return { file, args };
@@ -53,8 +60,10 @@ export function launchSpec(file0: string, args: string[]): { file: string; args:
   try {
     const body = readFileSync(file, 'utf8');
     // npm 실행 파일 형식: "%dp0%\…\cli.js" 또는 SET "X=%~dp0\node_modules\npm\bin\npm-cli.js"
-    const m = /%~?dp0%?\\?([^"%\r\n]+?\.(?:c?js|mjs))/i.exec(body);
-    if (m) script = join(dirname(file), ...m[1].split(/[\\/]/).filter(Boolean));
+    // 실제 npm.cmd에는 보조 스크립트(npm-prefix.js)가 먼저 나오므로, *-cli.js·cli.js를 우선하고 없으면 마지막 스크립트를 쓴다
+    const refs = [...body.matchAll(/%~?dp0%?\\?([^"%\r\n]+?\.(?:c?js|mjs))/gi)].map((x) => x[1]);
+    const pick = refs.find((r) => /(^|[\\/-])cli\.(c?js|mjs)$/i.test(r)) ?? refs[refs.length - 1];
+    if (pick) script = join(dirname(file), ...pick.split(/[\\/]/).filter(Boolean));
   } catch { /* 읽지 못함 */ }
   if (!script || !existsSync(script)) throw new Error(`실행 파일(${file})을 해석하지 못했습니다. 설정에서 .exe 실행 파일을 직접 지정하세요.`);
   const nodeExe = [join(dirname(file), 'node.exe'), whereFirst('node')].find((p) => !!p && existsSync(p));
@@ -62,7 +71,7 @@ export function launchSpec(file0: string, args: string[]): { file: string; args:
   return nodeExe ? { file: nodeExe, args: [script, ...args] } : { file: process.execPath, args: [script, ...args], env: { ELECTRON_RUN_AS_NODE: '1' } };
 }
 function whereAll(name: string): string[] {
-  try { return execFileSync('where.exe', [name], { encoding: 'utf8', windowsHide: true, timeout: 5000, env: cleanEnv() }).split(/\r?\n/).map((x) => x.trim()).filter(Boolean); } catch { return []; }
+  try { return execFileSync(WHERE_EXE, [name], { ...SYS_OPTS, encoding: 'utf8', timeout: 5000, env: cleanEnv() }).split(/\r?\n/).map((x) => x.trim()).filter(Boolean); } catch { return []; }
 }
 function whereFirst(name: string): string | null {
   return whereAll(name).find((p) => /\.exe$/i.test(p)) ?? null;
@@ -92,7 +101,7 @@ export async function findCandidates(settingPath: string | null): Promise<{ path
   const add = (p: string | null | undefined, source: string) => { if (p && existsSync(p) && !out.some((o) => o.path === p)) out.push({ path: p, source }); };
   add(settingPath, '사용자 지정');
   try {
-    const w = execFileSync('where.exe', ['claude'], { encoding: 'utf8', windowsHide: true, timeout: 8000, env: cleanEnv() });
+    const w = execFileSync(WHERE_EXE, ['claude'], { ...SYS_OPTS, encoding: 'utf8', timeout: 8000, env: cleanEnv() });
     // .exe를 먼저, 그다음 .cmd(npm 전역 설치)
     const found = w.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).sort((x, y) => Number(/\.exe$/i.test(y)) - Number(/\.exe$/i.test(x)));
     for (const p of found) if (/\.(exe|cmd|bat)$/i.test(p)) add(p, 'PATH');
@@ -321,7 +330,8 @@ export function startProcess(file: string, args: string[], opts: { cwd: string; 
   const child = spawn(spec.file, spec.args, { cwd: opts.cwd, env: spec.env ? { ...opts.env, ...spec.env } : opts.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let timedOut = false, cancelled = false;
   // 창 없는 프로세스는 정상 종료 요청을 받지 못하므로 바로 강제 종료한다: 직접 자식은 즉시 종료하고, 하위 프로세스는 taskkill /T /F
-  const terminate = () => { try { child.kill(); } catch { /* 이미 종료 */ } if (child.pid) killTree(child.pid, true); };
+  // 하위 프로세스를 먼저 찾아 끝낸 뒤(동기) 직접 자식을 끝낸다 — 부모가 먼저 끝나면 하위 목록을 찾지 못한다
+  const terminate = () => { if (child.pid) killTree(child.pid, true); try { child.kill(); } catch { /* 이미 종료 */ } };
   const timer = setTimeout(() => { timedOut = true; terminate(); }, Math.max(1, opts.timeoutSec) * 1000);
   const lines = (stream: NodeJS.ReadableStream, cb: (l: string) => void) => {
     let buf = '';
@@ -342,15 +352,16 @@ export function startProcess(file: string, args: string[], opts: { cwd: string; 
 
 /** taskkill로 프로세스 트리를 종료한다(force=false면 정상 종료 요청, true면 강제 종료). */
 function killTree(pid: number, force: boolean) {
-  try { execFile('taskkill.exe', ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])], { windowsHide: true, timeout: 10000 }, () => { /* 결과 무시 */ }); } catch { /* 없음 */ }
+  // 끝날 때까지 기다린다(동기). 이미 끝난 프로세스면 오류 코드로 끝나므로 무시한다
+  try { execFileSync(TASKKILL_EXE, ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])], { ...SYS_OPTS, stdio: 'ignore', timeout: 10000 }); } catch { /* 없음·이미 종료 */ }
 }
 /** PowerShell(CIM)로 프로세스의 시작 시각·명령줄을 읽는다. */
 async function procInfo(pid: number): Promise<{ start: string; command: string } | null> {
   if (!pid || pid < 0) return null;
   const r = await new Promise<{ code: number; out: string }>((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    execFile(POWERSHELL_EXE, ['-NoProfile', '-NonInteractive', '-Command',
       `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${Math.floor(pid)}"; if ($p) { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $p.CreationDate.ToUniversalTime().ToString('o'); $p.CommandLine }`],
-      { windowsHide: true, timeout: 10000 }, (e, stdout) => resolve({ code: e ? 1 : 0, out: String(stdout) }));
+      { ...SYS_OPTS, timeout: 10000 }, (e, stdout) => resolve({ code: e ? 1 : 0, out: String(stdout) }));
   });
   const lines = r.out.split(/\r?\n/);
   const start = (lines[0] ?? '').trim();
@@ -366,8 +377,8 @@ export async function isOurProcess(pid: number, marker: string, startedAt: strin
   return !!info && info.start === startedAt && info.command.includes(marker);
 }
 export function killGroup(pid: number) {
-  try { process.kill(pid); } catch { /* 없음 */ }
   killTree(pid, true);
+  try { process.kill(pid); } catch { /* 없음 */ }
 }
 /** 프로세스 트리를 강제 종료하고 실제로 끝날 때까지 기다린다(최대 timeoutMs). */
 export async function killGroupAndWait(pid: number, timeoutMs = 6000): Promise<boolean> {

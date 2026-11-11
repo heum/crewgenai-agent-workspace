@@ -22,17 +22,33 @@ function test(args) {
   else { process.stderr.write(`test: 지원하지 않는 옵션 ${op}\n`); return 2; }
   return (neg ? !ok : ok) ? 0 : 1;
 }
-/** 기본 정규식(BRE)을 JavaScript 정규식으로: | + ? ( ) { }는 글자 그대로, \| \+ \? \( \) \{ \}는 특수 기호(GNU grep과 같은 뜻) */
+/**
+ * 기본 정규식(BRE)을 JavaScript 정규식으로 바꾼다(GNU grep과 같은 뜻).
+ * - | + ? ( ) { }는 글자 그대로, \| \+ \? \( \) \{ \}는 특수 기호
+ * - ^는 맨 앞(또는 \( 바로 뒤)에서만, $는 맨 끝(또는 \) 바로 앞)에서만 특수 기호, 그 밖에서는 글자 그대로
+ * - *는 맨 앞(또는 ^·\( 바로 뒤)에서는 글자 그대로
+ * - 역참조(\1~\9)는 JavaScript와 뜻이 달라(빈 그룹을 빈 문자열로 봄) 지원하지 않는다 → 오류
+ */
 function breToJs(p) {
   let out = '';
+  let atStart = true; // 그룹이나 패턴의 맨 앞인지(^·* 해석용)
+  let inBracket = false;
   for (let i = 0; i < p.length; i++) {
     const c = p[i];
+    if (inBracket) { out += c === '\\' ? '\\\\' : c; if (c === ']' && !/\[\^?$/.test(out.slice(0, -1).slice(-2))) inBracket = false; continue; }
+    if (c === '[') { inBracket = true; out += c; if (p[i + 1] === '^') { out += '^'; i++; } if (p[i + 1] === ']') { out += '\\]'; i++; } atStart = false; continue; }
     if (c === '\\' && i + 1 < p.length) {
       const n = p[++i];
-      if ('|+?(){}'.includes(n)) out += n;
-      else out += '\\' + n;
-    } else if ('|+?(){}'.includes(c)) out += '\\' + c;
-    else out += c;
+      if (/[1-9]/.test(n)) throw new Error('역참조(\\1~\\9)는 지원하지 않습니다');
+      if (n === '(') { out += '('; atStart = true; continue; }
+      if ('|+?){}'.includes(n)) { out += n; atStart = n === '|'; continue; }
+      out += '\\' + n; atStart = false; continue;
+    }
+    if (c === '^') { out += atStart ? '^' : '\\^'; continue; }
+    if (c === '$') { const end = i === p.length - 1 || p.slice(i + 1, i + 3) === '\\)' || p.slice(i + 1, i + 3) === '\\|'; out += end ? '$' : '\\$'; atStart = false; continue; }
+    if (c === '*' && atStart) { out += '\\*'; atStart = false; continue; }
+    if ('|+?(){}'.includes(c)) { out += '\\' + c; atStart = false; continue; }
+    out += c; atStart = false;
   }
   return out;
 }

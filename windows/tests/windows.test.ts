@@ -32,7 +32,9 @@ describe('.cmd 실행 파일 해석', () => {
     const d = mkdtempSync(join(tmpdir(), 'shim '));
     mkdirSync(join(d, 'node_modules', 'npm', 'bin'), { recursive: true });
     writeFileSync(join(d, 'node_modules', 'npm', 'bin', 'npm-cli.js'), '');
-    writeFileSync(join(d, 'npm.cmd'), ':: npm\r\n@ECHO OFF\r\nSET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"\r\n"%NODE_EXE%" "%NPM_CLI_JS%" %*\r\n');
+    writeFileSync(join(d, 'node_modules', 'npm', 'bin', 'npm-prefix.js'), '');
+    // 실제 npm.cmd처럼 보조 스크립트(npm-prefix.js)가 먼저 나와도 npm-cli.js를 고른다
+    writeFileSync(join(d, 'npm.cmd'), ':: npm\r\n@ECHO OFF\r\nSET "NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js"\r\nSET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"\r\n"%NODE_EXE%" "%NPM_CLI_JS%" %*\r\n');
     const a = launchSpec(join(d, 'npm.cmd'), ['test']);
     expect(a.args).toEqual([join(d, 'node_modules', 'npm', 'bin', 'npm-cli.js'), 'test']);
     mkdirSync(join(d, 'node_modules', 'tool'), { recursive: true });
@@ -67,5 +69,10 @@ describe('내장 검사', () => {
     expect(check(['grep', 'pass', r, join(d, 'none')])).toBe(2); // 읽지 못한 파일이 있으면 오류
     expect(check(['grep', '-q', 'pass', r, join(d, 'none')])).toBe(0); // -q이고 일치가 있으면 성공
     expect(check(['grep', '-q', 'zzz', r])).toBe(1);
+    writeFileSync(join(d, 'l.txt'), 'a^b\nx$y\n*star\n');
+    expect(check(['grep', '-q', 'a^b', join(d, 'l.txt')])).toBe(0); // 중간의 ^·$는 글자 그대로
+    expect(check(['grep', '-q', 'x$y', join(d, 'l.txt')])).toBe(0);
+    expect(check(['grep', '-q', '*star', join(d, 'l.txt')])).toBe(0); // 맨 앞의 *는 글자 그대로
+    expect(check(['grep', '-q', '^\\(a\\)*b\\1$', r])).toBe(2); // 역참조는 뜻이 달라 지원하지 않음(통과로 처리하지 않음)
   });
 });

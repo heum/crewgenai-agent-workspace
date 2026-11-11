@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import type { CodexStatus } from '../../shared/types';
-import { cleanEnv, launchSpec } from './claudeCli';
+import { cleanEnv, launchSpec, WHERE_EXE } from './claudeCli';
 
 function run(file0: string, args0: string[], timeoutMs = 15000): Promise<{ code: number; out: string }> {
   let spec: ReturnType<typeof launchSpec>;
@@ -28,7 +28,7 @@ export function codexEnv(codexPath: string, extra: Record<string, string> = {}):
 export async function findCodex(setting: string | null): Promise<string | null> {
   const cands: (string | null)[] = [setting];
   try {
-    const w = execFileSync('where.exe', ['codex'], { encoding: 'utf8', windowsHide: true, timeout: 8000, env: cleanEnv() });
+    const w = execFileSync(WHERE_EXE, ['codex'], { encoding: 'utf8', windowsHide: true, cwd: dirname(WHERE_EXE), timeout: 8000, env: cleanEnv() });
     const found = w.split(/\r?\n/).map((x) => x.trim()).filter((x) => /\.(exe|cmd|bat)$/i.test(x)).sort((x, y) => Number(/\.exe$/i.test(y)) - Number(/\.exe$/i.test(x)));
     cands.push(...found);
   } catch { /* PATH에 없음 */ }
