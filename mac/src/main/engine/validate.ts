@@ -103,8 +103,8 @@ export function validateGraph(g: WorkGraph, agents: Agent[], plan: PlanFields): 
     if (n.kind === 'agent' || n.kind === 'review') {
       const a = n.agentId ? agentById.get(n.agentId) : undefined;
       if (!n.agentId) err('no_agent', `"${n.label}"에 담당 직원이 지정되지 않았습니다.`, n.id);
-      else if (!a) err('missing_agent', `"${n.label}"의 담당 직원이 존재하지 않습니다.`, n.id);
-      else if (!a.active) err('inactive_agent', `"${n.label}"의 담당 "${a.name}"이(가) 비활성 상태입니다.`, n.id);
+      else if (!a) err('missing_agent', `"${n.label}"의 담당 직원이 없습니다(해고했거나 지워짐).`, n.id);
+      else if (!a.active) err('inactive_agent', `"${n.label}"의 담당 "${a.name}"이(가) 휴가 중입니다.`, n.id);
       if (!n.instructions.trim() && !(a?.instructions.trim())) err('no_instructions', `"${n.label}"의 작업 지시가 비어 있습니다.`, n.id);
       if (ins.length === 0 && !n.inputs.length) warn('no_input', `"${n.label}"의 입력이 없습니다.`, n.id);
     }
@@ -115,7 +115,7 @@ export function validateGraph(g: WorkGraph, agents: Agent[], plan: PlanFields): 
       if (revId) {
         const r = agentById.get(revId);
         if (!r) err('missing_reviewer', `"${n.label}"의 검토 담당이 존재하지 않습니다.`, n.id);
-        else if (!r.active) err('inactive_reviewer', `"${n.label}"의 검토 담당 "${r.name}"이(가) 비활성 상태입니다.`, n.id);
+        else if (!r.active) err('inactive_reviewer', `"${n.label}"의 검토 담당 "${r.name}"이(가) 휴가 중입니다.`, n.id);
         else if (r.id === n.agentId) err('self_review', `"${n.label}"의 작성자와 검토자가 같습니다. 독립 검토가 아닙니다.`, n.id);
       }
       if (!revId && !outE(n.id).some((e) => e.kind === 'next' && ['review', 'codexReview'].includes(byId.get(e.target)?.kind ?? '')))

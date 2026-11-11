@@ -69,7 +69,7 @@ export default function AgentsTab({ project }: { project: Project }) {
       <section className="panel list-panel">
         <div className="row gap wrap">
           <Badge tone="info">등록 {list.length}명</Badge>
-          <Badge tone="ok">활성 {activeCount}명</Badge>
+          <Badge tone="ok">근무 {activeCount}명</Badge>
           <Badge tone={working.length ? 'info' : 'neutral'}>작업 중 {new Set(working.filter((w) => w.agentId).map((w) => w.agentId)).size}명</Badge>
           <span className="muted small">동시 실행 수는 설정에서 따로 정합니다.</span>
         </div>
@@ -82,7 +82,7 @@ export default function AgentsTab({ project }: { project: Project }) {
             기본 템플릿 불러오기…
           </button>
           <label className="check small">
-            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> 비활성 표시
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> 휴가 중인 직원 표시
           </label>
         </div>
         {agents.loading && !agents.data && <Loading />}
@@ -95,15 +95,13 @@ export default function AgentsTab({ project }: { project: Project }) {
             <button key={a.id} className={`agent-item ${selected === a.id ? 'active' : ''} ${a.active ? '' : 'inactive'}`} onClick={() => setSelected(a.id)}>
               <span className="agent-code">{a.code || '··'}</span>
               <span className="grow">
-                <strong>{a.name || '(이름 없음)'}</strong>
-                <small className="ellipsis" title={a.role}>{a.role}</small>
-                <span className="tool-row">
-                  {a.tools.map((t) => (
-                    <span key={t} className="tool-tag">
-                      {t}
-                    </span>
-                  ))}
+                <span className="agent-item-head">
+                  <strong>{a.name || '(이름 없음)'}</strong>
+                  <span className="tool-line" title={a.tools.join(', ')}>
+                    {a.tools.includes('Edit') || a.tools.includes('Write') ? '수정 가능' : '읽기 전용'}{a.tools.includes('Bash') ? ' · 명령 실행' : ''}
+                  </span>
                 </span>
+                <small className="ellipsis" title={a.role}>{a.role}</small>
               </span>
               {busy(a.id).length > 0 && (
                 <span className="agent-busy" title={busy(a.id).map((w) => w.task).join(', ')}>
@@ -111,7 +109,7 @@ export default function AgentsTab({ project }: { project: Project }) {
                   {busy(a.id)[0].kind === 'reviewer' ? '검토 중' : busy(a.id)[0].kind === 'operator' ? '판단 중' : '작업 중'}
                 </span>
               )}
-              {!a.active && <Badge tone="warn">비활성</Badge>}
+              {!a.active && <Badge tone="warn">휴가</Badge>}
             </button>
           ))}
         </div>
@@ -137,6 +135,10 @@ export default function AgentsTab({ project }: { project: Project }) {
             onSaved={async (a) => {
               await agents.reload();
               setSelected(a.id);
+            }}
+            onFired={async () => {
+              setSelected(null);
+              await agents.reload();
             }}
           />
         ) : (
@@ -165,7 +167,7 @@ function TemplateSetPicker({ existing, onClose, onPick }: { existing: Agent[]; o
   const sets = useLoad(() => ws().agentTemplateSets(), []);
   return (
     <Modal title="기본 템플릿 불러오기" onClose={onClose} wide>
-      <p className="muted small">팀 구성을 하나 고르세요. 불러온 직원은 이름·업무지시·도구를 자유롭게 고치거나 비활성화할 수 있습니다.</p>
+      <p className="muted small">팀 구성을 하나 고르세요. 불러온 직원은 이름·업무지시·도구를 고치거나, 휴가 보내거나, 해고할 수 있습니다.</p>
       {sets.loading && <Loading />}
       {sets.error && <Banner>{sets.error}</Banner>}
       <div className="template-set-list">
@@ -197,7 +199,7 @@ function TemplateSetPicker({ existing, onClose, onPick }: { existing: Agent[]; o
   );
 }
 
-function AgentForm({ project, agents, agent, onSaved }: { project: Project; agents: Agent[]; agent: Agent | null; onSaved: (a: Agent) => void }) {
+function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Project; agents: Agent[]; agent: Agent | null; onSaved: (a: Agent) => void; onFired?: () => void }) {
   const [f, setF] = useState<AgentFields>(agent ? toFields(agent) : { ...BLANK });
   const act = useAction();
   const [msg, setMsg] = useState<string | null>(null);
@@ -221,6 +223,8 @@ function AgentForm({ project, agents, agent, onSaved }: { project: Project; agen
       {act.error && <Banner>{act.error}</Banner>}
       {msg && <Banner kind="ok">{msg}</Banner>}
       {readOnlyWarn && <Banner kind="warn">수정 도구를 허용했지만 작업 폴더와 기획의 자동 수정 허용 경로가 모두 비어 있어 실제로는 파일을 수정할 수 없습니다.</Banner>}
+      <div className="agent-form-cols">
+      <div className="agent-form-left">
       <div className="form-grid two">
         <Field label="번호">
           <input className="input" value={f.code} onChange={(e) => set('code', e.target.value)} placeholder="예: 06" />
@@ -233,8 +237,10 @@ function AgentForm({ project, agents, agent, onSaved }: { project: Project; agen
         <input className="input" value={f.role} onChange={(e) => set('role', e.target.value)} />
       </Field>
       <Field label="업무 지시">
-        <textarea className="input" rows={5} value={f.instructions} onChange={(e) => set('instructions', e.target.value)} />
+        <textarea className="input agent-instructions" rows={5} value={f.instructions} onChange={(e) => set('instructions', e.target.value)} />
       </Field>
+      </div>
+      <div className="agent-form-right">
       <Field label="참조 자료">
         <PathList items={f.references} onChange={(v) => set('references', v)} onPick={() => ws().pickFiles()} pickLabel="파일 선택…" />
       </Field>
@@ -279,7 +285,7 @@ function AgentForm({ project, agents, agent, onSaved }: { project: Project; agen
             .map((a) => (
               <option key={a.id} value={a.id} disabled={!a.active}>
                 {a.code} {a.name}
-                {a.active ? '' : ' (비활성)'}
+                {a.active ? '' : ' (휴가)'}
               </option>
             ))}
         </select>
@@ -299,8 +305,10 @@ function AgentForm({ project, agents, agent, onSaved }: { project: Project; agen
         </Field>
       </div>
       <label className="check">
-        <input type="checkbox" checked={f.active} onChange={(e) => set('active', e.target.checked)} /> 활성(업무 배정 가능)
+        <input type="checkbox" checked={f.active} onChange={(e) => set('active', e.target.checked)} /> 근무 중(업무 배정 가능) — 끄면 휴가
       </label>
+      </div>
+      </div>
       <div className="row gap end sticky-bottom">
         {agent && (
           <>
@@ -326,7 +334,22 @@ function AgentForm({ project, agents, agent, onSaved }: { project: Project; agen
                 })
               }
             >
-              {agent.active ? '비활성화' : '활성화'}
+              {agent.active ? '휴가 보내기' : '휴가에서 복귀'}
+            </button>
+            <button
+              className="btn btn-danger"
+              disabled={act.busy}
+              title="팀에서 내보냅니다. 지난 실행 기록은 남습니다."
+              onClick={() =>
+                act.run(async () => {
+                  if (!confirm(`${agent.code} ${agent.name}을(를) 해고할까요?\n\n- 직원 목록과 업무 배정에서 빠집니다. 되돌릴 수 없습니다.\n- 지난 실행·검토 기록은 그대로 남습니다.\n- 이 직원을 검토 담당으로 둔 직원은 검토 담당이 비워집니다.\n- 잠시 쉬게 하려면 해고 대신 휴가 보내기를 쓰세요.`)) return;
+                  const r = await ws().fireAgent(agent.id);
+                  if (r.cleared.length) alert(`검토 담당이 비워진 직원: ${r.cleared.join(', ')}\n직원 탭에서 새 검토 담당을 정하세요.`);
+                  onFired?.();
+                })
+              }
+            >
+              해고(삭제)
             </button>
           </>
         )}

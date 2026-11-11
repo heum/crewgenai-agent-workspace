@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, plan TEXT NOT NULL, plan_version INTEGER NOT NULL, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS plan_versions (project_id TEXT, version INTEGER, plan TEXT, changed TEXT, created_at TEXT, PRIMARY KEY(project_id, version));
 CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, project_id TEXT, version INTEGER, fields TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS agent_fired (agent_id TEXT PRIMARY KEY, fired_at TEXT);
 CREATE TABLE IF NOT EXISTS agent_versions (agent_id TEXT, version INTEGER, fields TEXT, created_at TEXT, PRIMARY KEY(agent_id, version));
 CREATE TABLE IF NOT EXISTS graph_versions (id TEXT PRIMARY KEY, project_id TEXT, version INTEGER, graph TEXT, hash TEXT, note TEXT, created_at TEXT, UNIQUE(project_id, version));
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, project_id TEXT, graph_version_id TEXT, graph_version INTEGER, plan_version INTEGER, status TEXT, executor TEXT, parent_run_id TEXT, start_node_id TEXT, reason TEXT, plan_snapshot TEXT, agents_snapshot TEXT, seed TEXT, created_at TEXT, updated_at TEXT, finished_at TEXT);
@@ -101,9 +102,27 @@ export class Store {
   private toAgent(r: Row): Agent {
     return { ...(j<AgentFields>(r.fields)), id: String(r.id), projectId: String(r.project_id), version: Number(r.version), updatedAt: String(r.updated_at) };
   }
-  listAgents(projectId: string): Agent[] {
-    return (this.db.prepare('SELECT * FROM agents WHERE project_id=?').all(projectId) as Row[]).map((r) => this.toAgent(r))
+  /** 프로젝트 직원 목록. 해고한 직원은 빼고, includeFired면 기록 표시용으로 fired 표시와 함께 넣는다. */
+  listAgents(projectId: string, includeFired = false): Agent[] {
+    const rows = this.db.prepare('SELECT a.*, f.fired_at FROM agents a LEFT JOIN agent_fired f ON f.agent_id = a.id WHERE a.project_id=?').all(projectId) as Row[];
+    return rows.filter((r) => includeFired || !r.fired_at).map((r) => (r.fired_at ? { ...this.toAgent(r), fired: true } : this.toAgent(r)))
       .sort((a, b) => a.code.localeCompare(b.code, 'ko') || a.name.localeCompare(b.name, 'ko'));
+  }
+  isFired(id: string): boolean { return !!this.db.prepare('SELECT 1 FROM agent_fired WHERE agent_id=?').get(id); }
+  /** 해고: 목록·배정·실행에서 빼되 기록(시도·검토·실행 당시 직원 정보)은 남긴다. 다른 직원의 검토 담당 지정은 비운다. */
+  fireAgent(id: string): string[] {
+    const a = this.getAgent(id);
+    const cleared: string[] = [];
+    this.tx(() => {
+      this.db.prepare('INSERT OR REPLACE INTO agent_fired VALUES(?,?)').run(id, now());
+      for (const o of this.listAgents(a.projectId)) {
+        if (o.reviewerAgentId !== id) continue;
+        const { id: oid, projectId, version: _v, updatedAt: _u, fired: _f, ...fields } = o;
+        this.saveAgent(projectId, oid, { ...fields, reviewerAgentId: null });
+        cleared.push(`${o.code} ${o.name}`);
+      }
+    });
+    return cleared;
   }
   getAgent(id: string): Agent {
     const r = this.db.prepare('SELECT * FROM agents WHERE id=?').get(id) as Row | undefined;

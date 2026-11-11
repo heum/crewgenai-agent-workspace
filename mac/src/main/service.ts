@@ -189,6 +189,14 @@ export class Service {
     const { id: _i, projectId, version: _v, updatedAt: _u, ...fields } = a;
     return this.store.saveAgent(projectId, agentId, { ...fields, active });
   }
+  /** 해고: 지금 일하는 직원과, 작동 중인 미션의 오퍼레이터(00)는 해고하지 않는다. 기록은 남기고 목록·배정에서만 뺀다. */
+  fireAgent(agentId: string): { cleared: string[] } {
+    const a = this.store.getAgent(agentId);
+    if (this.store.isFired(agentId)) throw new Error('이미 해고한 직원입니다.');
+    if (this.missions.working(a.projectId).some((w) => w.agentId === agentId)) throw new Error(`${a.code} ${a.name}은(는) 지금 일하는 중입니다. 작업이 끝나거나 미션을 중단한 뒤 해고하세요.`);
+    if (a.code === '00' && this.missions.list(a.projectId).some((m) => ['planning', 'running', 'evaluating'].includes(m.status))) throw new Error('작동 중인 미션의 오퍼레이터(00 총괄)는 해고할 수 없습니다. 미션을 먼저 중단하세요.');
+    return { cleared: this.store.fireAgent(agentId) };
+  }
   agentTemplateSets() {
     return Object.values(TEMPLATE_SETS).map((t) => ({ id: t.id, label: t.label, description: t.description, agents: t.agents.map((a) => ({ code: a.code, name: a.name, role: a.role })) }));
   }

@@ -216,9 +216,11 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
       setSaved(true);
     });
   return (
-    <Modal title="설정" onClose={onClose}>
+    <Modal title="설정" onClose={onClose} wide>
       {act.error && <Banner>{act.error}</Banner>}
       {saved && <Banner kind="ok">저장했습니다.</Banner>}
+      <div className="settings-cols">
+        <div>
       <h3>실행 엔진</h3>
       <div className="radio-row">
         <label>
@@ -236,6 +238,32 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
       <Field label="동시 실행 한도" hint="등록된 직원 수와 별개입니다. 이 수를 넘는 작업은 대기열에서 차례로 실행됩니다.">
         <NumberInput value={s.maxConcurrent} min={1} onChange={(v) => setS({ ...s, maxConcurrent: Math.max(1, v ?? 1) })} />
       </Field>
+      <h3>git 커밋·스냅샷</h3>
+      <label className="check">
+        <input type="checkbox" checked={!!s.gitCommits} onChange={(e) => setS({ ...s, gitCommits: e.target.checked })} /> 직원별 git 커밋·미션 스냅샷 사용 (권장)
+      </label>
+      <p className="muted small">직원이 바꾼 파일만 그 직원 이름으로 커밋합니다. push는 하지 않습니다. 미션 시작과 사이클마다 스냅샷을 남깁니다(저장소 하나면 git 태그, 여러 저장소면 앱 기록).</p>
+      <h3>LangSmith 추적(선택)</h3>
+      <p className="muted small">연결하지 않아도 로컬 실행·기록·검토는 모두 사용할 수 있습니다. 전송 시 비밀값·원문은 제거합니다.</p>
+      <label className="check">
+        <input type="checkbox" checked={s.langsmithEnabled} onChange={(e) => setS({ ...s, langsmithEnabled: e.target.checked })} /> LangSmith로 실행 추적 보내기
+      </label>
+      <Field label="프로젝트 이름">
+        <input className="input" value={s.langsmithProject} onChange={(e) => setS({ ...s, langsmithProject: e.target.value })} />
+      </Field>
+      <Field label="엔드포인트">
+        <input className="input mono" value={s.langsmithEndpoint} onChange={(e) => setS({ ...s, langsmithEndpoint: e.target.value })} />
+      </Field>
+      <Field label="API 키" hint={s.langsmithKeySet ? '키가 저장돼 있습니다(값은 표시하지 않음). 새로 입력하면 교체됩니다.' : '저장된 키 없음'}>
+        <input className="input" type="password" autoComplete="off" value={key} placeholder={s.langsmithKeySet ? '••••••••(저장됨)' : ''} onChange={(e) => setKey(e.target.value)} />
+      </Field>
+      {s.langsmithKeySet && (
+        <label className="check">
+          <input type="checkbox" checked={clearKey} onChange={(e) => setClearKey(e.target.checked)} /> 저장된 키 삭제
+        </label>
+      )}
+        </div>
+        <div>
       <h3>Codex 리뷰</h3>
       <p className="muted small">운영(오퍼레이터 루프)과 “Codex 리뷰” 단계는 설치된 Codex CLI를 읽기 전용으로 실행해 결과를 검토합니다.</p>
       {codex ? (
@@ -275,30 +303,8 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
       <Field label="오퍼레이터 루프 최대 사이클" hint="이 수만큼 반복하면 계속할지 사용자에게 묻습니다(1–50).">
         <NumberInput value={s.missionMaxCycles ?? 5} min={1} onChange={(v) => setS({ ...s, missionMaxCycles: Math.min(50, Math.max(1, v ?? 1)) })} />
       </Field>
-      <h3>git 커밋·스냅샷</h3>
-      <label className="check">
-        <input type="checkbox" checked={!!s.gitCommits} onChange={(e) => setS({ ...s, gitCommits: e.target.checked })} /> 직원별 git 커밋·미션 스냅샷 사용 (권장)
-      </label>
-      <p className="muted small">직원이 바꾼 파일만 그 직원 이름으로 커밋합니다. push는 하지 않습니다. 미션 시작과 사이클마다 git 태그 스냅샷을 남깁니다.</p>
-      <h3>LangSmith 추적(선택)</h3>
-      <p className="muted small">연결하지 않아도 로컬 실행·기록·검토는 모두 사용할 수 있습니다. 전송 시 비밀값·원문은 제거합니다.</p>
-      <label className="check">
-        <input type="checkbox" checked={s.langsmithEnabled} onChange={(e) => setS({ ...s, langsmithEnabled: e.target.checked })} /> LangSmith로 실행 추적 보내기
-      </label>
-      <Field label="프로젝트 이름">
-        <input className="input" value={s.langsmithProject} onChange={(e) => setS({ ...s, langsmithProject: e.target.value })} />
-      </Field>
-      <Field label="엔드포인트">
-        <input className="input mono" value={s.langsmithEndpoint} onChange={(e) => setS({ ...s, langsmithEndpoint: e.target.value })} />
-      </Field>
-      <Field label="API 키" hint={s.langsmithKeySet ? '키가 저장돼 있습니다(값은 표시하지 않음). 새로 입력하면 교체됩니다.' : '저장된 키 없음'}>
-        <input className="input" type="password" autoComplete="off" value={key} placeholder={s.langsmithKeySet ? '••••••••(저장됨)' : ''} onChange={(e) => setKey(e.target.value)} />
-      </Field>
-      {s.langsmithKeySet && (
-        <label className="check">
-          <input type="checkbox" checked={clearKey} onChange={(e) => setClearKey(e.target.checked)} /> 저장된 키 삭제
-        </label>
-      )}
+        </div>
+      </div>
       <div className="row gap end">
         <button className="btn btn-primary" disabled={act.busy} onClick={save}>
           {act.busy ? '저장 중…' : '저장'}

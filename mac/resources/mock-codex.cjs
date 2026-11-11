@@ -18,7 +18,12 @@ process.stdin.on('end', () => {
     if (fs.readFileSync(p, 'utf8').includes('TODO')) findings.push({ severity: 'P1', file: t, issue: 'TODO가 남아 있습니다.', fix: 'TODO를 실제 내용으로 바꾸세요.' });
   }
   const res = { verdict: findings.length ? 'changes_requested' : 'approve', summary: findings.length ? '수정 필요' : '문제 없음', findings };
-  process.stdout.write('codex(모의) 리뷰 완료\n');
-  fs.writeFileSync(opt('-o'), JSON.stringify(res));
-  process.exit(0);
+  // 화면 시험용: 임시 폴더에 crewgenai-mock-slow-codex 파일이 있으면 그 안의 밀리초만큼 늦게 끝난다
+  const slow = path.join(require('node:os').tmpdir(), 'crewgenai-mock-slow-codex');
+  const wait = fs.existsSync(slow) ? Number(fs.readFileSync(slow, 'utf8')) || 0 : 0;
+  setTimeout(() => {
+    process.stdout.write('codex(모의) 리뷰 완료\n');
+    fs.writeFileSync(opt('-o'), JSON.stringify(res));
+    process.exit(0);
+  }, wait);
 });

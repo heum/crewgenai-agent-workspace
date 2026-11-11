@@ -60,6 +60,7 @@ export interface Agent extends AgentFields {
   projectId: ID;
   version: number;
   updatedAt: string;
+  fired?: boolean; // 해고한 직원(기록 표시용 목록에서만 나온다)
 }
 
 // ───────── 업무 그래프 ─────────
@@ -361,12 +362,13 @@ export interface WorkspaceApi {
   previewFile(path: string): Promise<void>; // 격리 창 미리보기
   readTextFile(path: string): Promise<string>;
   // 직원
-  listAgents(projectId: ID): Promise<Agent[]>;
+  listAgents(projectId: ID, includeFired?: boolean): Promise<Agent[]>;
   saveAgent(projectId: ID, agentId: ID | null, fields: AgentFields): Promise<Agent>;
   duplicateAgent(agentId: ID): Promise<Agent>;
   setAgentActive(agentId: ID, active: boolean): Promise<Agent>;
   loadAgentTemplates(projectId: ID, setId?: AgentTemplateSetId): Promise<Agent[]>;
   agentTemplateSets(): Promise<AgentTemplateSetInfo[]>;
+  fireAgent(agentId: ID): Promise<{ cleared: string[] }>;
   // 그래프
   latestGraph(projectId: ID): Promise<GraphVersion | null>;
   listGraphVersions(projectId: ID): Promise<GraphVersion[]>;
@@ -514,6 +516,8 @@ export interface WorkingItem {
   runId: ID | null;
   missionId: ID | null;
   since: string; // 시작 시각(ISO)
+  reviewOf?: ID | null; // 검토·Codex 리뷰·검사일 때 그 대상 작업을 한 직원(리뷰 받는 직원)
+  mode?: 'code' | 'doc'; // 작성 작업의 산출물 종류(코드 / 문서)
 }
 export interface MissionFile { relPath: string; path: string; cycle: number | null; kind: string | null; exists: boolean; createdAt: string | null }
 

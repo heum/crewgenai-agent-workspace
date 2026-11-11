@@ -44,7 +44,7 @@ export default function RunTab({
 }) {
   const runs = useRunList(project.id);
   const graph = useLoad(() => ws().latestGraph(project.id), [project.id]);
-  const agents = useLoad(() => ws().listAgents(project.id), [project.id]);
+  const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [selRun, setSelRun] = useState<string | null>(focusRunId);
   const act = useAction();
 
@@ -321,7 +321,7 @@ function RunSummary({ detail, onPick }: { detail: RunDetail; onPick: (id: string
 function agentName(agents: Agent[], id: string | null) {
   if (!id) return '-';
   const a = agents.find((x) => x.id === id);
-  return a ? `${a.code} ${a.name}` : `(없는 담당 ${id.slice(0, 6)})`;
+  return a ? `${a.code} ${a.name}${a.fired ? '(해고)' : ''}` : `(없는 담당 ${id.slice(0, 6)})`;
 }
 
 function NodeDetail({ detail, node, agents }: { detail: RunDetail; node: GraphNode; agents: Agent[] }) {

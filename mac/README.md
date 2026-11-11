@@ -27,10 +27,10 @@ CREWGENAI 개발팀 관리(앱 이름 `CREWGENAI Agent Workspace`)는 사용자�
    git clone https://github.com/heum/crewgenai-agent-workspace.git
    ```
 
-2. 앱 폴더에서 의존성을 설치하고 설치 파일을 만든다. 몇 분 걸린다.
+2. `mac` 폴더에서 의존성을 설치하고 설치 파일을 만든다. 몇 분 걸린다.
 
    ```bash
-   cd crewgenai-agent-workspace && npm ci && npm run dist
+   cd crewgenai-agent-workspace/mac && npm ci && npm run dist
    ```
 
 3. `release/` 폴더에 생긴 `CREWGENAI-Agent-Workspace-…-arm64.dmg`를 열고, 앱을 **응용 프로그램** 폴더로 끌어 놓는다.
@@ -97,7 +97,7 @@ npm ci && npm start
 ## 4. 최신 버전으로 업데이트
 
 ```bash
-git pull && npm ci && npm run dist
+git pull && cd mac && npm ci && npm run dist
 ```
 
 새로 생긴 .dmg로 응용 프로그램 폴더의 앱을 덮어 설치한다. 기존 기록(아래 데이터)은 유지된다.

@@ -9,7 +9,7 @@ import { useRunDetail, useRunList } from './useRunDetail';
 
 export default function ReviewTab({ project, initialRunId, onOpenRun }: { project: Project; initialRunId: string | null; onOpenRun: (id: string) => void }) {
   const runs = useRunList(project.id);
-  const agents = useLoad(() => ws().listAgents(project.id), [project.id]);
+  const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [runId, setRunId] = useState<string | null>(initialRunId);
 
   useEffect(() => {

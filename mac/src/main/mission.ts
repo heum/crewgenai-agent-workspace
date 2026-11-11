@@ -117,13 +117,35 @@ export class MissionRunner {
     for (const r of this.d.store.listRuns(projectId)) {
       if (!this.d.engine.isActive(r.id)) continue;
       let labels = new Map<string, string>();
-      try { labels = new Map(this.d.store.getGraphVersion(r.graphVersionId).graph.nodes.map((n) => [n.id, n.label])); } catch { /* 그대로 */ }
+      let graph: WorkGraph | null = null;
+      try { graph = this.d.store.getGraphVersion(r.graphVersionId).graph; labels = new Map(graph.nodes.map((n) => [n.id, n.label])); } catch { /* 그대로 */ }
+      const nodeOf = (id: string) => graph?.nodes.find((n) => n.id === id);
+      // 검토·리뷰·검사 단계에서 앞쪽으로 거슬러 올라가 대상 작성 단계의 담당을 찾는다
+      const authorOf = (id: string): string | null => {
+        const seen = new Set<string>(); let cur = [id];
+        while (cur.length && graph) {
+          const next: string[] = [];
+          for (const c of cur) for (const e of graph.edges.filter((x) => x.target === c && x.kind !== 'fail')) {
+            if (seen.has(e.source)) continue; seen.add(e.source);
+            const n = nodeOf(e.source);
+            if (n?.kind === 'agent') return n.agentId;
+            if (n && n.kind !== 'input') next.push(n.id);
+          }
+          cur = next;
+        }
+        return null;
+      };
+      const DOC = /\.(md|markdown|txt|html?|pdf|docx?|rtf|csv)$/i;
       const missionId = (this.d.store.db.prepare("SELECT value FROM run_meta WHERE run_id=? AND key='mission'").get(r.id) as Row | undefined)?.value;
       for (const a of this.d.store.runAttempts(r.id).filter((x) => x.status === 'running')) {
         const ag = a.agentId ? agents.get(a.agentId) : undefined;
         const kind = (a.role === 'author' || a.role === 'reviewer' || a.role === 'codex' || a.role === 'check') ? a.role : 'author';
         const who = kind === 'codex' ? 'Codex 리뷰' : kind === 'check' ? '자동 검사' : ag ? `${ag.code} ${ag.name}` : '(직원 정보 없음)';
-        out.push({ agentId: ag?.id ?? null, who, kind, task: labels.get(a.nodeId) ?? a.nodeId, runId: r.id, missionId: missionId ? String(missionId) : null, since: a.startedAt });
+        const node = nodeOf(a.nodeId);
+        const outs = node?.outputs.map((o) => o.path) ?? [];
+        const mode = kind === 'author' ? (outs.length && outs.every((p) => DOC.test(p)) ? 'doc' as const : 'code' as const) : undefined;
+        const reviewOf = kind === 'author' ? null : authorOf(a.nodeId);
+        out.push({ agentId: ag?.id ?? null, who, kind, task: labels.get(a.nodeId) ?? a.nodeId, runId: r.id, missionId: missionId ? String(missionId) : null, since: a.startedAt, reviewOf, ...(mode ? { mode } : {}) });
       }
     }
     return out;

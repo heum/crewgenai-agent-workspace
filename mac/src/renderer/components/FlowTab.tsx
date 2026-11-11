@@ -400,7 +400,7 @@ function NodeEditor({ node, agents, allNodes, onChange }: { node: GraphNode; age
         <Field label={node.kind === 'review' ? '검토 담당(읽기 전용)' : '담당 Agent'}>
           <select className="input" value={node.agentId ?? ''} onChange={(e) => onChange({ agentId: e.target.value || null })}>
             <option value="">선택</option>
-            {node.agentId && !active.some((a) => a.id === node.agentId) && <option value={node.agentId}>(없거나 비활성인 담당)</option>}
+            {node.agentId && !active.some((a) => a.id === node.agentId) && <option value={node.agentId}>(해고했거나 휴가 중인 담당)</option>}
             {active.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.code} {a.name}

@@ -34,8 +34,10 @@ const secretStore = {
 let svc: Service;
 
 function createWindow() {
+  // 화면 시험용: CREWGENAI_WINDOW_SIZE=가로x세로(내용 영역 크기)로 창 크기를 정한다(예: 13인치 MacBook Air 최대화 1470x895)
+  const size = /^(\d{3,4})x(\d{3,4})$/.exec(process.env.CREWGENAI_WINDOW_SIZE ?? '');
   win = new BrowserWindow({
-    width: 1440, height: 900, minWidth: 1000, minHeight: 640, title: 'CREWGENAI 개발팀 관리', backgroundColor: '#f6f7f9',
+    width: size ? Number(size[1]) : 1440, height: size ? Number(size[2]) : 900, useContentSize: !!size, minWidth: 1000, minHeight: 640, title: 'CREWGENAI 개발팀 관리', backgroundColor: '#f6f7f9',
     webPreferences: { preload: join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -99,7 +101,8 @@ function register() {
   h('openPath', (p: string) => { guard(p); return shell.openPath(p); });
   h('previewFile', (p: string) => previewWindow(p));
   h('readTextFile', (p: string) => { guard(p); if (statSync(p).size > 2_000_000) throw new Error('파일이 너무 커서 미리 볼 수 없습니다.'); return readFileSync(p, 'utf8'); });
-  h('listAgents', (id) => s().store.listAgents(id));
+  h('listAgents', (id, includeFired) => s().store.listAgents(id, !!includeFired));
+  h('fireAgent', (id) => s().fireAgent(id));
   h('saveAgent', (pid, aid, f) => s().saveAgent(pid, aid, f));
   h('duplicateAgent', (id) => s().duplicateAgent(id));
   h('setAgentActive', (id, a) => s().setAgentActive(id, a));

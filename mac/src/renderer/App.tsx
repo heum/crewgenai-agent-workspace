@@ -9,12 +9,14 @@ import FlowTab from './components/FlowTab';
 import RunTab from './components/RunTab';
 import ReviewTab from './components/ReviewTab';
 import MissionTab from './components/MissionTab';
+import OfficeTab from './components/OfficeTab';
 
-type Tab = 'mission' | 'plan' | 'agents' | 'flow' | 'run' | 'review';
+type Tab = 'mission' | 'plan' | 'agents' | 'office' | 'flow' | 'run' | 'review';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'mission', label: '운영' },
   { id: 'plan', label: '기획' },
   { id: 'agents', label: '직원' },
+  { id: 'office', label: '사무실' },
   { id: 'flow', label: '업무 흐름' },
   { id: 'run', label: '실행' },
   { id: 'review', label: '결과물·검토' },
@@ -148,6 +150,7 @@ export default function App() {
               )}
               {tab === 'plan' && <PlanTab key={project.id} project={project} onSaved={onProjectSaved} onUseTemplate={(text) => { setDraft(text); setTab('mission'); }} />}
               {tab === 'agents' && <AgentsTab key={project.id} project={project} />}
+              {tab === 'office' && <OfficeTab key={project.id} project={project} />}
               {tab === 'flow' && <FlowTab key={project.id} project={project} />}
               {tab === 'run' && (
                 <RunTab
