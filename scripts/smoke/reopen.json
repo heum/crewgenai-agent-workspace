@@ -1,0 +1,7 @@
+[
+ {
+  "name": "reopen",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\nawait sleep(600); const ps = await window.workspace.listProjects(); const rs = ps[0] ? await window.workspace.listRuns(ps[0].id) : []; click(ps[0].plan.name); await sleep(300); tab('실행'); return { projects: ps.map(p=>p.plan.name), runs: rs.map(r=>r.status + ':' + r.executor) };",
+  "waitMs": 1500
+ }
+]

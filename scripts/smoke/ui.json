@@ -1,0 +1,47 @@
+[
+ {
+  "name": "plan-tab",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\nawait sleep(600); click('스모크 프로젝트 한글'); await sleep(400); tab('기획'); return document.body.innerText.includes('스모크 프로젝트 한글');",
+  "waitMs": 800
+ },
+ {
+  "name": "agents-tab",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\ntab('직원'); await sleep(300); return (document.body.innerText.match(/등록[^\\n]{0,40}/)||[''])[0];",
+  "waitMs": 800
+ },
+ {
+  "name": "flow-tab",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\ntab('업무 흐름'); await sleep(900); return { nodes: document.querySelectorAll('.react-flow__node').length, edges: document.querySelectorAll('.react-flow__edge').length };",
+  "waitMs": 1200
+ },
+ {
+  "name": "run-start",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\ntab('실행'); await sleep(700); const b = btn('전체 업무 시작'); if (!b) throw new Error('시작 버튼 없음'); const dis = b.disabled; b.click(); await sleep(800); return { disabled: dis, run: await runId() };",
+  "waitMs": 500
+ },
+ {
+  "name": "run-progress",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\nconst rid = await runId(); for (let i=0;i<150;i++){ const d = await window.workspace.runDetail(rid); if (['review_wait','failed','succeeded'].includes(d.run.status)) break; await sleep(200);} await sleep(1000); const d = await window.workspace.runDetail(rid); return { status: d.run.status, executor: d.run.executor, nodes: d.nodes.map(n=>n.status), flowNodes: document.querySelectorAll('.react-flow__node').length };",
+  "waitMs": 1200
+ },
+ {
+  "name": "review-tab",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\ntab('결과물'); await sleep(900); const b = btn('검토 완료'); return { approve: !!b, disabled: b && b.disabled };",
+  "waitMs": 1000
+ },
+ {
+  "name": "approve-click",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\nclick('검토 완료'); const rid = await runId(); for (let i=0;i<60;i++){ const d = await window.workspace.runDetail(rid); if (['succeeded','failed'].includes(d.run.status)) return d.run.status; await sleep(200);} return 'timeout';",
+  "waitMs": 1000
+ },
+ {
+  "name": "run-tab-final",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\ntab('실행'); await sleep(300); return true;",
+  "waitMs": 1000
+ },
+ {
+  "name": "help",
+  "js": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\nconst btn = (t) => [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes(t));\nconst click = (t) => { const b = btn(t); if (!b) throw new Error('버튼 없음: ' + t); b.click(); return true; };\nconst tab = (t) => { const b = [...document.querySelectorAll('[role=tab]')].find(x => x.textContent.includes(t)); if (!b) throw new Error('탭 없음: ' + t); b.click(); };\nconst runId = async () => { const ps = await window.workspace.listProjects(); const rs = await window.workspace.listRuns(ps[0].id); return rs[0] && rs[0].id; };\nclick('사용법'); await sleep(300); const d = await window.workspace.helpDocs(); return { guide: d.guide.length, verification: d.verification.length };",
+  "waitMs": 800
+ }
+]

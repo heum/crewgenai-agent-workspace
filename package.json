@@ -1,0 +1,108 @@
+{
+  "name": "crewgenai-agent-workspace",
+  "productName": "CREWGENAI Agent Workspace",
+  "version": "0.0.0-review.20261110",
+  "private": true,
+  "description": "CREWGENAI 개발팀 관리 — Claude CLI 기반 AI 직원 팀 관리 데스크톱 앱 (검토본)",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build:main": "node scripts/build-main.mjs",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "dist": "npm run build && electron-builder --mac --arm64 --publish never",
+    "verify:real-cli": "esbuild scripts/real-cli-check.ts --bundle --platform=node --format=cjs --outfile=dist/verify/real-cli-check.cjs --log-level=error && node dist/verify/real-cli-check.cjs",
+    "smoke": "scripts/smoke/run-smoke.sh",
+    "verify:real-scenarios": "esbuild scripts/real-cli-scenarios.ts --bundle --platform=node --format=cjs --outfile=dist/verify/real-cli-scenarios.cjs --log-level=error && node dist/verify/real-cli-scenarios.cjs",
+    "verify:real-resume": "esbuild scripts/real-cli-resume.ts --bundle --platform=node --format=cjs --outfile=dist/verify/real-cli-resume.cjs --log-level=error && node dist/verify/real-cli-resume.cjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@xyflow/react": "12.12.1",
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0",
+    "esbuild": "^0.25.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "~5.9.2",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.4",
+    "@langchain/core": "1.3.6",
+    "@langchain/langgraph": "1.7.3",
+    "@langchain/langgraph-checkpoint": "^1.2.2",
+    "langsmith": "0.11.8"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "better-sqlite3@12.11.1": true,
+    "better-sqlite3@13.0.3": true
+  },
+  "build": {
+    "appId": "ai.crewgenai.agent-workspace",
+    "productName": "CREWGENAI Agent Workspace",
+    "copyright": "CREWGENAI 검토본 2026-11-10",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/main/**",
+      "dist/renderer/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/mock-claude.cjs",
+        "to": "mock-claude.cjs"
+      },
+      {
+        "from": "resources/mock-codex.cjs",
+        "to": "mock-codex.cjs"
+      },
+      {
+        "from": "resources/docs",
+        "to": "docs"
+      }
+    ],
+    "asar": true,
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "CREWGENAI-Agent-Workspace-review-20261110-${arch}.${ext}",
+      "minimumSystemVersion": "13.0",
+      "extendInfo": {
+        "CFBundleDisplayName": "CREWGENAI 개발팀 관리",
+        "LSApplicationCategoryType": "public.app-category.developer-tools",
+        "NSHumanReadableCopyright": "CREWGENAI 검토본 2026-11-10"
+      }
+    },
+    "dmg": {
+      "title": "CREWGENAI Agent Workspace",
+      "artifactName": "CREWGENAI-Agent-Workspace-review-20261110-${arch}.${ext}"
+    }
+  },
+  "author": "CREWGENAI"
+}

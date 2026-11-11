@@ -1,0 +1,12 @@
+[
+ {
+  "name": "empty",
+  "js": "return { title: document.title, text: document.body.innerText.slice(0,300), hasApi: typeof window.workspace };",
+  "waitMs": 1500
+ },
+ {
+  "name": "setup-api",
+  "js": "\n  await window.workspace.saveSettings({ executor: 'mock', maxConcurrent: 3 });\n  const p = await window.workspace.createProject({ name: '스모크 프로젝트 한글', goal: '앱 전체 흐름 확인', folder: '__FOLDER__', referenceDocs: [], priorOutputs: [], deliverable: '결과 보고서', doneCriteria: '모든 단계 완료', writablePaths: ['docs'], scope: '시험', outputDir: 'crewgenai-output' });\n  await window.workspace.loadAgentTemplates(p.id);\n  const g = await window.workspace.defaultGraph(p.id);\n  const sv = await window.workspace.saveGraph(p.id, g, '기본 흐름');\n  const cli = await window.workspace.cliStatus(true);\n  localStorage.setItem('smokeProject', p.id); localStorage.setItem('smokeGraph', sv.version && sv.version.id);\n  return { project: p.id, graphVersion: sv.version && sv.version.version, errors: sv.issues.filter(i => i.level==='error').length, agents: (await window.workspace.listAgents(p.id)).length, cli: { path: cli.path, version: cli.version, ready: cli.ready, problem: cli.problem } };\n ",
+  "waitMs": 300
+ }
+]
