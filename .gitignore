@@ -16,3 +16,5 @@ release/
 .codex/
 coverage/
 node_modules
+.fix*.diff
+.win-port.diff
