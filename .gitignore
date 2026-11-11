@@ -15,3 +15,4 @@ release/
 .claude/
 .codex/
 coverage/
+node_modules

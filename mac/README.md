@@ -125,7 +125,7 @@ git pull && cd mac && npm ci && npm run dist
 
 ## 7. 알려진 제한
 
-- macOS Apple Silicon 전용이다. Windows(.exe)와 Intel Mac은 아직 지원하지 않는다.
+- 이 폴더는 macOS Apple Silicon판이다. Windows판은 저장소의 [`windows/`](../windows/) 폴더에 있다. Intel Mac은 아직 지원하지 않는다.
 - Apple 정식 서명·공증이 없다. 다른 Mac으로 옮긴 설치 파일은 처음 열 때 확인 절차가 필요하다.
 - 다른 Mac에서 처음부터 받아 빌드하는 과정은 아직 직접 검증하지 않았다(작성 Mac에서 같은 명령으로 빌드·설치 시험만 함).
 - 근거 문서 보완 요청, 사용 한도 자동 재개, 작업 중 직원 표시는 모의 실행으로 흐름만 검증했다. 실제 Claude에서의 판단 품질은 사용하며 확인이 필요하다.

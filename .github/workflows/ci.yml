@@ -1,0 +1,58 @@
+# 두 운영체제판을 각자의 실제 운영체제에서 검사하고 설치 파일을 만든다.
+# mac/ → macOS(Apple Silicon)에서 형식 검사·시험·DMG, windows/ → Windows에서 형식 검사·시험·설치 프로그램(.exe)
+name: CI
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mac/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-dmg
+          path: mac/release/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - run: git config --global core.autocrlf false
+        working-directory: .
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: windows/release/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
