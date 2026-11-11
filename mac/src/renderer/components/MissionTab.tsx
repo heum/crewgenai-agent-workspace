@@ -194,6 +194,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const st = mission?.status ?? null;
   const live = !!st && ACTIVE.includes(st);
   const gaps = st === 'waiting_user' && !!mission?.gaps?.length;
+  const denied = st === 'waiting_user' && !!mission?.denials?.length;
   const mode: 'new' | 'live' | 'answer' | 'done' | 'stopped' = !mission || st === 'failed' ? 'new' : live ? 'live' : st === 'waiting_user' ? 'answer' : st === 'done' ? 'done' : 'stopped';
   const active = ready?.activeMission ?? null;
   const blockedNew = mode === 'new' && !!active;
@@ -225,7 +226,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   });
   const answer = (action: 'continue' | 'stop') => run(async () => {
     const t = text.trim();
-    if (action === 'continue' && mode === 'answer' && !t && !gaps) throw new Error('답변을 입력하세요.');
+    if (action === 'continue' && mode === 'answer' && !t && !gaps && !denied) throw new Error('답변을 입력하세요.');
     if (action === 'continue' && mode === 'done' && !t) throw new Error('추가 지시를 입력하세요.');
     await ws().answerMission(mission!.id, t, action);
     setText('');
@@ -233,10 +234,10 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   });
 
   const primary = mode === 'new' ? startNew : mode === 'live' ? () => directive('next') : mode === 'stopped' ? () => answer('continue') : () => answer('continue');
-  const label = mode === 'new' ? '새 지시' : mode === 'live' ? '진행 중 추가 지시' : mode === 'answer' ? (gaps ? '근거 문서 보완 후 다시 확인' : '오퍼레이터 질문에 답변') : mode === 'done' ? '완료 보고 — 추가 지시' : '중단된 미션';
+  const label = mode === 'new' ? '새 지시' : mode === 'live' ? '진행 중 추가 지시' : mode === 'answer' ? (gaps ? '근거 문서 보완 후 다시 확인' : denied ? '권한 허용 후 다시 시도' : '오퍼레이터 질문에 답변') : mode === 'done' ? '완료 보고 — 추가 지시' : '중단된 미션';
   const placeholder = mode === 'new' ? '무엇을 만들거나 고칠지 적어 주세요. 예: 공고 목록 화면에 마감일 정렬을 추가하고, 정렬 기준을 문서로 남겨 줘'
     : mode === 'live' ? '추가 지시 — 예: 표 대신 목록으로 정리하고, 근거 줄 번호를 꼭 달아 줘'
-    : mode === 'answer' ? (gaps ? '보완한 내용을 적거나(선택), 문서를 올린 뒤 비워 두고 다시 확인을 누르세요' : '답변을 입력하세요')
+    : mode === 'answer' ? (gaps ? '보완한 내용을 적거나(선택), 문서를 올린 뒤 비워 두고 다시 확인을 누르세요' : denied ? '위에서 허용했으면 비워 두고 다시 시도를 누르세요. 다른 방법으로 하려면 바꿀 지시를 적으세요' : '답변을 입력하세요')
     : mode === 'done' ? '추가로 진행할 내용(없으면 “여기서 종료”)' : '다시 시작하면서 반영할 지시(선택)';
   const disabled = act.busy || (mode === 'new' && (blockedNew || notReady || !ready || !text.trim()));
 
@@ -284,7 +285,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
           {(mode === 'answer' || mode === 'done') && (
             <>
               <button className="btn" disabled={act.busy} onClick={() => void answer('stop')}>여기서 종료</button>
-              <button className="btn btn-primary" disabled={act.busy} onClick={() => void answer('continue')}>{mode === 'done' ? '추가 지시하고 계속' : gaps ? '보완했으니 다시 확인' : '답변하고 계속'}</button>
+              <button className="btn btn-primary" disabled={act.busy} onClick={() => void answer('continue')}>{mode === 'done' ? '추가 지시하고 계속' : gaps ? '보완했으니 다시 확인' : denied ? '허용했으니 다시 시도' : '답변하고 계속'}</button>
             </>
           )}
           {mode === 'stopped' && (
@@ -350,7 +351,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           </div>
         </div>
       )}
-      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} />}
+      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} agents={agents} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
       <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
         <FileList files={d.files} />
@@ -483,13 +484,14 @@ function LinkedText({ text, files }: { text: string; files: MissionFile[] }) {
 }
 
 /** 오퍼레이터 질문·근거 문서 보완 요청·완료 보고·중단 안내(입력은 아래 입력창) */
-function QuestionCard({ mission }: { mission: Mission }) {
+function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }) {
   const done = mission.status === 'done';
   const stopped = mission.status === 'stopped';
   const gaps = mission.status === 'waiting_user' ? mission.gaps ?? [] : [];
+  const denials = mission.status === 'waiting_user' ? mission.denials ?? [] : [];
   return (
     <div className="answer-card">
-      <strong>{stopped ? '중단된 미션 — 아래에서 이어서 다시 시작할 수 있습니다' : done ? '완료 보고 — 아래에서 추가 지시하거나 종료하세요' : gaps.length ? '근거 문서를 보완해 주세요 — 오퍼레이터가 멈췄습니다' : '오퍼레이터가 확인을 요청했습니다'}</strong>
+      <strong>{stopped ? '중단된 미션 — 아래에서 이어서 다시 시작할 수 있습니다' : done ? '완료 보고 — 아래에서 추가 지시하거나 종료하세요' : gaps.length ? '근거 문서를 보완해 주세요 — 오퍼레이터가 멈췄습니다' : denials.length ? '권한 때문에 멈췄습니다 — 지시문으로는 권한이 바뀌지 않습니다' : '오퍼레이터가 확인을 요청했습니다'}</strong>
       {stopped ? (
         <div className="muted small">같은 미션 안에서 다음 사이클부터 다시 계획합니다. 이전 판단·답변·추가 지시와 스냅샷을 이어받고, 중단 때 멈춘 작업은 다시 하지 않고 필요한 일만 계획합니다.</div>
       ) : gaps.length ? (
@@ -505,10 +507,71 @@ function QuestionCard({ mission }: { mission: Mission }) {
           </ul>
           <div className="muted small">기획 탭 ‘완성 문서 목록…’에서 문서를 보완해 다시 올린 뒤, 아래에서 <strong>보완했으니 다시 확인</strong>을 누르세요. 문서 대신 아래 입력창에 내용을 직접 적어도 됩니다.</div>
         </>
+      ) : denials.length ? (
+        <DenialList mission={mission} agents={agents} />
       ) : (
         mission.question && <div className="answer-q">{mission.question}</div>
       )}
     </div>
+  );
+}
+
+/**
+ * 권한 거부 항목과 바로 고치는 버튼: 명령은 그 직원의 허용 명령에, 프로젝트 밖 경로는 기획의 참고 문서(읽기 전용)에 넣는다.
+ * 허용 범위는 사용자가 정한다 — 접두어는 고친 뒤 추가할 수 있다.
+ */
+function DenialList({ mission, agents }: { mission: Mission; agents: Agent[] }) {
+  const act = useAction();
+  const [done, setDone] = useState<Record<string, string>>({});
+  const [edit, setEdit] = useState<Record<string, string>>({});
+  const allowCommand = (sig: string, agentId: string | null, prefix: string) => act.run(async () => {
+    const p = prefix.trim();
+    if (!agentId || !p) throw new Error('허용할 명령 접두어를 입력하세요.');
+    const a = (await ws().listAgents(mission.projectId)).find((x) => x.id === agentId);
+    if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
+    const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a;
+    const tools = fields.tools.includes('Bash') ? fields.tools : [...fields.tools, 'Bash' as const];
+    const allowedCommands = fields.allowedCommands.includes(p) ? fields.allowedCommands : [...fields.allowedCommands, p];
+    await ws().saveAgent(mission.projectId, a.id, { ...fields, tools, allowedCommands });
+    setDone((d) => ({ ...d, [sig]: `${a.code} ${a.name}의 허용 명령에 '${p}'를 넣었습니다.` }));
+  });
+  const addReference = (sig: string, path: string) => act.run(async () => {
+    const pr = (await ws().listProjects()).find((x) => x.id === mission.projectId);
+    if (!pr) throw new Error('프로젝트를 찾을 수 없습니다.');
+    if (!pr.plan.referenceDocs.includes(path)) await ws().updatePlan(pr.id, { ...pr.plan, referenceDocs: [...pr.plan.referenceDocs, path] });
+    setDone((d) => ({ ...d, [sig]: `기획의 참고 문서에 넣었습니다(읽기 전용으로 열림).` }));
+  });
+  return (
+    <>
+      {act.error && <Banner>{act.error}</Banner>}
+      <ul className="gap-list denial-list">
+        {(mission.denials ?? []).map((d) => {
+          const agent = agents.find((a) => a.id === d.agentId);
+          const val = edit[d.sig] ?? d.suggestion ?? '';
+          return (
+            <li key={d.sig}>
+              <div><strong>{d.agent}</strong> · <span className="mono small">{d.tool}</span></div>
+              <div className="mono small denial-target">{d.target}</div>
+              {done[d.sig] ? <div className="small ok-text">{done[d.sig]}</div>
+                : d.kind === 'command' ? (
+                  <div className="row gap wrap">
+                    <input className="input mono denial-input" value={val} onChange={(e) => setEdit((x) => ({ ...x, [d.sig]: e.target.value }))} aria-label="허용할 명령 접두어" />
+                    <button className="btn" disabled={act.busy || !d.agentId} onClick={() => void allowCommand(d.sig, d.agentId, val)}>{agent && !agent.tools.includes('Bash') ? 'Bash 켜고 허용 명령에 추가' : '허용 명령에 추가'}</button>
+                    <span className="muted small">이 접두어로 시작하는 명령만 실행됩니다. 넓게 허용하지 마세요.</span>
+                  </div>
+                ) : d.kind === 'path' && /^(\/|[A-Za-z]:\\)/.test(d.target) ? (
+                  <div className="row gap wrap">
+                    <button className="btn" disabled={act.busy} onClick={() => void addReference(d.sig, d.target)}>참고 문서에 추가</button>
+                    <span className="muted small">프로젝트 밖 파일·폴더를 직원이 읽을 수 있게 엽니다(쓰기는 안 됨).</span>
+                  </div>
+                ) : <div className="muted small">앱 설정으로 허용할 수 없는 행위입니다. 지시를 바꿔 다른 방법으로 진행하세요.</div>}
+              {agent && !agent.active && <div className="muted small">이 직원은 휴가 중입니다.</div>}
+            </li>
+          );
+        })}
+      </ul>
+      <div className="muted small">허용한 뒤 아래에서 <strong>허용했으니 다시 시도</strong>를 누르세요. 허용하지 않으려면 바꿀 지시를 적어 계속하거나 여기서 종료하세요. 브라우저 실행처럼 격리 공간 밖이 필요한 일은 직접 실행하는 편이 확실합니다.</div>
+    </>
   );
 }
 // ───────── 루프 다이어그램(SVG) ─────────

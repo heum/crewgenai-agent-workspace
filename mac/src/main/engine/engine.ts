@@ -14,6 +14,7 @@ import {
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
+import { checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
@@ -1023,7 +1024,7 @@ export class Engine {
     const t0 = Date.now(); let output = '';
     try {
       const h = startProcess(node.command[0], node.command.slice(1), {
-        cwd: plan.folder, env: cleanEnv(), stdin: '', timeoutSec: node.timeoutSec,
+        cwd: plan.folder, env: checkEnvFilter(cleanEnv()), stdin: '', timeoutSec: node.timeoutSec, // 키·토큰 환경 변수 제외
         onStdoutLine: (l) => { if (output.length < 200000) output += `${l}\n`; }, onStderrLine: (l) => { if (output.length < 200000) output += `${l}\n`; },
       });
       ctl.procs.set(attempt.id, h);

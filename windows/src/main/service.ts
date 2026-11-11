@@ -46,6 +46,12 @@ export function normalizePlan(p: PlanFields): PlanFields {
   };
 }
 
+/**
+ * 앱 밖에서 물려받은 LangSmith·LangChain 자동 추적 설정을 지운다. 추적은 앱 설정을 켰을 때만,
+ * 비밀값·원문을 뺀 앱 자체 추적기로 보낸다(LangGraph 자동 추적이 상태 전체를 보내지 않게).
+ */
+for (const k of Object.keys(process.env)) if (/^(LANGSMITH_|LANGCHAIN_)/i.test(k)) delete process.env[k];
+
 export class Service {
   readonly store: Store;
   readonly engine: Engine;

@@ -9,6 +9,7 @@
 //   [[mock:gaps-once:이름]]   오퍼레이터 계획이 처음 한 번만 '근거 문서 보완 요청(gaps)'을 돌려줌
 //   [[mock:limit-once:이름]]  처음 한 번만 사용 한도 도달(rate_limit_event rejected + is_error)로 끝남. 오퍼레이터가 먼저 맞고, 작업 지시에는 '이름-agent'로 넘긴다
 //   [[mock:todo-first]]      첫 작성에는 TODO를 남기고 재작업 요청을 받으면 제거
+//   [[mock:deny:bash:명령]] / [[mock:deny:read:경로]] 작성 직원이 권한 거부로 실패(오퍼레이터가 작업 지시에 넘김)
 //   [[mock:dir:NAME]]        오퍼레이터가 NAME/docs/mission 아래에 쓰도록 계획(여러 저장소 시험)
 //   [[mock:write-outside:경로]] 권한 엔진을 거치지 않고 범위 밖 파일을 직접 기록(사후 탐지 시험)
 //   [[mock:try-edit:경로]]   허용 규칙 밖 파일 편집 시도 → 권한 거부로 보고
@@ -71,6 +72,24 @@ async function main() {
     out({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, result: "You've hit your limit · resets soon", permission_denials: [] });
     process.exit(1);
   }
+  // [[mock:deny:bash:명령]] / [[mock:deny:read:경로]] — 권한 거부로 작업을 끝내지 못함(작성 직원만)
+  const denyMarks = isOperator || schema ? [] : [...prompt.matchAll(/\[\[mock:deny:(bash|read):([^\]]+)\]\]/g)];
+  if (denyMarks.length) {
+    const den = [];
+    for (const [, kind, target] of denyMarks) {
+      const id = crypto.randomUUID();
+      if (kind === 'bash') {
+        out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command: target } }] } });
+        out({ type: 'user', session_id: sessionId, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: "Permission to use Bash has been denied because Claude Code is running in don't ask mode." }] } });
+        den.push({ tool_name: 'Bash', tool_use_id: id, tool_input: { command: target } });
+      } else {
+        out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: target } }] } });
+        out({ type: 'user', session_id: sessionId, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: `${target} is outside ${cwd}; --restricted confines the file tools to the working directory.` }] } });
+      }
+    }
+    out({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, result: '권한 거부로 작업을 끝내지 못했습니다.', permission_denials: den });
+    process.exit(1);
+  }
   if (prompt.includes('[[mock:crash]]')) { process.stderr.write('mock crash\n'); process.exit(3); }
   if (!isOperator && prompt.includes('[[mock:hang]]')) { out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: '오래 걸리는 작업을 진행합니다.' }] } }); await new Promise((r) => setTimeout(r, 600000)); }
 
@@ -102,7 +121,7 @@ async function main() {
     const mdir = md ? `${md}/docs/mission` : 'docs/mission';
     const plan = ask ? { summary: '정보 부족', question: '어느 문서를 기준으로 할까요?', tasks: [] } : {
       summary: `사이클 ${cyc} 작업 1개`, question: '',
-      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''}`,
+      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
         writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [] }] };
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(plan), structured_output: plan, permission_denials: [] });
     process.exit(0);

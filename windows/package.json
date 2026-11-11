@@ -31,7 +31,7 @@
     "react-dom": "19.3.1",
     "typescript": "~5.9.2",
     "vite": "^7.1.0",
-    "vitest": "^3.2.4",
+    "vitest": "^5.1.0",
     "@langchain/core": "1.3.6",
     "@langchain/langgraph": "1.7.3",
     "@langchain/langgraph-checkpoint": "^1.2.2",
@@ -94,7 +94,8 @@
       "allowToChangeInstallationDirectory": true,
       "shortcutName": "CREWGENAI 개발팀 관리",
       "createDesktopShortcut": true,
-      "artifactName": "CREWGENAI-Agent-Workspace-review-20261110-win-${arch}-setup.${ext}"
+      "artifactName": "CREWGENAI-Agent-Workspace-review-20261110-win-${arch}-setup.${ext}",
+      "deleteAppDataOnUninstall": false
     }
   },
   "author": "CREWGENAI"

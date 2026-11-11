@@ -6,12 +6,13 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDenial, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
 import { allowedRoots, escapes, normRel, validateGraph } from './engine/validate';
 import { autoLayout } from '../shared/layout';
+import { checkArgv } from './checks';
 import { missionCommitsSince, revertCommits, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 
 const PLAN_SCHEMA = {
@@ -50,6 +51,22 @@ export interface MissionDeps {
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
 class OperatorLimit extends Error { constructor(public lim: LimitInfo) { super('오퍼레이터 호출이 사용 한도에 걸렸습니다.'); this.name = 'OperatorLimit'; } }
+
+/** 거부된 명령에서 허용 명령 접두어 후보를 만든다: 첫 단순 명령의 이름과 그 뒤 옵션(값 포함). 예) 'shasum -a 256 /x/y' → 'shasum -a 256', 'git -C /repo log' → 'git -C' */
+export function commandPrefix(command: string): string | null {
+  const first = command.split(/;|&&|\|\||\|/)[0].trim();
+  const toks = first.split(/\s+/).filter(Boolean);
+  if (!toks.length) return null;
+  const out = [toks[0]];
+  for (let i = 1; i < toks.length && out.length < 4; i++) {
+    const t = toks[i];
+    if (!t.startsWith('-')) break;
+    out.push(t);
+    const v = toks[i + 1];
+    if (v && !v.startsWith('-') && /^[\w.=:-]{1,12}$/.test(v) && !/[\/\\]/.test(v) && t.length === 2 && /^-[a-z]$/i.test(t) && /^\d+$|^[a-z]+$/i.test(v) && toks[0] !== 'git') { out.push(v); i++; }
+  }
+  return out.join(' ');
+}
 
 export class MissionRunner {
   private loops = new Set<string>();
@@ -220,9 +237,45 @@ export class MissionRunner {
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, gaps: null, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1) });
+    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, gaps: null, denials: null, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1) });
     void this.loop(id);
     return next;
+  }
+
+  /**
+   * 이번 실행에서 직원이 권한 때문에 막힌 행위를 모은다: CLI가 보고한 권한 거부 목록 + 작업 폴더 밖 경로 거부(--restricted) 기록.
+   * 권한은 지시문으로 바뀌지 않으므로, 같은 설정으로 다시 시도하지 않도록 미션을 멈추는 근거로 쓴다.
+   */
+  private permissionBlocks(runId: string): MissionDenial[] {
+    const out: MissionDenial[] = [];
+    const seen = new Set<string>();
+    const agents = new Map(this.d.store.listAgents(this.d.store.getRun(runId).projectId, true).map((a) => [a.id, a]));
+    const add = (agentId: string | null, tool: string, kind: MissionDenial['kind'], target: string) => {
+      const t = target.trim().slice(0, 300);
+      if (!t) return;
+      const suggestion = kind === 'command' ? commandPrefix(t) : kind === 'path' ? t : null;
+      const sig = `${agentId ?? ''}|${tool}|${kind === 'command' ? suggestion : t}`;
+      if (seen.has(sig)) return;
+      seen.add(sig);
+      const a = agentId ? agents.get(agentId) : undefined;
+      out.push({ agentId, agent: a ? `${a.code} ${a.name}` : '(직원 정보 없음)', tool, kind, target: t, suggestion, sig });
+    };
+    const field = (s: string, k: string) => (new RegExp(`"${k}":"((?:[^"\\\\]|\\\\.)*)`).exec(s)?.[1] ?? '').replace(/\\(["\\/])/g, '$1');
+    for (const a of this.d.store.runAttempts(runId)) {
+      if (a.role !== 'author' && a.role !== 'reviewer') continue;
+      for (const d of a.permissionDenials) {
+        const tool = d.split(' ')[0];
+        const rest = d.slice(tool.length + 1);
+        if (tool === 'Bash') add(a.agentId, tool, 'command', field(rest, 'command') || rest);
+        else { const p = field(rest, 'file_path') || field(rest, 'path') || field(rest, 'notebook_path'); add(a.agentId, tool, p ? 'path' : 'other', p || rest); }
+      }
+      for (const e of this.d.store.events(a.id)) {
+        if (e.kind !== 'denied') continue;
+        const m = /([A-Za-z]:\\[^\s]+|\/[^\s]+) is outside /.exec(e.summary);
+        if (m) add(a.agentId, '파일 도구', 'path', m[1]);
+      }
+    }
+    return out.slice(0, 20);
   }
 
   // ───── 스냅샷·되돌리기 ─────
@@ -464,6 +517,19 @@ export class MissionRunner {
         if (this.closed || this.get(id).status === 'stopped') return;
         this.event(m, 'cycle_end', `사이클 ${m.cycle} 실행 종료: ${fin.status}${fin.reason ? ` — ${fin.reason}` : ''}`);
         await this.snapshot(m, project.plan.folder, `cycle-${m.cycle}`, `사이클 ${m.cycle} 종료(${fin.status})`);
+        // 권한 거부: 실행이 실패했거나 직전 사이클과 같은 거부가 반복되면 같은 설정으로 다시 시도하지 않고 멈춘다(권한은 앱 설정으로만 바뀐다)
+        if (!this.replan.has(id)) {
+          const blocks = this.permissionBlocks(run.id);
+          const prev = this.get(id).denialSigs ?? [];
+          const repeated = blocks.some((b) => prev.includes(b.sig));
+          if (blocks.length && (fin.status !== 'succeeded' || repeated)) {
+            const q = `직원이 권한 때문에 작업을 끝내지 못했습니다${repeated ? '(지난 사이클과 같은 거부가 반복됨)' : ''}. 권한은 지시문으로 바뀌지 않으므로, 아래 항목을 앱 설정에서 허용하거나 지시를 바꾼 뒤 다시 시도하세요.\n${blocks.map((b) => `- ${b.agent} · ${b.tool}: ${b.target}`).join('\n')}`;
+            this.event(m, 'question', q, { denials: blocks });
+            this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, denials: blocks, denialSigs: blocks.map((b) => b.sig) });
+            return;
+          }
+          this.set(id, { denialSigs: blocks.map((b) => b.sig) });
+        }
         if (this.replan.has(id)) {
           // '지금 반영' 추가 지시: 이번 사이클 판단을 건너뛰고 지시를 반영해 다음 사이클을 바로 계획한다
           this.replan.delete(id);
@@ -573,7 +639,7 @@ export class MissionRunner {
       nodes.push(a, cx, rv);
       e(a, cx); e(cx, rv); e(rv, a, 'fail');
       let last = rv;
-      const ck0 = this.safeCheck(t.checkCommand, author);
+      const ck0 = this.safeCheck(t.checkCommand, author, plan.folder);
       if (t.checkCommand.length && !ck0) refused.push(`${t.title}: ${t.checkCommand.join(' ')}`);
       if (ck0) {
         const ck = mk('check', `검사: ${t.title}`, x, 520, { command: ck0, timeoutSec: 600 });
@@ -604,15 +670,8 @@ export class MissionRunner {
    * 오퍼레이터가 계획한 검사 명령은 실행 전에 제한한다: 셸·인터프리터 코드 실행(sh/bash/zsh -c, node/python -e/-c)은 금지,
    * 담당 직원의 Bash 허용 명령 접두어 또는 grep/test만 허용한다. 허용되지 않으면 null.
    */
-  private safeCheck(argv: string[], author: Agent): string[] | null {
-    const a = argv.map((x) => x.trim()).filter(Boolean);
-    if (!a.length) return null;
-    const bin = a[0].split('/').pop() ?? '';
-    if (['sh', 'bash', 'zsh', 'fish', 'env', 'osascript', 'eval', 'xargs', 'sudo'].includes(bin)) return null;
-    if (/^(node|python\d*|ruby|perl|php|deno|bun)$/.test(bin) && a.some((x) => ['-e', '-c', '--eval', '-p', '--print'].includes(x))) return null;
-    if (['grep', 'test'].includes(bin)) return a;
-    const line = a.join(' ');
-    return author.allowedCommands.some((c) => c.trim() && (line === c.trim() || line.startsWith(`${c.trim()} `))) ? a : null;
+  private safeCheck(argv: string[], author: Agent, folder: string): string[] | null {
+    return checkArgv(argv, author.allowedCommands, folder);
   }
 
   // ───── 오퍼레이터 프롬프트 ─────
@@ -635,6 +694,7 @@ export class MissionRunner {
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
       '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',
+      '- outputs의 path는 만들 파일 경로다. 여러 파일을 담는 폴더를 산출물로 하려면 폴더 경로를 쓰고, 그 안 파일의 형식을 format에 쓴다(폴더 안에 그 형식 파일이 하나 이상 있어야 통과). 형식을 가리지 않으면 any.',
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서를 읽고, 이번 지시를 수행하기에 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)이 있으면 tasks를 비우고 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 구체적으로 쓴다. 모든 문서가 다 있어야 하는 것은 아니다. 이번 지시에 필요한 근거만 판단하고, 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 그렇지 않으면 question은 빈 문자열.',

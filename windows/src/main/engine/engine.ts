@@ -14,7 +14,7 @@ import {
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
-import { BUILTIN_CHECK } from '../checks';
+import { BUILTIN_CHECK, checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
@@ -1029,7 +1029,7 @@ export class Engine {
       const builtin = BUILTIN_CHECK.has(node.command[0]); // 정확한 이름만(프로젝트의 test.cmd 등은 해당하지 않음)
       const bin0 = node.command[0].split('/').pop() ?? '';
       const h = startProcess(builtin ? process.execPath : node.command[0], builtin ? [join(dirname(this.o.mockScript), 'check-builtin.cjs'), bin0, ...node.command.slice(1)] : node.command.slice(1), {
-        cwd: plan.folder, env: cleanEnv(builtin ? { ELECTRON_RUN_AS_NODE: '1' } : {}), stdin: '', timeoutSec: node.timeoutSec,
+        cwd: plan.folder, env: checkEnvFilter(cleanEnv(builtin ? { ELECTRON_RUN_AS_NODE: '1' } : {})), stdin: '', timeoutSec: node.timeoutSec, // 키·토큰 환경 변수 제외
         onStdoutLine: (l) => { if (output.length < 200000) output += `${l}\n`; }, onStderrLine: (l) => { if (output.length < 200000) output += `${l}\n`; },
       });
       ctl.procs.set(attempt.id, h);

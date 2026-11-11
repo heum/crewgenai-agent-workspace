@@ -190,6 +190,8 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
 
 // ───────── 비밀값 마스킹 ─────────
 const SECRET_PATTERNS: RegExp[] = [
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
+  /\bA(?:KIA|SIA)[0-9A-Z]{16}\b/g,
   /sk-ant-[A-Za-z0-9_\-]{8,}/g,
   /sk-[A-Za-z0-9]{20,}/g,
   /lsv2_[A-Za-z0-9_]{10,}/g,
@@ -297,13 +299,13 @@ export function interpretLine(line: string, sink: StreamSink): ParsedEvent | nul
     if (!tr) return null;
     const txt = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content ?? '');
     if (tr.is_error) {
-      const denied = /permission|권한|denied|not allowed/i.test(txt);
+      const denied = /permission|권한|denied|not allowed|is outside|--restricted/i.test(txt);
       return { kind: denied ? 'denied' : 'tool_result', summary: `${denied ? '권한 거부' : '도구 오류'}: ${brief(txt, 160)}`, raw };
     }
     return { kind: 'tool_result', summary: `도구 결과 ${txt.length}자`, raw };
   }
   if (m.type === 'result') {
-    const denials = Array.isArray(m.permission_denials) ? (m.permission_denials as Record<string, unknown>[]).map((d) => `${String(d.tool_name ?? '')} ${brief(d.tool_input ?? '', 120)}`) : [];
+    const denials = Array.isArray(m.permission_denials) ? (m.permission_denials as Record<string, unknown>[]).map((d) => `${String(d.tool_name ?? '')} ${brief(d.tool_input ?? '', 400)}`) : [];
     const cost = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : null;
     const usage = m.usage && typeof m.usage === 'object' ? Object.fromEntries(Object.entries(m.usage as Record<string, unknown>).filter(([, v]) => typeof v === 'number')) as Record<string, number> : null;
     sink.result = {

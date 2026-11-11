@@ -1750,3 +1750,9 @@ textarea.input {
 .fold.closed { padding-top: 10px; padding-bottom: 10px; }
 .mission-prompt .fold-body { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
 .mission-prompt .fold-head { white-space: normal; }
+
+/* 권한 거부 항목 */
+.denial-list li { display: flex; flex-direction: column; gap: 4px; }
+.denial-target { word-break: break-all; color: var(--sub); }
+.denial-input { max-width: 260px; }
+.ok-text { color: #1a7f37; }

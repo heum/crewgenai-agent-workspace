@@ -476,6 +476,8 @@ export interface Mission {
   summary: string; // 오퍼레이터의 최근 판단 요약
   /** 오퍼레이터가 근거 문서가 빈약·애매하다고 판단해 멈췄을 때, 채워야 할 부분 */
   gaps?: MissionGap[] | null;
+  denials?: MissionDenial[] | null; // 권한 거부로 멈춘 경우 거부 항목
+  denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */
   limitUntil?: string | null;
   createdAt: string;
@@ -484,6 +486,16 @@ export interface Mission {
 
 /** 근거 문서 보완 요청 한 건 */
 export interface MissionGap { doc: string; issue: string; need: string }
+/** 직원이 권한 때문에 막힌 행위(명령·경로). 앱 설정으로만 허용할 수 있다. */
+export interface MissionDenial {
+  agentId: ID | null;
+  agent: string; // 예: '09 시험·품질'
+  tool: string; // Bash, Read, Glob, Grep …
+  kind: 'command' | 'path' | 'other';
+  target: string; // 거부된 명령 또는 경로
+  suggestion: string | null; // 허용 명령 접두어(명령) 또는 참고 문서로 넣을 경로(경로)
+  sig: string; // 반복 판별용
+}
 
 export interface MissionEvent {
   missionId: ID;
