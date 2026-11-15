@@ -26,25 +26,95 @@ describe('권한 거부', () => {
     expect(commandPrefix('npx --no-install playwright --version')).toBe('npx --no-install');
   });
 
-  it('작업이 권한 때문에 실패하면 같은 설정으로 다시 돌지 않고 멈춰, 거부된 명령·경로와 고칠 곳을 보여 준다', async () => {
+  it('권한 때문에 막힌 업무는 보류하고, 할 일이 그것뿐이면 멈춰 거부된 명령·경로와 고칠 곳을 보여 준다', async () => {
     const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     const m0 = await svc.startMission(p.id, '[[mock:deny:bash:shasum -a 256 /Users/someone/repo/a.html]] [[mock:deny:read:/Users/someone/repo/b.html]] 해시를 구하라');
     const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
     expect(m.status).toBe('waiting_user');
-    expect(m.cycle).toBe(1); // 다음 사이클을 돌지 않았다
+    expect(svc.missions.detail(m.id).cycles.length).toBe(1); // 보류한 업무를 다시 돌리지 않았다
     const ds = m.denials ?? [];
     const cmd = ds.find((d) => d.kind === 'command')!;
     expect(cmd.tool).toBe('Bash');
     expect(cmd.target).toBe('shasum -a 256 /Users/someone/repo/a.html');
     expect(cmd.suggestion).toBe('shasum -a 256');
     expect(ds.some((d) => d.kind === 'path' && d.target === '/Users/someone/repo/b.html')).toBe(true);
-    expect(m.question).toContain('권한은 지시문으로 바뀌지 않으므로');
-    // 사용자가 허용한 뒤 다시 시도하면 거부 목록을 지우고 다음 사이클을 계획한다
+    expect(m.question).toContain('보류한 업무');
+    // 사용자가 허용한 뒤 다시 시도하면 거부·보류 목록을 지우고 다음 사이클을 계획한다
     const next = svc.missions.answer(m.id, '', 'continue');
     expect(next.denials ?? null).toBeNull();
+    expect(next.parkedSigs).toEqual([]);
     await svc.missions.stop(m.id);
+    svc.close();
+  });
+
+  it('막힌 업무만 보류하고 나머지 작업은 계속해 완료 보고까지 간다(확인 필요에 남음)', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    const m0 = await svc.startMission(p.id, '[[mock:two-tasks]] [[mock:deny:bash:shasum -a 256 /Users/someone/repo/a.html]] 해시와 보조 문서');
+    const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(m.status).toBe('done');
+    expect(m.cycle).toBe(2);
+    expect(m.denials?.some((d) => d.target.startsWith('shasum'))).toBe(true);
+    expect(m.question).toContain('보류한 업무 1건');
+    const d = svc.missions.detail(m.id);
+    expect(svc.engine.detail(d.cycles[1].runId).graph.nodes.filter((n) => n.kind === 'agent').map((n) => n.label.split(' (')[0])).toEqual(['보조 문서 2']); // 보류한 업무는 다시 계획하지 않음
+    expect(svc.attention().items.some((i) => i.missionId === m.id && i.kind === 'denied')).toBe(true);
+    // 해결했다고 알리면 보류를 풀어 다음 계획부터 다시 시도한다
+    const r = svc.missions.retryParked(m.id);
+    expect(r.denials ?? null).toBeNull();
+    expect(r.parkedSigs).toEqual([]);
+    expect(svc.attention().items.some((i) => i.missionId === m.id)).toBe(false);
+    svc.missions.answer(m.id, '', 'stop');
+    svc.close();
+  });
+
+  it('보류한 업무를 오퍼레이터가 다시 계획해 같은 거부가 나면 더 돌지 않고 멈춘다', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    const m0 = await svc.startMission(p.id, '[[mock:ignore-parked]] [[mock:two-tasks]] [[mock:deny:bash:shasum -a 256 /x/a.html]] 해시');
+    const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(m.status).toBe('waiting_user');
+    expect(m.question).toContain('다시 막힘');
+    expect(svc.missions.detail(m.id).cycles.length).toBe(2);
+    await svc.missions.stop(m.id);
+    svc.close();
+  });
+
+  it('실행 전 점검: 허용되지 않은 명령이 필요한 작업은 돌리지 않고 확인 필요로 빼며, 나머지는 진행한다', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    // 하나뿐이면 실행하지 않고 묻는다
+    const a0 = await svc.startMission(p.id, '[[mock:needs:git -C /x/repo log -1]] 커밋 기록');
+    const a = await waitMission(svc, a0.id, ['waiting_user', 'done', 'failed']);
+    expect(a.status).toBe('waiting_user');
+    expect(svc.missions.detail(a.id).cycles.length).toBe(0);
+    expect(a.denials?.[0]).toMatchObject({ kind: 'other', target: 'git -C /x/repo log -1', suggestion: null, tool: '실행 전 점검 · 명령' }); // Windows판: 직원은 Bash를 쓰지 않으므로 사용자가 직접 실행
+    svc.missions.answer(a.id, '', 'stop');
+    // 다른 작업이 있으면 그 작업은 진행한다
+    const b0 = await svc.startMission(p.id, '[[mock:two-tasks]] [[mock:needs:git -C /x/repo log -1]] 커밋 기록과 보조 문서');
+    const b = await waitMission(svc, b0.id, ['waiting_user', 'done', 'failed']);
+    expect(b.status).toBe('done');
+    const first = svc.engine.detail(svc.missions.detail(b.id).cycles[0].runId);
+    expect(first.graph.nodes.filter((n) => n.kind === 'agent').map((n) => n.label.split(' (')[0])).toEqual(['보조 문서 1']);
+    expect(b.denials?.some((d) => d.tool === '실행 전 점검 · 명령')).toBe(true);
+    svc.missions.answer(b.id, '', 'stop');
+    svc.close();
+  });
+
+  it('근거가 부족한 부분이 있어도 할 수 있는 작업이 있으면 멈추지 않고 진행한다(확인 필요로 남김)', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    const m0 = await svc.startMission(p.id, '[[mock:gaps-with-tasks]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(m.status).toBe('done');
+    expect(m.gaps?.[0]?.issue).toContain('대상 사용자');
+    svc.missions.answer(m.id, '', 'stop');
     svc.close();
   });
 });

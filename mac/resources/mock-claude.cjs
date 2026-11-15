@@ -14,6 +14,10 @@
 //   [[mock:dir:NAME]]        오퍼레이터가 NAME/docs/mission 아래에 쓰도록 계획(여러 저장소 시험)
 //   [[mock:write-outside:경로]] 권한 엔진을 거치지 않고 범위 밖 파일을 직접 기록(사후 탐지 시험)
 //   [[mock:try-edit:경로]]   허용 규칙 밖 파일 편집 시도 → 권한 거부로 보고
+//   [[mock:two-tasks]]       오퍼레이터가 작업을 둘로 계획(둘째는 거부 표식 없이 정상 작성)
+//   [[mock:ignore-parked]]   오퍼레이터가 '보류한 업무'를 무시하고 같은 작업을 다시 계획
+//   [[mock:needs:명령]]       첫 작업에 실행 전 점검용 필요 명령(needs.commands)을 적음
+//   [[mock:gaps-with-tasks]] 오퍼레이터가 근거 부족(gaps)을 적으면서도 작업을 계획
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -125,16 +129,25 @@ async function main() {
     }
     const md = (user.match(/\[\[mock:dir:([\w-]+)\]\]/) || [])[1]; // 여러 저장소 시험: 이 하위 폴더 안에 작성
     const mdir = md ? `${md}/docs/mission` : 'docs/mission';
+    const parked = prompt.includes('## 보류한 업무(') && !user.includes('[[mock:ignore-parked]]');
+    const denyMarks = (user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []);
+    const needCmd = (user.match(/\[\[mock:needs:([^\]]+)\]\]/) || [])[1];
     const plan = ask ? { summary: '정보 부족', question: '어느 문서를 기준으로 할까요?', tasks: [] } : {
       summary: `사이클 ${cyc} 작업 1개`, question: '',
       tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
-        writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [] }] };
+        writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [],
+        ...(needCmd ? { needs: { commands: [needCmd], readPaths: [] } } : {}) }] };
+    if (!ask && user.includes('[[mock:two-tasks]]')) plan.tasks.push({ title: `보조 문서 ${cyc}`, agentCode: code, instructions: `${mdir}-b/cycle-${cyc}.md를 작성한다.`, writeScope: [`${mdir}-b`], outputs: [{ path: `${mdir}-b/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: '작성', checkCommand: [] });
+    // 보류한 업무(거부·필요 명령이 있는 첫 작업)는 다시 계획하지 않는다
+    if (!ask && parked && (denyMarks.length || needCmd)) plan.tasks = plan.tasks.slice(1);
+    if (!ask && !plan.tasks.length) plan.question = '보류한 업무를 해결해야 진행할 수 있습니다.';
+    if (!ask && user.includes('[[mock:gaps-with-tasks]]')) plan.gaps = [{ doc: '서비스 기획서', issue: '대상 사용자 범위가 애매하다', need: '1차 출시 대상 사용자군' }];
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(plan), structured_output: plan, permission_denials: [] });
     process.exit(0);
   }
   if (schema && prompt.includes('# 오퍼레이터 판단')) {
     const cyc = Number((prompt.match(/## 사이클: (\d+)/) || [])[1] || 1);
-    const failed = /## 실행 결과: (failed|cancelled)/.test(prompt);
+    const failed = /## 실행 결과: (failed|cancelled)/.test(prompt) && !prompt.includes('## 보류한 업무(');
     const dec = failed ? { decision: 'ask_user', summary: '실행 실패', question: '실패를 어떻게 처리할까요?', nextFocus: '' }
       : cyc >= 2 ? { decision: 'done', summary: '두 사이클로 목표 충족', question: '', nextFocus: '' }
       : { decision: 'continue', summary: '1차 결과 확인, 보완 필요', question: '', nextFocus: '보완' };

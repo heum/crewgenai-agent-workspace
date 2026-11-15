@@ -421,6 +421,8 @@ export interface WorkspaceApi {
   /** 파일을 골라 프로젝트 폴더의 문서 경로로 복사한다(취소하면 null) */
   uploadProjectDoc(projectId: ID, docId: string): Promise<ProjectDoc[] | null>;
   stopMission(missionId: ID): Promise<Mission>;
+  /** 보류한 업무를 사용자가 해결함: 다음 계획부터 다시 시도할 수 있게 보류를 푼다 */
+  retryParked(missionId: ID): Promise<Mission>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
   missionSnapshots(missionId: ID): Promise<MissionSnapshot[]>;
@@ -487,6 +489,8 @@ export interface Mission {
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
   blockers?: MissionBlocker[] | null; // 에이전트가 스스로 풀 수 없는 실패로 멈춘 경우
   failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
+  /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */
+  parkedSigs?: string[];
   learnedSeq?: number; // 배운 것을 정리한 마지막 기록 번호
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */
   limitUntil?: string | null;

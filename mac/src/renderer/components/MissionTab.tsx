@@ -362,6 +362,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
         </div>
       )}
       {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} agents={agents} />}
+      {m.status !== 'waiting_user' && m.status !== 'stopped' && m.status !== 'failed' && <ParkedCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
       <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
         <FileList files={d.files} />
@@ -539,6 +540,39 @@ function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }
       ) : (
         mission.question && <div className="answer-q">{mission.question}</div>
       )}
+    </div>
+  );
+}
+
+/** 보류한 업무(확인 필요): 진행 중·완료 보고 미션에서 권한·환경 때문에 뺀 업무. 나머지 작업은 계속 진행한다. */
+function ParkedCard({ mission, agents, onChanged }: { mission: Mission; agents: Agent[]; onChanged: () => Promise<void> }) {
+  const act = useAction();
+  const denials = mission.denials ?? []; const blockers = mission.blockers ?? []; const gaps = mission.gaps ?? [];
+  if (!denials.length && !blockers.length && !gaps.length) return null;
+  return (
+    <div className="answer-card parked-card">
+      <strong>{denials.length || blockers.length ? `보류한 업무 ${denials.length + blockers.length}건 — 확인 필요(나머지 작업은 계속 진행합니다)` : '근거가 부족한 부분 — 확인 필요(할 수 있는 작업부터 진행합니다)'}</strong>
+      {act.error && <Banner>{act.error}</Banner>}
+      {denials.length > 0 && <DenialList mission={mission} agents={agents} />}
+      {blockers.length > 0 && (
+        <ul className="gap-list">
+          {blockers.map((b, i) => (
+            <li key={i}>
+              <div><span className={`blocker-kind ${b.kind}`}>{b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}</span> <strong>{b.step}</strong></div>
+              <div className="mono small denial-target">{b.reason}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {gaps.length > 0 && (
+        <ul className="gap-list">
+          {gaps.map((g, i) => <li key={i}><strong>{g.doc || '문서 미지정'}</strong><div>{g.issue}</div>{g.need && <div className="small">채울 내용: {g.need}</div>}</li>)}
+        </ul>
+      )}
+      <div className="row gap wrap">
+        <button className="btn btn-primary" disabled={act.busy} onClick={() => void act.run(async () => { await ws().retryParked(mission.id); await onChanged(); })}>해결했으니 다시 시도하게 하기</button>
+        <span className="muted small">허용·수정을 마친 뒤 누르면 다음 계획부터 이 업무를 다시 시도합니다. 누르기 전에는 다시 계획하지 않습니다.</span>
+      </div>
     </div>
   );
 }

@@ -5,7 +5,7 @@
 // 오퍼레이터는 작업 완료·검토 필요·추가 정보 필요·사이클 상한 도달 때만 사용자에게 묻는다.
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
@@ -24,18 +24,21 @@ const PLAN_SCHEMA = {
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
       properties: { title: { type: 'string' }, agentCode: { type: 'string' }, instructions: { type: 'string' }, writeScope: { type: 'array', items: { type: 'string' } },
         outputs: { type: 'array', items: { type: 'object', required: ['path', 'format'], properties: { path: { type: 'string' }, format: { type: 'string', enum: ['markdown', 'json', 'html', 'text', 'code', 'image', 'any'] } } } },
-        doneCriteria: { type: 'string' }, checkCommand: { type: 'array', items: { type: 'string' } } } } },
+        doneCriteria: { type: 'string' }, checkCommand: { type: 'array', items: { type: 'string' } },
+        needs: { type: 'object', properties: { commands: { type: 'array', items: { type: 'string' } }, readPaths: { type: 'array', items: { type: 'string' } } } } } } },
   },
 };
 const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
   properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, nextFocus: { type: 'string' } },
 };
-interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[] }
+interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 interface Plan { summary: string; question: string; gaps?: MissionGap[]; tasks: PlanTask[] }
 interface Judge { decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; nextFocus: string }
 
 type Row = Record<string, unknown>;
+/** Windows판은 직원이 Bash를 쓰지 않는다(OS 격리 없음): 명령이 필요한 작업은 실행 전에 사용자 확인으로 돌린다 */
+const BASH_OK = false;
 
 export interface MissionDeps {
   store: Store;
@@ -250,9 +253,49 @@ export class MissionRunner {
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, gaps: null, denials: null, blockers: null, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1) });
+    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, gaps: null, denials: null, blockers: null, parkedSigs: [], cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1) });
     void this.loop(id);
     return next;
+  }
+
+  /** 보류한 업무를 사용자가 해결함(권한 허용·환경 수정 등): 보류를 풀어 다음 계획부터 다시 시도할 수 있게 한다 */
+  retryParked(id: string): Mission {
+    const m = this.get(id);
+    if (!m.denials?.length && !m.blockers?.length && !m.gaps?.length && !m.parkedSigs?.length) return m;
+    this.event(m, 'answer', '보류한 업무를 해결했습니다. 다음 계획부터 다시 시도하세요.');
+    return this.set(id, { denials: null, blockers: null, gaps: null, parkedSigs: [], denialSigs: [], failSigs: [] });
+  }
+
+  /**
+   * 실행 전 권한 점검: 작업마다 오퍼레이터가 적은 필요 명령·읽을 경로가 담당 직원에게 허용돼 있는지 본다.
+   * 허용되지 않은 작업은 이번 사이클에서 빼고(돌려 봐야 같은 거부로 실패) 확인 필요 항목으로 돌려준다.
+   */
+  private preflight(plan: PlanFields, agents: Agent[], tasks: PlanTask[]): { keep: PlanTask[]; held: { task: PlanTask; denials: MissionDenial[] }[] } {
+    const by = (code: string) => agents.find((a) => a.code === code) ?? agents.find((a) => a.code === '00');
+    const folder = resolve(plan.folder);
+    const refs = [...plan.referenceDocs, ...plan.priorOutputs].map((r) => resolve(folder, r));
+    const inside = (p: string, r: string) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
+    const readable = (p: string, ag: Agent) => { const a = resolve(folder, p); return inside(a, folder) || [...refs, ...ag.references.map((r) => resolve(folder, r))].some((r) => inside(a, r)); }; // 직원에게 준 참조 자료도 읽을 수 있다
+    const toks = (c: string) => c.trim().split(/\s+/).filter(Boolean);
+    const allowed = (a: Agent, c: string) => BASH_OK && a.tools.includes('Bash') && a.allowedCommands.some((pfx) => { const p = toks(pfx); const t = toks(c); return p.length > 0 && p.every((x, i) => t[i] === x); });
+    const keep: PlanTask[] = []; const held: { task: PlanTask; denials: MissionDenial[] }[] = [];
+    for (const t of tasks) {
+      const a = by(t.agentCode);
+      if (!a) { keep.push(t); continue; }
+      const ds: MissionDenial[] = [];
+      for (const c of (t.needs?.commands ?? []).map(String).filter((x) => x.trim()).slice(0, 10)) {
+        if (allowed(a, c)) continue;
+        const suggestion = BASH_OK ? commandPrefix(c) : null;
+        ds.push({ agentId: a.id, agent: `${a.code} ${a.name}`, tool: '실행 전 점검 · 명령', kind: BASH_OK ? 'command' : 'other', target: c.slice(0, 300), suggestion, sig: `pre|${a.id}|cmd|${suggestion ?? c}` });
+      }
+      for (const p of (t.needs?.readPaths ?? []).map(String).filter((x) => x.trim()).slice(0, 10)) {
+        if (readable(p, a)) continue;
+        const abs = resolve(folder, p);
+        ds.push({ agentId: a.id, agent: `${a.code} ${a.name}`, tool: '실행 전 점검 · 읽기', kind: 'path', target: abs, suggestion: abs, sig: `pre|${a.id}|path|${abs}` });
+      }
+      if (ds.length) held.push({ task: t, denials: ds }); else keep.push(t);
+    }
+    return { keep, held };
   }
 
   /**
@@ -565,8 +608,12 @@ export class MissionRunner {
         this.event(m, 'operator_plan', `사이클 ${m.cycle} 계획: ${plan.summary} (작업 ${plan.tasks.length}개)`, plan);
         const gaps = (Array.isArray(plan.gaps) ? plan.gaps : []).filter((g) => g && (String(g.issue ?? '').trim() || String(g.need ?? '').trim()))
           .slice(0, 12).map((g) => ({ doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600) }));
-        if (gaps.length) {
-          // 근거 문서가 빈약·애매: 채워야 할 부분을 알려 주고 멈춘다(문서를 보완한 뒤 이어서 진행)
+        if (gaps.length && plan.tasks.length) {
+          // 근거가 부족한 부분이 있어도 기존 문서·결과물로 할 수 있는 일은 진행한다. 부족한 부분은 확인 필요로만 남긴다.
+          this.event(m, 'system', `근거가 부족한 부분은 확인 필요로 남기고, 할 수 있는 작업부터 진행합니다.\n${gaps.map((g) => `- [${g.doc || '문서 미지정'}] ${g.issue}`).join('\n')}`, { gaps });
+          this.set(id, { gaps });
+        } else if (gaps.length) {
+          // 근거가 없어 시작할 수 있는 작업이 하나도 없음: 채워야 할 부분을 알려 주고 멈춘다(문서를 보완한 뒤 이어서 진행)
           const q = `근거 문서를 보완해 주세요.${plan.question.trim() ? ` ${plan.question.trim()}` : ''}\n${gaps.map((g) => `- [${g.doc || '문서 미지정'}] ${g.issue}${g.need ? ` → 채울 내용: ${g.need}` : ''}`).join('\n')}`;
           this.event(m, 'question', q, { gaps });
           this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, gaps });
@@ -578,7 +625,25 @@ export class MissionRunner {
           return;
         }
 
-        // 2) 사이클 흐름 구성·실행
+        // 2) 실행 전 권한 점검: 허용되지 않은 명령·경로가 필요한 작업은 돌리지 않고 확인 필요로 뺀다
+        const pre = this.preflight(project.plan, agents, plan.tasks);
+        if (pre.held.length) {
+          const ds = pre.held.flatMap((h) => h.denials);
+          const list = pre.held.map((h) => `- ${h.task.title}: ${h.denials.map((d) => d.target).join(', ')}`).join('\n');
+          const cur = this.get(id);
+          const merged = [...(cur.denials ?? []).filter((d) => !ds.some((x) => x.sig === d.sig)), ...ds].slice(0, 30);
+          if (!pre.keep.length) {
+            const q = `계획한 작업이 모두 허용되지 않은 명령·경로를 필요로 해서 실행하지 않았습니다. 아래 항목을 허용하거나 지시를 바꿔 주세요.\n${list}`;
+            this.event(m, 'question', q, { denials: ds });
+            this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, denials: merged });
+            return;
+          }
+          this.event(m, 'system', `실행 전 점검: 허용되지 않은 명령·경로가 필요한 작업은 이번 사이클에서 빼고 확인 필요로 남깁니다. 나머지 작업은 진행합니다.\n${list}`, { denials: ds });
+          this.set(id, { denials: merged, parkedSigs: [...new Set([...(cur.parkedSigs ?? []), ...ds.map((d) => d.sig)])] });
+          plan.tasks = pre.keep;
+        }
+
+        // 3) 사이클 흐름 구성·실행
         const built = this.buildCycleGraph(m, project.plan, agents, plan);
         if ('error' in built) {
           this.event(m, 'question', `계획을 실행 가능한 흐름으로 만들지 못했습니다: ${built.error}`);
@@ -601,15 +666,24 @@ export class MissionRunner {
         // 권한 거부: 실행이 실패했거나 직전 사이클과 같은 거부가 반복되면 같은 설정으로 다시 시도하지 않고 멈춘다(권한은 앱 설정으로만 바뀐다)
         if (!this.replan.has(id)) {
           const blocks = this.permissionBlocks(run.id);
-          const prev = this.get(id).denialSigs ?? [];
+          const cur = this.get(id);
+          const prev = cur.denialSigs ?? [];
+          const parked = cur.parkedSigs ?? [];
           const repeated = blocks.some((b) => prev.includes(b.sig));
           if (blocks.length && (fin.status !== 'succeeded' || repeated)) {
-            const q = `직원이 권한 때문에 작업을 끝내지 못했습니다${repeated ? '(지난 사이클과 같은 거부가 반복됨)' : ''}. 권한은 지시문으로 바뀌지 않으므로, 아래 항목을 앱 설정에서 허용하거나 지시를 바꾼 뒤 다시 시도하세요.\n${blocks.map((b) => `- ${b.agent} · ${b.tool}: ${b.target}`).join('\n')}`;
-            this.event(m, 'question', q, { denials: blocks });
-            this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, denials: blocks, denialSigs: blocks.map((b) => b.sig) });
-            return;
-          }
-          this.set(id, { denialSigs: blocks.map((b) => b.sig) });
+            const list = blocks.map((b) => `- ${b.agent} · ${b.tool}: ${b.target}`).join('\n');
+            const merged = [...(cur.denials ?? []).filter((d) => !blocks.some((x) => x.sig === d.sig)), ...blocks].slice(0, 30);
+            if (blocks.some((b) => parked.includes(b.sig))) {
+              // 보류했던 업무가 해결되지 않은 채 다시 막힘: 더 돌면 같은 실패만 반복하므로 멈추고 확인을 받는다
+              const q = `직원이 권한 때문에 작업을 끝내지 못했습니다(보류했던 업무가 같은 거부로 다시 막힘). 권한은 지시문으로 바뀌지 않으므로, 아래 항목을 앱 설정에서 허용하거나 지시를 바꾼 뒤 다시 시도하세요.\n${list}`;
+              this.event(m, 'question', q, { denials: blocks });
+              this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, denials: merged, denialSigs: blocks.map((b) => b.sig) });
+              return;
+            }
+            // 처음 막힘: 그 업무만 보류(확인 필요)하고 나머지는 계속한다. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않는다.
+            this.event(m, 'system', `권한 때문에 막힌 업무를 보류했습니다(확인 필요). 해결하기 전까지 다시 계획하지 않고 나머지 작업을 계속합니다.\n${list}`, { denials: blocks });
+            this.set(id, { denials: merged, denialSigs: blocks.map((b) => b.sig), parkedSigs: [...new Set([...parked, ...blocks.map((b) => b.sig)])] });
+          } else this.set(id, { denialSigs: blocks.map((b) => b.sig) });
         }
         // 실패가 내 PC 환경 문제이거나 지난 사이클과 같은 원인으로 반복되면, 다시 계획해도 같은 실패가 나므로 멈추고 사용자 검토를 받는다
         if (!this.replan.has(id)) {
@@ -620,11 +694,19 @@ export class MissionRunner {
           const prev = this.get(id).failSigs ?? [];
           const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
           if (blockers.length) {
-            const q = `에이전트가 스스로 해결할 수 없는 문제로 멈췄습니다. 같은 설정으로 다시 시도해도 같은 결과가 나오므로 확인이 필요합니다.\n${blockers.map((b) => `- [${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}] ${b.step}: ${b.reason}`).join('\n')}`;
-            this.event(m, 'question', q, { blockers });
-            this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, blockers, failSigs: items.map((x) => failureSig(x.reason, x.step)) });
-            return;
-          }
+            const list = blockers.map((b) => `- [${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}] ${b.step}: ${b.reason}`).join('\n');
+            const parked = this.get(id).parkedSigs ?? [];
+            const bsig = (b: MissionBlocker) => `fail|${failureSig(b.reason, b.step)}`;
+            const all = [...(this.get(id).blockers ?? []).filter((x) => !blockers.some((b) => bsig(b) === bsig(x))), ...blockers].slice(0, 20);
+            if (blockers.some((b) => parked.includes(bsig(b)))) {
+              const q = `에이전트가 스스로 해결할 수 없는 문제로 멈췄습니다(보류했던 업무가 같은 원인으로 다시 실패). 같은 설정으로 다시 시도해도 같은 결과가 나오므로 확인이 필요합니다.\n${list}`;
+              this.event(m, 'question', q, { blockers });
+              this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, blockers: all, failSigs: items.map((x) => failureSig(x.reason, x.step)) });
+              return;
+            }
+            this.event(m, 'system', `스스로 풀 수 없는 실패가 난 업무를 보류했습니다(확인 필요). 해결하기 전까지 다시 계획하지 않고 나머지 작업을 계속합니다.\n${list}`, { blockers });
+            this.set(id, { blockers: all, parkedSigs: [...new Set([...parked, ...blockers.map(bsig)])], failSigs: items.map((x) => failureSig(x.reason, x.step)) });
+          } else
           this.set(id, { failSigs: items.map((x) => failureSig(x.reason, x.step)) });
         }
         if (this.replan.has(id)) {
@@ -641,7 +723,8 @@ export class MissionRunner {
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_judge', `판단: ${judge.decision === 'continue' ? '계속' : judge.decision === 'done' ? '완료' : '사용자 확인'} — ${judge.summary}`, judge);
         if (judge.decision === 'done') {
-          this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}` });
+          const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
+          this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}${open ? `\n(보류한 업무 ${open}건은 확인이 필요합니다)` : ''}` });
           this.event(m, 'question', '완료 보고 — 결과물을 검토하고 추가 지시하거나 종료하세요.');
           void this.learn(id);
           return;
@@ -730,10 +813,10 @@ export class MissionRunner {
       const scope = (t.writeScope.length ? t.writeScope : [`${plan.outputDir}/mission`]).map(normRel).filter((x) => x && !escapes(x));
       const outs = t.outputs.map((o) => ({ path: normRel(o.path), format: o.format, required: true })).filter((o) => o.path && !escapes(o.path));
       const x = 120 + i * 360;
-      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: t.instructions, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true });
+      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true });
       const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800 });
       const rv = mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria,
-        instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 타당한 지적이 남아 있으면 changes_requested로 재작업을 요청하고, 근거 없는 지적은 이유를 들어 기각한다. 완료 조건 충족 여부를 최종 판단한다.' });
+        instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 재작업(changes_requested)은 완료 조건을 충족하지 못했거나, 근거 문서와 다르게 만들었거나, P0·P1(정확성·보안·요구 위반) 지적이 타당할 때만 요청한다. P2 같은 경미한 지적·표현·완성도 지적은 재작업 사유가 아니다. 승인하되 summary에 "남은 경미 지적"으로 적는다. 근거 없는 지적은 이유를 들어 기각한다.' });
       nodes.push(a, cx, rv);
       e(a, cx); e(cx, rv); e(rv, a, 'fail');
       let last = rv;
@@ -795,10 +878,24 @@ export class MissionRunner {
       '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',
       '- outputs의 path는 만들 파일 경로다. 여러 파일을 담는 폴더를 산출물로 하려면 폴더 경로를 쓰고, 그 안 파일의 형식을 format에 쓴다(폴더 안에 그 형식 파일이 하나 이상 있어야 통과). 형식을 가리지 않으면 any.',
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
-      '- 먼저 근거 문서를 읽고, 이번 지시를 수행하기에 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)이 있으면 tasks를 비우고 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 구체적으로 쓴다. 모든 문서가 다 있어야 하는 것은 아니다. 이번 지시에 필요한 근거만 판단하고, 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
+      '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
+      `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
+      '- needs: 작업에 Bash 명령이 필요하면 commands에 실제 실행할 명령을, 프로젝트 폴더 밖에서 읽어야 하는 파일·폴더가 있으면 readPaths에 절대 경로를 쓴다. 담당 직원에게 허용되지 않은 것이 있으면 그 작업은 실행하지 않고 사용자 확인으로 돌린다. 필요 없으면 빈 배열.',
+      '- 이 PC(Windows판)에서는 직원이 Bash 명령을 쓸 수 없다. 명령이 꼭 필요한 일은 needs.commands에 적어 사용자에게 맡긴다.',
       '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 그렇지 않으면 question은 빈 문자열.',
       '- 이전 사이클의 결과·판단을 이어받아 남은 일만 계획한다. 작업은 1~4개로 작게 나눈다.',
+      ...this.parkedSection(m),
     ].join('\n');
+  }
+
+  /** 보류한 업무(사용자 확인 대기): 같은 업무·같은 권한이 필요한 작업을 다시 계획하지 않게 알린다 */
+  private parkedSection(m: Mission): string[] {
+    const ds = m.denials ?? []; const bs = m.blockers ?? [];
+    if (!ds.length && !bs.length) return [];
+    return ['', '## 보류한 업무(사용자 확인 대기 — 다시 계획하지 말 것)',
+      ...ds.map((d) => `- 권한: ${d.agent} · ${d.tool}: ${d.target}`), ...bs.map((b) => `- ${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}: ${b.step} — ${b.reason.slice(0, 200)}`),
+      '- 위 업무와 같은 작업, 같은 명령·경로가 필요한 작업은 계획하지 않는다. 그 결과가 없어도 할 수 있는 나머지 일을 계획한다.',
+      '- 남은 일이 모두 보류한 업무에 달려 있으면 tasks를 비우고 question에 무엇을 해결해야 하는지 한 가지로 묻는다.'];
   }
 
   /** 계획 프롬프트의 '근거 문서' 절: 등록된 프로젝트 완성 문서와 상태(파일 경로는 프로젝트 폴더 기준) */
@@ -832,6 +929,8 @@ export class MissionRunner {
       '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다.',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
+      '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',
+      ...this.parkedSection(m),
     ].join('\n');
   }
 

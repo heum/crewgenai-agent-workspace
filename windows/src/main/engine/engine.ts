@@ -21,6 +21,7 @@ import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { buildReport } from './report';
 import { effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
+import { laneBlocks } from './lanes';
 
 export interface Tracer {
   runStarted(run: Run, meta: Record<string, unknown>): void;
@@ -380,7 +381,7 @@ export class Engine {
   isActive(runId: string) { return this.active.has(runId); }
 
   // ───────── 그래프 컴파일과 구동 ─────────
-  private compile(run: Run, graph: WorkGraph) {
+  private compile(run: Run, graph: WorkGraph, lanes: boolean) {
     const sg = new StateGraph(RunState) as unknown as {
       addNode: (id: string, fn: (s: S) => Promise<Update>) => void;
       addEdge: (a: string, b: string) => void;
@@ -390,17 +391,31 @@ export class Engine {
         getState: (cfg: unknown) => Promise<{ next: string[]; values: S }>;
       };
     };
-    for (const n of graph.nodes) {
-      sg.addNode(n.id, async (state: S) => {
-        // 진행 중인 노드 작업 수 — 사용 한도로 멈출 때 남은 작업이 모두 끝난 뒤에 재개 가능 상태로 둔다
-        const c = this.active.get(run.id); if (c) c.inflight++;
-        try { return await this.execNode(run.id, graph, n, state); } finally { if (c) c.inflight--; }
-      });
-      sg.addConditionalEdges(n.id, (state: S) => { const r = state.route[n.id] ?? []; return r.length ? r : END; });
-    }
     const ents = entryNodes(graph); const inputs = ents.filter((n) => n.kind === 'input');
     const starts = run.startNodeId ? [run.startNodeId] : (inputs.length ? inputs : ents).map((n) => n.id);
-    for (const s of starts) sg.addEdge(START, s);
+    // 작업 줄: 한 입구로만 들어오는 묶음(작성 → 리뷰 → 재검토 → 검사)은 한 실행 단위로 돌려, 먼저 끝난 작업이 다른 작업을 기다리지 않고 다음 단계로 간다.
+    // 이전 방식으로 시작한 실행(체크포인트가 개별 단계 기준)은 그대로 이어서 진행한다.
+    const blocks = lanes ? laneBlocks(graph, starts) : new Map<string, { head: string; members: string[] }>();
+    const blockOf = new Map<string, string>();
+    for (const [key, b] of blocks) for (const m of b.members) blockOf.set(m, key);
+    const target = (id: string) => blockOf.get(id) ?? id;
+    const uniq = (xs: string[]) => [...new Set(xs.map(target))];
+    const counted = async (fn: () => Promise<Update>) => {
+      // 진행 중인 노드 작업 수 — 사용 한도로 멈출 때 남은 작업이 모두 끝난 뒤에 재개 가능 상태로 둔다
+      const c = this.active.get(run.id); if (c) c.inflight++;
+      try { return await fn(); } finally { if (c) c.inflight--; }
+    };
+    for (const n of graph.nodes) {
+      if (blockOf.has(n.id)) continue;
+      sg.addNode(n.id, (state: S) => counted(() => this.execNode(run.id, graph, n, state)));
+      sg.addConditionalEdges(n.id, (state: S) => { const r = uniq(state.route[n.id] ?? []); return r.length ? r : END; });
+    }
+    for (const [key, b] of blocks) {
+      const members = new Set(b.members);
+      sg.addNode(key, (state: S) => counted(() => this.execLane(run.id, graph, key, b.head, members, target, state)));
+      sg.addConditionalEdges(key, (state: S) => { const r = state.route[key] ?? []; return r.length ? r : END; });
+    }
+    for (const s of uniq(starts)) sg.addEdge(START, s);
     return sg.compile({ checkpointer: this.o.checkpointer });
   }
 
@@ -414,11 +429,12 @@ export class Engine {
     // 다시 구동하면 이전 한도 대기 표시는 끝난 것이다(사용자가 실행 화면에서 직접 재개한 경우 포함)
     { const lt = this.limitTimers.get(runId); if (lt) { clearTimeout(lt); this.limitTimers.delete(runId); } if (this.limitOf(runId)) this.setMeta(runId, 'limit', ''); }
     this.setRun(runId, 'running', '');
-    const app = this.compile(run, gv.graph);
     const config = { configurable: { thread_id: runId }, recursionLimit: 10000, signal: ctl.abort.signal };
     try {
       let input: unknown;
       const prior = await this.o.checkpointer.getTuple({ configurable: { thread_id: runId } });
+      if (!prior && mode !== 'review') this.setMeta(runId, 'lanes', '1'); // 처음 시작하는 실행만 작업 줄 방식
+      const app = this.compile(run, gv.graph, this.meta(runId, 'lanes') === '1');
       if (mode === 'review') input = new Command({ resume: reviewId });
       else if (prior) input = null; // 마지막 체크포인트부터 재개
       else input = (this.s.runSnapshot(runId).seed as Partial<S> | null) ?? {};
@@ -482,6 +498,33 @@ export class Engine {
     if (values.terminal.length) this.setRun(runId, 'failed', values.terminal.join(' / '));
     else if (stuck.length) this.setRun(runId, 'failed', `선행 단계가 완료되지 않아 진행하지 못한 단계: ${stuck.map((n) => n.label).join(', ')}`);
     else this.setRun(runId, 'succeeded', '모든 단계가 완료 조건을 충족했습니다.');
+  }
+
+  /**
+   * 작업 줄 실행: 입구(head)부터 묶음 안의 단계를 차례로(한 단계가 묶음 안 여러 단계로 갈 때는 함께) 실행한다.
+   * 각 단계는 평소와 같은 execNode로 실행하고 방문 결과도 같은 방식으로 저장하므로, 중간에 멈춰도 재개 때 끝난 단계는 저장된 결과를 쓴다.
+   * 묶음 밖으로 나가는 연결은 route[묶음 키]에 모아 LangGraph가 다음 단계로 넘긴다.
+   */
+  private async execLane(runId: string, graph: WorkGraph, key: string, head: string, members: Set<string>, target: (id: string) => string, state: S): Promise<Update> {
+    const L: S = { records: { ...state.records }, visits: { ...state.visits }, route: { ...state.route }, feedback: { ...state.feedback }, terminal: [...state.terminal] };
+    const acc = { records: {} as S['records'], visits: {} as S['visits'], route: {} as S['route'], feedback: {} as S['feedback'], terminal: [] as string[] };
+    const apply = (t: S | typeof acc, u: Update) => {
+      Object.assign(t.records, u.records ?? {}); Object.assign(t.visits, u.visits ?? {}); Object.assign(t.route, u.route ?? {}); Object.assign(t.feedback, u.feedback ?? {});
+      if (u.terminal?.length) t.terminal.push(...u.terminal);
+    };
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const exits = new Set<string>();
+    let frontier = [head];
+    while (frontier.length) {
+      const snap: S = { records: { ...L.records }, visits: { ...L.visits }, route: { ...L.route }, feedback: { ...L.feedback }, terminal: [...L.terminal] };
+      const ups = await Promise.all(frontier.map((id) => this.execNode(runId, graph, byId.get(id)!, snap)));
+      for (const u of ups) { apply(L, u); apply(acc, u); }
+      const next = new Set<string>();
+      for (const id of frontier) for (const t of L.route[id] ?? []) (members.has(t) ? next : exits).add(t);
+      frontier = [...next];
+    }
+    acc.route[key] = [...new Set([...exits].map(target))];
+    return acc;
   }
 
   // ───────── 노드 실행 ─────────

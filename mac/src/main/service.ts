@@ -214,7 +214,12 @@ export class Service {
     const items: AttentionItem[] = [];
     for (const p of this.store.listProjects()) {
       for (const m of this.missions.list(p.id)) {
-        if (m.status !== 'waiting_user') continue;
+        if (m.status !== 'waiting_user') {
+          // 진행 중·완료 보고 미션의 보류한 업무(나머지는 계속 진행): 사용자가 해결해야 다시 시도한다
+          const open = (m.denials?.length ?? 0) + (m.blockers?.length ?? 0);
+          if (open && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: m.denials?.length ? 'denied' : 'blocked', label: `보류한 업무 ${open}건 — 해결해야 다시 시도합니다(나머지 작업은 계속)`, missionId: m.id });
+          continue;
+        }
         const kind: AttentionItem['kind'] = m.denials?.length ? 'denied' : m.blockers?.length ? 'blocked' : m.gaps?.length ? 'gaps' : 'question';
         items.push({ projectId: p.id, kind, label: (m.question ?? '').split('\n')[0].slice(0, 140) || '오퍼레이터가 확인을 요청했습니다', missionId: m.id });
       }
