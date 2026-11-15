@@ -121,3 +121,60 @@ describe('확인 필요 항목 고르기', () => {
     svc.close();
   });
 });
+
+describe('직원 제안', () => {
+  it('오퍼레이터가 새 직원·역할 변경을 제안하면 진행은 계속하고, 사용자가 그대로·고쳐서 적용하거나 무시한다(권한은 바뀌지 않음)', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:staff]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(m.status).toBe('done');
+    const ps = m.staffProposals ?? [];
+    expect(ps.map((x) => x.kind).sort()).toEqual(['add', 'update']); // 오퍼레이터(00) 변경은 걸러짐
+    expect(ps.filter((x) => x.status === 'pending')).toHaveLength(2); // 다음 사이클에 같은 제안을 다시 내지 않음
+    expect(svc.attention().items.some((i) => i.missionId === m.id && i.kind === 'staff')).toBe(true);
+
+    const add = ps.find((x) => x.kind === 'add')!;
+    const before = svc.store.listAgents(p.id);
+    svc.resolveStaffProposal(m.id, add.id, 'apply', { name: '화면 검수 담당', role: add.role, instructions: add.instructions });
+    const created = svc.store.listAgents(p.id).find((a) => !before.some((b) => b.id === a.id))!;
+    expect(created.name).toBe('화면 검수 담당');
+    expect(created.tools).not.toContain('Bash');
+    expect(created.allowedCommands).toEqual([]);
+    expect(created.workPaths).toEqual(['docs/qa']);
+    expect(() => svc.resolveStaffProposal(m.id, add.id, 'apply', null)).toThrow('이미 처리');
+
+    const up = ps.find((x) => x.kind === 'update')!;
+    const target = before.find((a) => a.code === up.agentCode)!;
+    svc.resolveStaffProposal(m.id, up.id, 'apply', null);
+    const changed = svc.store.getAgent(target.id);
+    expect(changed.instructions).toBe('근거 문서의 줄 번호를 붙여 작성한다.');
+    expect(changed.tools).toEqual(target.tools);
+    expect(changed.allowedCommands).toEqual(target.allowedCommands);
+    const after = svc.missions.get(m.id);
+    expect(after.staffProposals?.every((x) => x.status === 'applied')).toBe(true);
+    expect(svc.attention().items.some((i) => i.missionId === m.id && i.kind === 'staff')).toBe(false);
+    svc.missions.answer(m.id, '', 'stop');
+    svc.close();
+  });
+
+  it('무시한 제안은 기록에 남고 다시 제안하지 않는다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:staff]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    // 제안 뒤 그 직원을 해고하면, 같은 코드를 이어받은 새 직원에게 옛 제안이 적용되지 않는다
+    const up = m.staffProposals!.find((x) => x.kind === 'update')!;
+    svc.fireAgent(up.agentId!);
+    const add = m.staffProposals!.find((x) => x.kind === 'add')!;
+    svc.resolveStaffProposal(m.id, add.id, 'apply', null);
+    expect(svc.store.listAgents(p.id).some((a) => a.code === up.agentCode)).toBe(true); // 코드를 이어받은 새 직원
+    expect(() => svc.resolveStaffProposal(m.id, up.id, 'apply', null)).toThrow('직원이 없습니다');
+    for (const x of svc.missions.get(m.id).staffProposals ?? []) if (x.status === 'pending') svc.resolveStaffProposal(m.id, x.id, 'dismiss', null);
+    const d = svc.missions.get(m.id);
+    expect(d.staffProposals?.every((x) => x.status !== 'pending')).toBe(true);
+    svc.missions.answer(d.id, '다음 사이클', 'continue');
+    const e = await waitMission(svc, d.id, ['waiting_user', 'done', 'failed']);
+    expect((e.staffProposals ?? []).filter((x) => x.status === 'pending')).toHaveLength(0);
+    svc.missions.answer(e.id, '', 'stop');
+    svc.close();
+  });
+});

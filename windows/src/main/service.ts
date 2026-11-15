@@ -210,7 +210,41 @@ export class Service {
     if (a.code === '00' && this.missions.list(a.projectId).some((m) => ['planning', 'running', 'evaluating'].includes(m.status))) throw new Error('작동 중인 미션의 오퍼레이터(00 총괄)는 해고할 수 없습니다. 미션을 먼저 중단하세요.');
     return { cleared: this.store.fireAgent(agentId) };
   }
-  /** 사용자가 확인해야 진행되는 항목(모든 프로젝트). 에이전트가 스스로 풀 수 없는 것을 먼저 보여 주는 데 쓴다. */
+  /**
+   * 직원 제안 적용·무시. 새 직원은 비슷한 기존 직원의 도구만 물려받고(허용 명령·참고 자료·Bash·웹은 물려받지 않음), 기존 직원은 이름·역할·지시만 바꾼다.
+   * 권한(도구·허용 명령)은 제안으로 바뀌지 않는다.
+   */
+  resolveStaffProposal(missionId: string, proposalId: string, action: 'apply' | 'dismiss', edit: { name: string; role: string; instructions: string } | null) {
+    const m = this.missions.get(missionId);
+    const p = (m.staffProposals ?? []).find((x) => x.id === proposalId);
+    if (!p) throw new Error('직원 제안을 찾을 수 없습니다.');
+    if (p.status !== 'pending') throw new Error('이미 처리한 직원 제안입니다.');
+    if (action === 'dismiss') return this.missions.markStaffProposal(missionId, proposalId, 'dismissed', '');
+    const name = (edit?.name ?? p.name).trim().slice(0, 60); const role = (edit?.role ?? p.role).trim().slice(0, 300); const instructions = (edit?.instructions ?? p.instructions).trim().slice(0, 6000);
+    const agents = this.store.listAgents(m.projectId);
+    if (p.kind === 'update') {
+      const a = p.agentId ? agents.find((x) => x.id === p.agentId) : undefined;
+      if (!a || this.store.isFired(a.id)) throw new Error(`제안할 때의 ${p.agentCode} 직원이 없습니다(해고됐거나 바뀜). 이 제안은 무시하세요.`);
+      if (a.code === '00') throw new Error('오퍼레이터(00)는 제안으로 바꾸지 않습니다.');
+      if (this.missions.working(m.projectId).some((w) => w.agentId === a.id)) throw new Error(`${a.code} ${a.name}은(는) 지금 일하는 중입니다. 작업이 끝난 뒤 적용하세요.`);
+      const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a;
+      this.saveAgent(m.projectId, a.id, { ...fields, name: name || a.name, role: role || a.role, instructions: instructions || a.instructions });
+      return this.missions.markStaffProposal(missionId, proposalId, 'applied', `${a.code} ${name || a.name}의 역할·지시를 바꿈`);
+    }
+    if (!name) throw new Error('새 직원 이름을 입력하세요.');
+    const base = p.agentId ? agents.find((x) => x.id === p.agentId && x.code !== '00' && !this.store.isFired(x.id)) : undefined;
+    const used = new Set(agents.map((x) => x.code));
+    let n = 1; while (used.has(String(n).padStart(2, '0'))) n++;
+    const code = String(n).padStart(2, '0');
+    const tools = (base?.tools ?? ['Read', 'Grep', 'Glob', 'Edit', 'Write']).filter((t) => t !== 'Bash' && t !== 'WebFetch');
+    const a = this.saveAgent(m.projectId, null, {
+      code, name, role, instructions, references: [], workPaths: p.workPaths, tools, allowedCommands: [],
+      expectedOutput: base?.expectedOutput ?? '', doneCriteria: base?.doneCriteria ?? '', reviewerAgentId: base?.reviewerAgentId ?? null, model: base?.model ?? '',
+      maxBudgetUsd: base?.maxBudgetUsd ?? null, timeoutSec: base?.timeoutSec ?? 1800, maxRetries: base?.maxRetries ?? 1, active: true,
+    });
+    return this.missions.markStaffProposal(missionId, proposalId, 'applied', `새 직원 ${a.code} ${a.name} 추가`);
+  }
+
   /**
    * 확인 필요 항목의 근거 위치 미리보기(읽기 전용). 경로는 프로젝트 폴더 기준이고, 못 찾으면 산출물·수정 허용 경로 아래에서 찾는다.
    * 실제 경로(링크를 따라간 경로)가 그 프로젝트 폴더·참고 자료 안일 때만 읽고, 비밀값은 가린다.
@@ -252,6 +286,7 @@ export class Service {
     return { path: abs, exists: true, start, lines: all.slice(start - 1, end).map((l) => l.slice(0, 400)), target, total: all.length };
   }
 
+  /** 사용자가 확인해야 진행되는 항목(모든 프로젝트). 에이전트가 스스로 풀 수 없는 것을 먼저 보여 주는 데 쓴다. */
   attention(): Attention {
     const items: AttentionItem[] = [];
     for (const p of this.store.listProjects()) {
@@ -260,6 +295,8 @@ export class Service {
           // 진행 중·완료 보고 미션의 보류한 업무(나머지는 계속 진행): 사용자가 해결해야 다시 시도한다
           const open = (m.denials?.length ?? 0) + (m.blockers?.length ?? 0);
           if (open && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: m.denials?.length ? 'denied' : 'blocked', label: `보류한 업무 ${open}건 — 해결해야 다시 시도합니다(나머지 작업은 계속)`, missionId: m.id });
+          const staff = (m.staffProposals ?? []).filter((x) => x.status === 'pending').length;
+          if (staff && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: 'staff', label: `직원 제안 ${staff}건 — 적용할지 골라 주세요(진행은 계속)`, missionId: m.id });
           const pick = (m.gaps ?? []).filter((g) => g.options?.length).length;
           if (pick && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: 'gaps', label: `골라 줄 결정 ${pick}건 — 고르면 다음 계획부터 그대로 따릅니다(나머지 작업은 계속)`, missionId: m.id });
           continue;
@@ -273,7 +310,7 @@ export class Service {
         else if (r.status === 'needs_resume' && !this.engine.limitOf(r.id) && !missionRuns.has(r.id)) items.push({ projectId: p.id, kind: 'resume', label: '중단된 실행 — 재개 방법을 골라야 합니다', runId: r.id });
       }
     }
-    const order: AttentionItem['kind'][] = ['denied', 'blocked', 'gaps', 'question', 'resume', 'review'];
+    const order: AttentionItem['kind'][] = ['denied', 'blocked', 'gaps', 'question', 'staff', 'resume', 'review'];
     items.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
     return { items, learningsToReview: this.learnings.toReview() };
   }

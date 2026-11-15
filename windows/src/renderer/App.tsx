@@ -197,7 +197,7 @@ export default function App() {
   );
 }
 
-const ATTN_LABEL: Record<AttentionItem['kind'], string> = { denied: '권한 필요', blocked: '해결 필요', gaps: '근거 문서 보완', question: '답변 필요', resume: '재개 선택', review: '팀장 검토' };
+const ATTN_LABEL: Record<AttentionItem['kind'], string> = { denied: '권한 필요', blocked: '해결 필요', gaps: '근거 문서 보완', question: '답변 필요', resume: '재개 선택', review: '팀장 검토', staff: '직원 제안' };
 /** 확인이 필요한 일 — 에이전트가 스스로 풀 수 없어 멈춘 것을 화면 맨 위에 가장 먼저 보여 준다 */
 function AttentionBar({ attn, projectId, projects, onOpen }: { attn: Attention | null; projectId: string; projects: Project[]; onOpen: (it: AttentionItem) => void }) {
   if (!attn || !attn.items.length) return null;

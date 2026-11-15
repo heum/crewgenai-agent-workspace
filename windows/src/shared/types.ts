@@ -428,6 +428,8 @@ export interface WorkspaceApi {
   decideMission(missionId: ID, picks: MissionPick[], resume: boolean): Promise<Mission>;
   /** 확인 필요 항목의 근거 위치를 읽기 전용으로 미리 본다(프로젝트 폴더·참고 자료 안의 텍스트 파일만) */
   refSnippet(missionId: ID, path: string, line: number | null): Promise<RefSnippet>;
+  /** 직원 제안 적용(edit가 있으면 고친 내용으로) 또는 무시. 적용하면 직원 목록에 바로 반영되고 다음 계획부터 쓴다 */
+  resolveStaffProposal(missionId: ID, proposalId: ID, action: 'apply' | 'dismiss', edit: StaffEdit | null): Promise<Mission>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
   missionSnapshots(missionId: ID): Promise<MissionSnapshot[]>;
@@ -492,6 +494,8 @@ export interface Mission {
   gaps?: MissionGap[] | null;
   /** 사용자가 확인 필요 항목에 고른 결정(누적) */
   decisions?: MissionDecision[];
+  /** 오퍼레이터의 직원 제안(적용·무시한 것도 기록으로 남김) */
+  staffProposals?: StaffProposal[];
   /** 오퍼레이터가 직접 물은 질문이면 배열(선택형이면 선택지, 아니면 빈 배열). 앱이 만든 안내 문구면 null */
   questionOptions?: string[] | null;
   denials?: MissionDenial[] | null; // 권한 거부로 멈춘 경우 거부 항목
@@ -515,6 +519,20 @@ export interface MissionGap {
   /** 근거 위치: 프로젝트 폴더 기준 경로(또는 참고 문서 절대 경로)와 줄 번호 */ refs?: MissionRef[];
 }
 export interface MissionRef { path: string; line?: number | null }
+/**
+ * 오퍼레이터의 직원 제안: 새 직원(포지션) 추가, 기존 직원의 역할·지시 변경. 사용자가 적용해야 반영된다.
+ * 도구·허용 명령 같은 권한은 제안으로 바꾸지 않는다(권한은 확인 필요의 허용 버튼으로만).
+ */
+export interface StaffProposal {
+  id: ID; kind: 'add' | 'update';
+  agentId: ID | null; // 제안할 때의 그 직원(코드는 해고 뒤 다른 직원이 이어받을 수 있어 ID로 확인)
+  agentCode: string; // update: 바꿀 직원 코드, add: 비슷한 일을 하는 기존 직원 코드(도구를 그대로 씀, 없으면 빈 값)
+  name: string; role: string; instructions: string; workPaths: string[];
+  reason: string; cycle: number; at: string;
+  status: 'pending' | 'applied' | 'dismissed'; result?: string;
+}
+/** 사용자가 고쳐서 적용할 때 바꾼 값 */
+export interface StaffEdit { name: string; role: string; instructions: string }
 /** 근거 위치 미리보기: 해당 줄 앞뒤(줄 번호 없으면 앞부분) */
 export interface RefSnippet { path: string; exists: boolean; start: number; lines: string[]; target: number | null; total: number; note?: string }
 /** 사용자가 확인 필요 항목에 고른 결정(이 미션 동안 오퍼레이터·직원이 그대로 따른다) */
@@ -629,7 +647,7 @@ export interface Learning extends LearningFields { id: ID; source: string; revie
 /** 사용자가 확인해야 진행되는 항목(에이전트가 스스로 해결할 수 없는 것) */
 export interface AttentionItem {
   projectId: ID;
-  kind: 'denied' | 'blocked' | 'gaps' | 'question' | 'review' | 'resume';
+  kind: 'denied' | 'blocked' | 'gaps' | 'question' | 'review' | 'resume' | 'staff';
   label: string;
   missionId?: ID;
   runId?: ID;

@@ -20,6 +20,7 @@
 //   [[mock:gaps-with-tasks]] 오퍼레이터가 근거 부족(gaps)을 적으면서도 작업을 계획
 //   [[mock:gaps-options]]    근거 부족 항목에 선택지(options)를 달고 작업도 계획(사용자 결정이 있으면 그 항목은 다시 내지 않음)
 //   [[mock:gaps-options-only]] 선택지 달린 근거 부족만 내고 작업 없음 — 사용자 결정이 생기면 작업을 계획
+//   [[mock:staff]]          오퍼레이터가 직원 제안(새 직원·역할 변경, 오퍼레이터 00 변경은 걸러져야 함)을 함께 냄(기록에 있으면 다시 내지 않음)
 //   [[mock:ask-options]]     계획 질문을 선택지(questionOptions)와 함께 묻는다(답변 전 한 번)
 // Windows: 파이프 출력이 비동기라 process.exit 전에 내용이 잘릴 수 있어 동기 쓰기로 바꾼다
 for (const s of [process.stdout, process.stderr]) { try { if (s._handle && s._handle.setBlocking) s._handle.setBlocking(true); } catch { /* 무시 */ } }
@@ -147,6 +148,11 @@ async function main() {
     if (!ask && parked && (denyMarks.length || needCmd)) plan.tasks = plan.tasks.slice(1);
     if (!ask && !plan.tasks.length) plan.question = '보류한 업무를 해결해야 진행할 수 있습니다.';
     if (!ask && user.includes('[[mock:gaps-with-tasks]]')) plan.gaps = [{ doc: '서비스 기획서', issue: '대상 사용자 범위가 애매하다', need: '1차 출시 대상 사용자군' }];
+    const scode = ((prompt.split('## 사용 가능한 직원')[1] || '').match(/^- (0[1-9]|[1-9]\d) .*쓰기 가능/m) || [])[1] || code;
+    if (!ask && user.includes('[[mock:staff]]') && !prompt.includes('## 직원 제안 기록')) plan.staffProposals = [
+      { kind: 'add', agentCode: scode, name: '화면 검수', role: '화면과 문서 대조', instructions: '화면 시안과 기능 대조표를 비교해 다른 점을 적는다.', workPaths: ['docs/qa'], reason: '사이클 결과에서 화면 대조 담당이 없어 같은 지적이 반복됨' },
+      { kind: 'update', agentCode: scode, name: '', role: '문서 작성(근거 줄 번호 필수)', instructions: '근거 문서의 줄 번호를 붙여 작성한다.', workPaths: [], reason: '근거 위치 없이 작성해 재검토에서 반려됨' },
+      { kind: 'update', agentCode: '00', name: '', role: '오퍼레이터', instructions: '바꾼 지시', workPaths: [], reason: '걸러져야 함' }];
     const decided = prompt.includes('## 사용자 결정(');
     const optGap = { doc: '기능 대조표.md', issue: '항목 A가 화면 시안과 제품에서 다르다', need: '어느 쪽을 기준으로 할지', explain: '기능 대조표 2줄에는 버튼이 위에 있다고 적혀 있지만 제품에는 본문에 있습니다. 어느 쪽을 맞출지 정해야 화면 작업을 시작할 수 있습니다.', refs: [{ path: 'docs/기능 대조표.md', line: 2 }], options: ['HTML 기준 유지 — 제품을 HTML에 맞춘다', '제품 기준 승인 — HTML을 제품에 맞춘다'] };
     if (!ask && user.includes('[[mock:gaps-options]]') && !decided) plan.gaps = [optGap];

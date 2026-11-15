@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { autoLayout, needsLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionRef, RefSnippet, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
+import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionRef, RefSnippet, StaffProposal, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
 import { MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS_LABEL, RUN_STATUS_LABEL, billingLabel } from '../../shared/types';
 import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Collapsible, Empty, Loading, Modal } from './common';
@@ -364,6 +364,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       )}
       {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'waiting_user' && m.status !== 'stopped' && m.status !== 'failed' && <ParkedCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
+      {m.status !== 'stopped' && m.status !== 'failed' && <StaffProposalCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
       <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
         <FileList files={d.files} />
@@ -666,6 +667,71 @@ function GapRefs({ missionId, refs }: { missionId: string; refs: MissionRef[] })
             })}</pre>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 오퍼레이터의 직원 제안: 새 직원(포지션) 추가, 기존 직원의 역할·지시 변경. 그대로·고쳐서 적용하거나 무시한다.
+ * 진행은 막지 않는다. 도구·명령 권한은 제안으로 바뀌지 않는다.
+ */
+function StaffProposalCard({ mission, agents, onChanged }: { mission: Mission; agents: Agent[]; onChanged: () => Promise<void> }) {
+  const act = useAction();
+  const [edit, setEdit] = useState<Record<string, { name: string; role: string; instructions: string } | undefined>>({});
+  const pending = (mission.staffProposals ?? []).filter((p) => p.status === 'pending');
+  const doneList = (mission.staffProposals ?? []).filter((p) => p.status !== 'pending');
+  if (!pending.length && !doneList.length) return null;
+  const resolve = (p: StaffProposal, action: 'apply' | 'dismiss') => act.run(async () => {
+    await ws().resolveStaffProposal(mission.id, p.id, action, action === 'apply' ? edit[p.id] ?? null : null);
+    setEdit((x) => { const n = { ...x }; delete n[p.id]; return n; });
+    await onChanged();
+  });
+  return (
+    <div className={`answer-card staff-card${pending.length ? '' : ' quiet'}`}>
+      {pending.length > 0 && <strong>직원 제안 {pending.length}건 — 적용할지 골라 주세요(진행은 계속합니다)</strong>}
+      {act.error && <Banner>{act.error}</Banner>}
+      {pending.length > 0 && (
+        <ul className="gap-list staff-list">
+          {pending.map((p) => {
+            const cur = p.kind === 'update' ? agents.find((a) => a.id === p.agentId) : undefined;
+            const base = p.kind === 'add' && p.agentId ? agents.find((a) => a.id === p.agentId) : undefined;
+            const e = edit[p.id];
+            return (
+              <li key={p.id}>
+                <div><span className="staff-kind">{p.kind === 'add' ? '새 직원' : '역할·지시 변경'}</span> <strong>{p.kind === 'add' ? p.name : `${p.agentCode} ${cur?.name ?? p.name}`}</strong> <span className="muted small">사이클 {p.cycle}</span></div>
+                <div className="gap-explain"><span className="gap-explain-label">왜 필요한가</span>{p.reason}</div>
+                {e ? (
+                  <div className="staff-edit">
+                    <label className="small">이름<input className="input" value={e.name} onChange={(ev) => setEdit((x) => ({ ...x, [p.id]: { ...e, name: ev.target.value } }))} /></label>
+                    <label className="small">역할<input className="input" value={e.role} onChange={(ev) => setEdit((x) => ({ ...x, [p.id]: { ...e, role: ev.target.value } }))} /></label>
+                    <label className="small">업무 지시<textarea className="input" rows={6} value={e.instructions} onChange={(ev) => setEdit((x) => ({ ...x, [p.id]: { ...e, instructions: ev.target.value } }))} /></label>
+                  </div>
+                ) : (
+                  <div className="staff-compare">
+                    {p.kind === 'update' && cur && (
+                      <div><div className="muted small">지금</div><div className="small"><strong>역할</strong> {cur.role}</div><pre className="staff-text">{cur.instructions}</pre></div>
+                    )}
+                    <div><div className="muted small">{p.kind === 'update' ? '제안' : '제안 내용'}</div><div className="small"><strong>역할</strong> {p.role || cur?.role}</div><pre className="staff-text">{p.instructions || cur?.instructions}</pre></div>
+                  </div>
+                )}
+                {p.kind === 'add' && <div className="muted small">도구는 {base ? `${base.code} ${base.name}과 같게(Bash·웹 제외)` : '읽기·쓰기 기본'}로 시작하고, 명령 권한은 없습니다. 필요하면 직원 화면이나 확인 필요에서 따로 허용하세요.{p.workPaths.length ? ` 작업 폴더: ${p.workPaths.join(', ')}` : ''}</div>}
+                <div className="row gap wrap">
+                  <button className="btn btn-primary" disabled={act.busy} onClick={() => void resolve(p, 'apply')}>{e ? '고친 내용으로 적용' : '그대로 적용'}</button>
+                  {!e && <button className="btn" disabled={act.busy} onClick={() => setEdit((x) => ({ ...x, [p.id]: { name: p.name || cur?.name || '', role: p.role || cur?.role || '', instructions: p.instructions || cur?.instructions || '' } }))}>고쳐서 적용</button>}
+                  {e && <button className="btn" disabled={act.busy} onClick={() => setEdit((x) => { const n = { ...x }; delete n[p.id]; return n; })}>고치기 취소</button>}
+                  <button className="btn" disabled={act.busy} onClick={() => void resolve(p, 'dismiss')}>무시</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {doneList.length > 0 && (
+        <details className="decision-log">
+          <summary className="small">처리한 직원 제안 {doneList.length}건</summary>
+          <ul className="gap-list">{doneList.map((p) => <li key={p.id} className="small">{p.status === 'applied' ? '적용' : '무시'} · {p.result || (p.kind === 'add' ? `새 직원 '${p.name}'` : `${p.agentCode} 역할·지시 변경`)}</li>)}</ul>
+        </details>
       )}
     </div>
   );

@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionPick, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
@@ -16,10 +16,13 @@ import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { missionCommitsSince, revertCommits, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 
+const STAFF_ITEMS = { type: 'array', items: { type: 'object', required: ['kind', 'agentCode', 'name', 'role', 'instructions', 'reason'], properties: {
+  kind: { type: 'string', enum: ['add', 'update'] }, agentCode: { type: 'string' }, name: { type: 'string' }, role: { type: 'string' }, instructions: { type: 'string' },
+  workPaths: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' } } } };
 const PLAN_SCHEMA = {
   type: 'object', required: ['summary', 'question', 'gaps', 'tasks'],
   properties: {
-    summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, staffProposals: STAFF_ITEMS,
     gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, explain: { type: 'string' },
       refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
@@ -31,11 +34,12 @@ const PLAN_SCHEMA = {
 };
 const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
-  properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, nextFocus: { type: 'string' } },
+  properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' } },
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
-interface Plan { summary: string; question: string; questionOptions?: string[]; gaps?: MissionGap[]; tasks: PlanTask[] }
-interface Judge { decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; nextFocus: string }
+type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
+interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; gaps?: MissionGap[]; tasks: PlanTask[] }
+interface Judge { staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; nextFocus: string }
 
 /** 오퍼레이터가 낸 선택지 정리: 빈 값·중복을 빼고 최대 4개, 각 200자 */
 function cleanOptions(v: unknown): string[] {
@@ -646,6 +650,7 @@ export class MissionRunner {
         const plan = await this.patient(id, () => this.callOperator<Plan>(this.get(id), project.plan, this.planPrompt(this.get(id), project.plan, agents), PLAN_SCHEMA));
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_plan', `사이클 ${m.cycle} 계획: ${plan.summary} (작업 ${plan.tasks.length}개)`, plan);
+        this.collectStaff(id, plan.staffProposals, agents);
         const gaps = (Array.isArray(plan.gaps) ? plan.gaps : []).filter((g) => g && (String(g.issue ?? '').trim() || String(g.need ?? '').trim()))
           .slice(0, 12).map((g): MissionGap => {
             const o = cleanOptions(g.options); const explain = String(g.explain ?? '').trim().slice(0, 1200);
@@ -774,6 +779,7 @@ export class MissionRunner {
         const judge = await this.patient(id, () => this.callOperator<Judge>(this.get(id), project.plan, this.judgePrompt(this.get(id), project.plan, run.id), JUDGE_SCHEMA));
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_judge', `판단: ${judge.decision === 'continue' ? '계속' : judge.decision === 'done' ? '완료' : '사용자 확인'} — ${judge.summary}`, judge);
+        this.collectStaff(id, judge.staffProposals, this.d.ensureAgents(m.projectId).filter((a) => a.active));
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
           this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}${open ? `\n(보류한 업무 ${open}건은 확인이 필요합니다)` : ''}` });
@@ -940,8 +946,56 @@ export class MissionRunner {
       '- needs: 작업에 Bash 명령이 필요하면 commands에 실제 실행할 명령을, 프로젝트 폴더 밖에서 읽어야 하는 파일·폴더가 있으면 readPaths에 절대 경로를 쓴다. 담당 직원에게 허용되지 않은 것이 있으면 그 작업은 실행하지 않고 사용자 확인으로 돌린다. 필요 없으면 빈 배열.',
       '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다. 그렇지 않으면 question은 빈 문자열.',
       '- 이전 사이클의 결과·판단을 이어받아 남은 일만 계획한다. 작업은 1~4개로 작게 나눈다.',
+      '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
+      ...this.staffSection(m),
       ...this.parkedSection(m),
     ].join('\n');
+  }
+
+  /**
+   * 오퍼레이터의 직원 제안을 모은다(진행은 막지 않는다). 오퍼레이터(00) 자신과 없는 직원은 바꾸지 않고,
+   * 같은 내용으로 이미 기다리는·무시한 제안은 다시 올리지 않는다. 기다리는 제안은 최대 6건.
+   */
+  private collectStaff(id: string, raw: RawStaff[] | undefined, agents: Agent[]): void {
+    if (!Array.isArray(raw) || !raw.length) return;
+    const m = this.get(id);
+    const list = [...(m.staffProposals ?? [])];
+    const added: StaffProposal[] = [];
+    const t = (v: unknown, n: number) => redact(String(v ?? '').trim()).slice(0, n);
+    for (const r of raw.slice(0, 3)) {
+      const kind = r?.kind === 'update' ? 'update' : r?.kind === 'add' ? 'add' : null;
+      if (!kind) continue;
+      const code = t(r.agentCode, 10);
+      const name = t(r.name, 60); const role = t(r.role, 300); const instructions = t(r.instructions, 6000); const reason = t(r.reason, 800);
+      if (!reason || (!instructions && !role)) continue;
+      if (kind === 'update' && (!code || code === '00' || !agents.some((a) => a.code === code))) continue;
+      if (kind === 'add' && !name) continue;
+      const same = (p: StaffProposal) => p.kind === kind && (kind === 'update' ? p.agentCode === code : p.name === name) && p.status !== 'applied';
+      if (list.some(same) || list.filter((p) => p.status === 'pending').length >= 6) continue;
+      const workPaths = (Array.isArray(r.workPaths) ? r.workPaths : []).map((w) => String(w ?? '').trim().slice(0, 300)).filter(Boolean).slice(0, 6);
+      const p: StaffProposal = { id: uid(), kind, agentId: agents.find((a) => a.code === code)?.id ?? null, agentCode: code, name, role, instructions, workPaths, reason, cycle: m.cycle, at: new Date().toISOString(), status: 'pending' };
+      list.push(p); added.push(p);
+    }
+    if (!added.length) return;
+    this.set(id, { staffProposals: list.slice(-40) });
+    this.event(m, 'system', `오퍼레이터의 직원 제안 ${added.length}건 — 적용할지 골라 주세요(진행은 계속합니다).\n${added.map((p) => `- ${p.kind === 'add' ? `새 직원 '${p.name}'` : `${p.agentCode} ${p.name || ''} 역할·지시 변경`}: ${p.reason}`).join('\n')}`, { staffProposals: added });
+  }
+
+  /** 직원 제안을 적용·무시로 표시한다(실제 직원 저장은 서비스가 한다) */
+  markStaffProposal(id: string, proposalId: string, status: 'applied' | 'dismissed', result: string): Mission {
+    const m = this.get(id);
+    const p = (m.staffProposals ?? []).find((x) => x.id === proposalId);
+    if (!p) throw new Error('직원 제안을 찾을 수 없습니다.');
+    if (p.status !== 'pending') throw new Error('이미 처리한 직원 제안입니다.');
+    this.event(m, 'answer', status === 'applied' ? `직원 제안 적용: ${result}` : `직원 제안 무시: ${p.kind === 'add' ? `새 직원 '${p.name}'` : `${p.agentCode} 역할·지시 변경`} — 다시 제안하지 말 것`);
+    return this.set(id, { staffProposals: (m.staffProposals ?? []).map((x) => (x.id === proposalId ? { ...x, status, result } : x)) });
+  }
+
+  /** 직원 제안 기록: 기다리는 것·무시한 것은 다시 제안하지 않게 알린다 */
+  private staffSection(m: Mission): string[] {
+    const ps = (m.staffProposals ?? []).filter((p) => p.status !== 'applied');
+    if (!ps.length) return [];
+    return ['## 직원 제안 기록(다시 제안하지 말 것)', ...ps.map((p) => `- [${p.status === 'pending' ? '사용자 확인 대기' : '사용자가 무시함'}] ${p.kind === 'add' ? `새 직원 '${p.name}'` : `${p.agentCode} 역할·지시 변경`}`), ''];
   }
 
   /** 사용자가 확인 필요 항목에 고른 결정: 오퍼레이터·직원이 추측하지 않고 그대로 따른다 */
@@ -985,6 +1039,7 @@ export class MissionRunner {
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
       `## 실행 결과: ${d.run.status}${d.run.reason ? ` — ${d.run.reason}` : ''}`, ...(failed.length ? ['### 실패 단계', ...failed.map((f) => `- ${f}`)] : []), '',
       '## 리뷰 기록', ...(reviews.length ? reviews : ['- (없음)']), '',
+      '## 직원(역할·지시 요약 — 직원 제안 판단용)', ...this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== '00').map((a) => `- ${a.code} ${a.name}: ${a.role} — ${a.instructions.replace(/\s+/g, ' ').slice(0, 400)}`), '',
       '## 지금까지의 판단·사용자 답변', this.history(m), '',
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
@@ -993,6 +1048,8 @@ export class MissionRunner {
       '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다.',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
+      '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
+      ...this.staffSection(m),
       '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',
       ...this.parkedSection(m),
     ].join('\n');

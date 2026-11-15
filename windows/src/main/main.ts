@@ -163,6 +163,7 @@ function register() {
   h('answerMission', (id, text, action, keepPending) => s().missions.answer(id, text, action, keepPending === true ? 'pending' : undefined));
   h('stopMission', (id) => s().missions.stop(id));
   h('retryParked', (id) => s().missions.retryParked(id));
+  h('resolveStaffProposal', (id, pid, action, edit) => s().resolveStaffProposal(String(id), String(pid), action === 'apply' ? 'apply' : 'dismiss', (() => { const e = edit as unknown as Record<string, unknown> | null; return e && typeof e === 'object' ? { name: String(e.name ?? ''), role: String(e.role ?? ''), instructions: String(e.instructions ?? '') } : null; })()));
   h('refSnippet', (id, p, line) => s().refSnippet(String(id), String(p ?? ''), typeof line === 'number' ? line : null));
   h('decideMission', (id, picks, resume) => s().missions.decide(id, picks, resume));
   h('retryMissionLimit', (id) => s().missions.retryLimitNow(id));
