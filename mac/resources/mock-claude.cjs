@@ -18,6 +18,9 @@
 //   [[mock:ignore-parked]]   오퍼레이터가 '보류한 업무'를 무시하고 같은 작업을 다시 계획
 //   [[mock:needs:명령]]       첫 작업에 실행 전 점검용 필요 명령(needs.commands)을 적음
 //   [[mock:gaps-with-tasks]] 오퍼레이터가 근거 부족(gaps)을 적으면서도 작업을 계획
+//   [[mock:gaps-options]]    근거 부족 항목에 선택지(options)를 달고 작업도 계획(사용자 결정이 있으면 그 항목은 다시 내지 않음)
+//   [[mock:gaps-options-only]] 선택지 달린 근거 부족만 내고 작업 없음 — 사용자 결정이 생기면 작업을 계획
+//   [[mock:ask-options]]     계획 질문을 선택지(questionOptions)와 함께 묻는다(답변 전 한 번)
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -142,6 +145,11 @@ async function main() {
     if (!ask && parked && (denyMarks.length || needCmd)) plan.tasks = plan.tasks.slice(1);
     if (!ask && !plan.tasks.length) plan.question = '보류한 업무를 해결해야 진행할 수 있습니다.';
     if (!ask && user.includes('[[mock:gaps-with-tasks]]')) plan.gaps = [{ doc: '서비스 기획서', issue: '대상 사용자 범위가 애매하다', need: '1차 출시 대상 사용자군' }];
+    const decided = prompt.includes('## 사용자 결정(');
+    const optGap = { doc: '기능 대조표.md', issue: '항목 A가 화면 시안과 제품에서 다르다', need: '어느 쪽을 기준으로 할지', options: ['HTML 기준 유지 — 제품을 HTML에 맞춘다', '제품 기준 승인 — HTML을 제품에 맞춘다'] };
+    if (!ask && user.includes('[[mock:gaps-options]]') && !decided) plan.gaps = [optGap];
+    if (!ask && user.includes('[[mock:gaps-options-only]]') && !decided) { plan.tasks = []; plan.question = ''; plan.gaps = [optGap]; }
+    if (user.includes('[[mock:ask-options]]') && !answered) { plan.tasks = []; plan.gaps = []; plan.question = '어느 기준으로 진행할까요?'; plan.questionOptions = ['HTML 기준', '제품 기준']; }
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(plan), structured_output: plan, permission_denials: [] });
     process.exit(0);
   }

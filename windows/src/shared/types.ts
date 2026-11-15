@@ -409,7 +409,8 @@ export interface WorkspaceApi {
   missionReadiness(projectId: ID, refresh?: boolean): Promise<MissionReadiness>;
   startMission(projectId: ID, prompt: string): Promise<Mission>;
   missionDetail(missionId: ID): Promise<MissionDetail>;
-  answerMission(missionId: ID, text: string, action: 'continue' | 'stop'): Promise<Mission>;
+  /** keepPending: 질문에만 답하고 보류한 업무·근거 부족 항목은 그대로 둔다(선택지 버튼) */
+  answerMission(missionId: ID, text: string, action: 'continue' | 'stop', keepPending?: boolean): Promise<Mission>;
   /** 진행 중인 미션에 추가 지시: next = 다음 사이클 계획에 반영, now = 진행 중인 작업을 멈추고 바로 다시 계획 */
   addDirective(missionId: ID, text: string, mode: 'next' | 'now'): Promise<Mission>;
   listPromptTemplates(): Promise<PromptTemplate[]>;
@@ -423,6 +424,8 @@ export interface WorkspaceApi {
   stopMission(missionId: ID): Promise<Mission>;
   /** 보류한 업무를 사용자가 해결함: 다음 계획부터 다시 시도할 수 있게 보류를 푼다 */
   retryParked(missionId: ID): Promise<Mission>;
+  /** 확인 필요 항목에 선택한 결정을 반영한다. resume이면(확인 대기 중일 때) 바로 이어서 진행 */
+  decideMission(missionId: ID, picks: MissionPick[], resume: boolean): Promise<Mission>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
   missionSnapshots(missionId: ID): Promise<MissionSnapshot[]>;
@@ -485,6 +488,10 @@ export interface Mission {
   summary: string; // 오퍼레이터의 최근 판단 요약
   /** 오퍼레이터가 근거 문서가 빈약·애매하다고 판단해 멈췄을 때, 채워야 할 부분 */
   gaps?: MissionGap[] | null;
+  /** 사용자가 확인 필요 항목에 고른 결정(누적) */
+  decisions?: MissionDecision[];
+  /** 오퍼레이터가 직접 물은 질문이면 배열(선택형이면 선택지, 아니면 빈 배열). 앱이 만든 안내 문구면 null */
+  questionOptions?: string[] | null;
   denials?: MissionDenial[] | null; // 권한 거부로 멈춘 경우 거부 항목
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
   blockers?: MissionBlocker[] | null; // 에이전트가 스스로 풀 수 없는 실패로 멈춘 경우
@@ -499,7 +506,11 @@ export interface Mission {
 }
 
 /** 근거 문서 보완 요청 한 건 */
-export interface MissionGap { doc: string; issue: string; need: string }
+export interface MissionGap { doc: string; issue: string; need: string; /** 사용자가 고르면 되는 결정이면 오퍼레이터가 낸 선택지(2~4개) */ options?: string[] }
+/** 사용자가 확인 필요 항목에 고른 결정(이 미션 동안 오퍼레이터·직원이 그대로 따른다) */
+export interface MissionDecision { doc: string; issue: string; choice: string; at: string }
+/** 확인 필요 항목 하나에 대한 사용자 선택: 항목(문서·내용으로 식별)과 고른(또는 직접 적은) 내용 */
+export interface MissionPick { doc: string; issue: string; choice: string }
 /** 에이전트가 스스로 풀 수 없는 실패: 내 PC 환경 문제(명령·프로그램 없음, 접근 거부, 네트워크·로그인)이거나 같은 실패의 반복 */
 export interface MissionBlocker { step: string; reason: string; kind: 'environment' | 'repeated' }
 /** 직원이 권한 때문에 막힌 행위(명령·경로). 앱 설정으로만 허용할 수 있다. */

@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { autoLayout, needsLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Agent, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
+import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
 import { MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS_LABEL, RUN_STATUS_LABEL, billingLabel } from '../../shared/types';
 import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Collapsible, Empty, Loading, Modal } from './common';
@@ -238,6 +238,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
     const t = text.trim();
     if (action === 'continue' && mode === 'answer' && !t && !gaps && !denied) throw new Error('답변을 입력하세요.');
     if (action === 'continue' && mode === 'done' && !t) throw new Error('추가 지시를 입력하세요.');
+    // 입력창 버튼은 '허용했으니 다시 시도'·'보완했으니 다시 확인'처럼 해결을 뜻하므로 확인 필요 항목을 풀고 다시 계획한다(질문에만 답하려면 선택지 버튼)
     await ws().answerMission(mission!.id, t, action);
     setText('');
     await onChanged();
@@ -361,7 +362,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           </div>
         </div>
       )}
-      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} agents={agents} />}
+      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'waiting_user' && m.status !== 'stopped' && m.status !== 'failed' && <ParkedCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
       <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
@@ -495,7 +496,8 @@ function LinkedText({ text, files }: { text: string; files: MissionFile[] }) {
 }
 
 /** 오퍼레이터 질문·근거 문서 보완 요청·완료 보고·중단 안내(입력은 아래 입력창) */
-function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }) {
+function QuestionCard({ mission, agents, onChanged }: { mission: Mission; agents: Agent[]; onChanged: () => Promise<void> }) {
+  const act = useAction();
   const done = mission.status === 'done';
   const stopped = mission.status === 'stopped';
   const gaps = mission.status === 'waiting_user' ? mission.gaps ?? [] : [];
@@ -508,16 +510,8 @@ function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }
         <div className="muted small">같은 미션 안에서 다음 사이클부터 다시 계획합니다. 이전 판단·답변·추가 지시와 스냅샷을 이어받고, 중단 때 멈춘 작업은 다시 하지 않고 필요한 일만 계획합니다.</div>
       ) : gaps.length ? (
         <>
-          <ul className="gap-list">
-            {gaps.map((g, i) => (
-              <li key={i}>
-                <strong>{g.doc || '문서 미지정'}</strong>
-                <div>{g.issue}</div>
-                {g.need && <div className="small">채울 내용: {g.need}</div>}
-              </li>
-            ))}
-          </ul>
-          <div className="muted small">기획 탭 ‘완성 문서 목록…’에서 문서를 보완해 다시 올린 뒤, 아래에서 <strong>보완했으니 다시 확인</strong>을 누르세요. 문서 대신 아래 입력창에 내용을 직접 적어도 됩니다.</div>
+          <GapPicker mission={mission} gaps={gaps} resume onChanged={onChanged} />
+          <div className="muted small">항목마다 선택지를 고르거나 직접 적고 <strong>고른 대로 계속 진행</strong>을 누르세요. 문서를 보완했다면 기획 탭 ‘완성 문서 목록…’에서 다시 올린 뒤 아래에서 <strong>보완했으니 다시 확인</strong>을 눌러도 됩니다.</div>
         </>
       ) : denials.length ? (
         <DenialList mission={mission} agents={agents} />
@@ -537,10 +531,101 @@ function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }
               : '같은 원인으로 다시 실패했습니다. 지시·완료 조건·검사 명령을 바꾸거나 원인을 고친 뒤 다시 시도하세요.'}
           </div>
         </>
-      ) : (
-        mission.question && <div className="answer-q">{mission.question}</div>
+      ) : null}
+      {/* 오퍼레이터가 직접 물은 질문은 보류·근거 부족 항목이 함께 있어도 보여 준다 */}
+      {!stopped && (done || (!gaps.length && !denials.length && !blockers.length) || mission.questionOptions != null) && (
+        <>
+          {mission.question && <div className="answer-q">{gaps.length || denials.length || blockers.length ? mission.question.split('\n')[0] : mission.question}</div>}
+          {!done && (mission.questionOptions?.length ?? 0) > 0 && (
+            <>
+              {act.error && <Banner>{act.error}</Banner>}
+              <div className="pick-options">
+                {mission.questionOptions!.map((o, i) => (
+                  <button key={i} className="btn pick-option" disabled={act.busy} onClick={() => void act.run(async () => { await ws().answerMission(mission.id, o, 'continue', true); await onChanged(); })}>{o}</button>
+                ))}
+              </div>
+              <div className="muted small">하나를 누르면 그 답으로 바로 이어서 진행합니다. 다른 답이면 아래 입력창에 적으세요.</div>
+            </>
+          )}
+        </>
       )}
+      <DecisionLog mission={mission} />
     </div>
+  );
+}
+
+/**
+ * 확인 필요 항목 고르기: 오퍼레이터가 낸 선택지 중 하나, 직접 적기, 나중에(고르지 않음).
+ * 고른 결정은 미션에 남아 다음 계획부터 오퍼레이터·직원이 그대로 따른다. resume이면 고른 뒤 바로 이어서 진행한다.
+ */
+function GapPicker({ mission, gaps, resume, onChanged }: { mission: Mission; gaps: MissionGap[]; resume: boolean; onChanged: () => Promise<void> }) {
+  const act = useAction();
+  const [sel, setSel] = useState<Record<number, number | 'own'>>({});
+  const [own, setOwn] = useState<Record<number, string>>({});
+  const key = gaps.map((g) => `${g.doc}|${g.issue}`).join('\n');
+  useEffect(() => { setSel({}); setOwn({}); }, [mission.id, key]);
+  const picks: MissionPick[] = gaps.flatMap((g, i) => {
+    const v = sel[i];
+    if (v === 'own') return own[i]?.trim() ? [{ doc: g.doc, issue: g.issue, choice: own[i].trim() }] : [];
+    if (typeof v === 'number' && g.options?.[v]) return [{ doc: g.doc, issue: g.issue, choice: g.options[v] }];
+    return [];
+  });
+  const submit = () => act.run(async () => { await ws().decideMission(mission.id, picks, resume); await onChanged(); });
+  return (
+    <>
+      {act.error && <Banner>{act.error}</Banner>}
+      <ul className="gap-list pick-list">
+        {gaps.map((g, i) => (
+          <li key={i}>
+            <strong>{g.doc || '문서 미지정'}</strong>
+            <div>{g.issue}</div>
+            {g.need && <div className="small">{g.options?.length ? '정할 내용' : '채울 내용'}: {g.need}</div>}
+            <div className="pick-options" role="radiogroup" aria-label={`${g.doc || '문서 미지정'} 결정`}>
+              {(g.options ?? []).map((o, j) => (
+                <label key={j} className={`pick-option${sel[i] === j ? ' on' : ''}`}>
+                  <input type="radio" name={`gap-${mission.id}-${i}`} checked={sel[i] === j} onChange={() => setSel((x) => ({ ...x, [i]: j }))} />
+                  <span>{o}</span>
+                </label>
+              ))}
+              {(g.options?.length ?? 0) > 0 && <label className={`pick-option${sel[i] === 'own' ? ' on' : ''}`}>
+                <input type="radio" name={`gap-${mission.id}-${i}`} checked={sel[i] === 'own'} onChange={() => setSel((x) => ({ ...x, [i]: 'own' }))} />
+                <span>직접 적기</span>
+              </label>}
+              <label className={`pick-option later${sel[i] === undefined ? ' on' : ''}`}>
+                <input type="radio" name={`gap-${mission.id}-${i}`} checked={sel[i] === undefined} onChange={() => setSel((x) => { const n = { ...x }; delete n[i]; return n; })} />
+                <span>나중에(보류)</span>
+              </label>
+            </div>
+            {(sel[i] === 'own' || !g.options?.length) && (
+              <textarea className="input pick-own" rows={2} value={own[i] ?? ''}
+                placeholder={g.options?.length ? '정한 내용 — 오퍼레이터·직원이 이 문장을 그대로 따릅니다' : '보완할 내용을 적으세요 — 적으면 이 항목은 이 내용으로 확정되고, 비워 두면 나중에(보류)'}
+                aria-label={g.options?.length ? '직접 적은 결정' : '보완할 내용'}
+                onChange={(e) => { const v = e.target.value; setOwn((x) => ({ ...x, [i]: v })); if (!g.options?.length) setSel((x) => { const n = { ...x }; if (v.trim()) n[i] = 'own'; else delete n[i]; return n; }); }} />
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="row gap wrap">
+        <button className="btn btn-primary" disabled={act.busy || !picks.length} onClick={() => void submit()}>
+          {resume ? `고른 대로 계속 진행${picks.length ? ` (${picks.length}건)` : ''}` : `고른 결정 반영${picks.length ? ` (${picks.length}건)` : ''}`}
+        </button>
+        <span className="muted small">{resume ? '고르지 않은 항목은 다음 계획에서 다시 확인 필요로 남습니다.' : '진행 중인 작업은 그대로 두고, 다음 계획부터 고른 결정을 그대로 따릅니다.'}</span>
+      </div>
+    </>
+  );
+}
+
+/** 지금까지 고른 결정(이 미션에서 오퍼레이터·직원이 그대로 따르는 기준) */
+function DecisionLog({ mission }: { mission: Mission }) {
+  const ds = mission.decisions ?? [];
+  if (!ds.length) return null;
+  return (
+    <details className="decision-log">
+      <summary className="small">내가 고른 결정 {ds.length}건 — 이 미션에서 그대로 따릅니다</summary>
+      <ul className="gap-list">
+        {ds.map((d, i) => <li key={i} className="small"><strong>{d.doc || '문서 미지정'}</strong> · {d.issue}<div>→ {d.choice}</div></li>)}
+      </ul>
+    </details>
   );
 }
 
@@ -548,7 +633,7 @@ function QuestionCard({ mission, agents }: { mission: Mission; agents: Agent[] }
 function ParkedCard({ mission, agents, onChanged }: { mission: Mission; agents: Agent[]; onChanged: () => Promise<void> }) {
   const act = useAction();
   const denials = mission.denials ?? []; const blockers = mission.blockers ?? []; const gaps = mission.gaps ?? [];
-  if (!denials.length && !blockers.length && !gaps.length) return null;
+  if (!denials.length && !blockers.length && !gaps.length) return <div className="parked-decisions"><DecisionLog mission={mission} /></div>;
   return (
     <div className="answer-card parked-card">
       <strong>{denials.length || blockers.length ? `보류한 업무 ${denials.length + blockers.length}건 — 확인 필요(나머지 작업은 계속 진행합니다)` : '근거가 부족한 부분 — 확인 필요(할 수 있는 작업부터 진행합니다)'}</strong>
@@ -564,15 +649,12 @@ function ParkedCard({ mission, agents, onChanged }: { mission: Mission; agents: 
           ))}
         </ul>
       )}
-      {gaps.length > 0 && (
-        <ul className="gap-list">
-          {gaps.map((g, i) => <li key={i}><strong>{g.doc || '문서 미지정'}</strong><div>{g.issue}</div>{g.need && <div className="small">채울 내용: {g.need}</div>}</li>)}
-        </ul>
-      )}
-      <div className="row gap wrap">
+      {gaps.length > 0 && <GapPicker mission={mission} gaps={gaps} resume={false} onChanged={onChanged} />}
+      {(denials.length > 0 || blockers.length > 0) && <div className="row gap wrap">
         <button className="btn btn-primary" disabled={act.busy} onClick={() => void act.run(async () => { await ws().retryParked(mission.id); await onChanged(); })}>해결했으니 다시 시도하게 하기</button>
         <span className="muted small">허용·수정을 마친 뒤 누르면 다음 계획부터 이 업무를 다시 시도합니다. 누르기 전에는 다시 계획하지 않습니다.</span>
-      </div>
+      </div>}
+      <DecisionLog mission={mission} />
     </div>
   );
 }

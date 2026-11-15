@@ -1755,6 +1755,15 @@ textarea.input {
 .denial-list li { display: flex; flex-direction: column; gap: 4px; }
 .denial-target { word-break: break-all; color: var(--sub); }
 .denial-input { max-width: 260px; }
+.pick-list > li { padding-bottom: 6px; }
+.pick-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pick-option { display: inline-flex; align-items: flex-start; gap: 6px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); cursor: pointer; font-size: 12.5px; max-width: 100%; text-align: left; }
+.pick-option input { margin: 2px 0 0; }
+.pick-option.on { border-color: var(--accent); background: var(--info-bg); }
+.pick-option.later { color: var(--sub); }
+.pick-own { width: 100%; margin-top: 6px; }
+.decision-log { margin-top: 6px; }
+.decision-log summary { cursor: pointer; }
 .ok-text { color: #1a7f37; }
 
 .blocker-kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: #fde2e1; color: #b42318; }

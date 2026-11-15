@@ -160,9 +160,10 @@ function register() {
   h('missionReadiness', (pid, refresh) => s().missionReadiness(pid, !!refresh));
   h('startMission', (pid, prompt) => s().startMission(pid, prompt));
   h('missionDetail', (id) => s().missions.detail(id));
-  h('answerMission', (id, text, action) => s().missions.answer(id, text, action));
+  h('answerMission', (id, text, action, keepPending) => s().missions.answer(id, text, action, keepPending === true ? 'pending' : undefined));
   h('stopMission', (id) => s().missions.stop(id));
   h('retryParked', (id) => s().missions.retryParked(id));
+  h('decideMission', (id, picks, resume) => s().missions.decide(id, picks, resume));
   h('retryMissionLimit', (id) => s().missions.retryLimitNow(id));
   h('missionSnapshots', (id) => s().missions.snapshots(id));
   h('rollbackMission', (id, tag) => s().missions.rollback(id, tag));

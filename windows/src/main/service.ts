@@ -218,6 +218,8 @@ export class Service {
           // 진행 중·완료 보고 미션의 보류한 업무(나머지는 계속 진행): 사용자가 해결해야 다시 시도한다
           const open = (m.denials?.length ?? 0) + (m.blockers?.length ?? 0);
           if (open && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: m.denials?.length ? 'denied' : 'blocked', label: `보류한 업무 ${open}건 — 해결해야 다시 시도합니다(나머지 작업은 계속)`, missionId: m.id });
+          const pick = (m.gaps ?? []).filter((g) => g.options?.length).length;
+          if (pick && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: 'gaps', label: `골라 줄 결정 ${pick}건 — 고르면 다음 계획부터 그대로 따릅니다(나머지 작업은 계속)`, missionId: m.id });
           continue;
         }
         const kind: AttentionItem['kind'] = m.denials?.length ? 'denied' : m.blockers?.length ? 'blocked' : m.gaps?.length ? 'gaps' : 'question';
