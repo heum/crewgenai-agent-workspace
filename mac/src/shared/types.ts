@@ -426,6 +426,8 @@ export interface WorkspaceApi {
   retryParked(missionId: ID): Promise<Mission>;
   /** 확인 필요 항목에 선택한 결정을 반영한다. resume이면(확인 대기 중일 때) 바로 이어서 진행 */
   decideMission(missionId: ID, picks: MissionPick[], resume: boolean): Promise<Mission>;
+  /** 확인 필요 항목의 근거 위치를 읽기 전용으로 미리 본다(프로젝트 폴더·참고 자료 안의 텍스트 파일만) */
+  refSnippet(missionId: ID, path: string, line: number | null): Promise<RefSnippet>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
   missionSnapshots(missionId: ID): Promise<MissionSnapshot[]>;
@@ -506,7 +508,15 @@ export interface Mission {
 }
 
 /** 근거 문서 보완 요청 한 건 */
-export interface MissionGap { doc: string; issue: string; need: string; /** 사용자가 고르면 되는 결정이면 오퍼레이터가 낸 선택지(2~4개) */ options?: string[] }
+export interface MissionGap {
+  doc: string; issue: string; need: string;
+  /** 사용자가 고르면 되는 결정이면 오퍼레이터가 낸 선택지(2~4개) */ options?: string[];
+  /** 문서를 읽지 않은 사용자도 알 수 있게 쓴 쉬운 설명(배경·왜 중요한지·고르면 어떻게 되는지) */ explain?: string;
+  /** 근거 위치: 프로젝트 폴더 기준 경로(또는 참고 문서 절대 경로)와 줄 번호 */ refs?: MissionRef[];
+}
+export interface MissionRef { path: string; line?: number | null }
+/** 근거 위치 미리보기: 해당 줄 앞뒤(줄 번호 없으면 앞부분) */
+export interface RefSnippet { path: string; exists: boolean; start: number; lines: string[]; target: number | null; total: number; note?: string }
 /** 사용자가 확인 필요 항목에 고른 결정(이 미션 동안 오퍼레이터·직원이 그대로 따른다) */
 export interface MissionDecision { doc: string; issue: string; choice: string; at: string }
 /** 확인 필요 항목 하나에 대한 사용자 선택: 항목(문서·내용으로 식별)과 고른(또는 직접 적은) 내용 */

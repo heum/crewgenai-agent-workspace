@@ -20,7 +20,8 @@ const PLAN_SCHEMA = {
   type: 'object', required: ['summary', 'question', 'gaps', 'tasks'],
   properties: {
     summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } },
-    gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } } } } },
+    gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, explain: { type: 'string' },
+      refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
       properties: { title: { type: 'string' }, agentCode: { type: 'string' }, instructions: { type: 'string' }, writeScope: { type: 'array', items: { type: 'string' } },
         outputs: { type: 'array', items: { type: 'object', required: ['path', 'format'], properties: { path: { type: 'string' }, format: { type: 'string', enum: ['markdown', 'json', 'html', 'text', 'code', 'image', 'any'] } } } },
@@ -646,7 +647,12 @@ export class MissionRunner {
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_plan', `사이클 ${m.cycle} 계획: ${plan.summary} (작업 ${plan.tasks.length}개)`, plan);
         const gaps = (Array.isArray(plan.gaps) ? plan.gaps : []).filter((g) => g && (String(g.issue ?? '').trim() || String(g.need ?? '').trim()))
-          .slice(0, 12).map((g) => { const o = cleanOptions(g.options); return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), ...(o.length ? { options: o } : {}) }; })
+          .slice(0, 12).map((g): MissionGap => {
+            const o = cleanOptions(g.options); const explain = String(g.explain ?? '').trim().slice(0, 1200);
+            const refs = (Array.isArray(g.refs) ? g.refs : []).filter((r) => r && String(r.path ?? '').trim()).slice(0, 4)
+              .map((r) => ({ path: String(r.path).trim().slice(0, 500), line: Number.isInteger(r.line) && Number(r.line) > 0 ? Number(r.line) : null }));
+            return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), ...(o.length ? { options: o } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
+          })
           .filter((g) => !(this.get(id).decisions ?? []).some((d) => gapKey(d) === gapKey(g))); // 이미 결정한 항목은 다시 묻지 않는다(계획 중에 고른 결정 포함)
         // 사용자가 '나중에'로 남긴 항목은 새 계획이 다른 항목을 내도 결정·해결 전까지 유지한다
         { const cur = this.get(id); const kept = (cur.gaps ?? []).filter((g) => !(cur.decisions ?? []).some((d) => gapKey(d) === gapKey(g)));
@@ -928,6 +934,7 @@ export class MissionRunner {
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 권한을 허용할지·사용자가 직접 실행할지, 유지·되돌림 등)이면 options에 2~4개의 구체적인 선택지를 쓴다. 각 선택지는 고르면 무엇을 하게 되는지 한 문장으로 쓴다(예: 'HTML 기준 유지 — 제품을 HTML에 맞춰 고친다'). '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
+      '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
       '- needs: 작업에 Bash 명령이 필요하면 commands에 실제 실행할 명령을, 프로젝트 폴더 밖에서 읽어야 하는 파일·폴더가 있으면 readPaths에 절대 경로를 쓴다. 담당 직원에게 허용되지 않은 것이 있으면 그 작업은 실행하지 않고 사용자 확인으로 돌린다. 필요 없으면 빈 배열.',

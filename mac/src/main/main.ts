@@ -163,6 +163,7 @@ function register() {
   h('answerMission', (id, text, action, keepPending) => s().missions.answer(id, text, action, keepPending === true ? 'pending' : undefined));
   h('stopMission', (id) => s().missions.stop(id));
   h('retryParked', (id) => s().missions.retryParked(id));
+  h('refSnippet', (id, p, line) => s().refSnippet(String(id), String(p ?? ''), typeof line === 'number' ? line : null));
   h('decideMission', (id, picks, resume) => s().missions.decide(id, picks, resume));
   h('retryMissionLimit', (id) => s().missions.retryLimitNow(id));
   h('missionSnapshots', (id) => s().missions.snapshots(id));

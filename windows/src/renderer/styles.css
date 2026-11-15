@@ -1764,6 +1764,17 @@ textarea.input {
 .pick-option.later { color: var(--sub); }
 .pick-own { width: 100%; margin-top: 6px; }
 .decision-log { margin-top: 6px; }
+.gap-explain { margin: 6px 0; padding: 8px 10px; border-radius: 6px; background: var(--info-bg); color: var(--ink); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; }
+.gap-explain-label { display: block; font-size: 11px; font-weight: 700; color: var(--info); margin-bottom: 2px; }
+.gap-refs { margin: 4px 0; }
+.gap-ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gap-ref.on { font-weight: 700; }
+.ref-snippet { margin-top: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); overflow: hidden; }
+.ref-snippet-head { padding: 4px 8px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.ref-lines { margin: 0; padding: 6px 0; max-height: 320px; overflow: auto; font-size: 11.5px; line-height: 1.5; }
+.ref-lines > div { padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
+.ref-lines > div.hit { background: var(--warn-bg); }
+.ref-lines .ln { display: inline-block; min-width: 3.2em; color: var(--sub); user-select: none; }
 .decision-log summary { cursor: pointer; }
 .ok-text { color: #1a7f37; }
 

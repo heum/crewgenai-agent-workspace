@@ -1,4 +1,6 @@
 // 확인 필요 항목을 골라서 계속 진행하기 — 선택지 달린 근거 부족·선택형 질문
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Mission } from '../src/shared/types';
 import { gitInit, mkService, plan, sleep, tmpProject } from './helpers';
@@ -17,10 +19,38 @@ function setup() {
   const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
   const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
   svc.loadAgentTemplates(p.id);
-  return { svc, p };
+  return { svc, p, dir };
 }
 
 describe('확인 필요 항목 고르기', () => {
+  it('항목마다 쉬운 설명과 근거 위치를 주고, 근거 위치는 프로젝트 안 파일만 해당 줄 앞뒤로 보여 준다', async () => {
+    const { svc, p, dir } = setup();
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    writeFileSync(join(dir, 'docs', '기능 대조표.md'), '# 기능 대조표\n버튼은 위에 둔다 token=sk-ant-api03-FAKEFAKEFAKEFAKE00\n셋째 줄\n');
+    const m0 = await svc.startMission(p.id, '[[mock:gaps-options-only]] 기능표를 정리하라');
+    const w = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(w.gaps?.[0]?.explain).toContain('정해야');
+    expect(w.gaps?.[0]?.refs).toEqual([{ path: 'docs/기능 대조표.md', line: 2 }]);
+    const s = svc.refSnippet(w.id, 'docs/기능 대조표.md', 2);
+    expect(s.exists).toBe(true);
+    expect(s.target).toBe(2);
+    expect(s.lines[1]).toContain('버튼은 위에 둔다');
+    expect(s.lines.join('\n')).not.toContain('FAKEFAKE'); // 비밀값은 가린다
+    // 여러 줄 비밀값(개인 키)은 본문까지 가리고, 줄 번호는 그대로 둔다
+    writeFileSync(join(dir, 'docs', 'k.md'), ['첫 줄', '-----BEGIN PRIVATE KEY-----', 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=', '-----END PRIVATE KEY-----', '다섯째 줄'].join('\n'));
+    const k = svc.refSnippet(w.id, 'docs/k.md', 5);
+    expect(k.lines.join('\n')).not.toContain('QUJDREVG');
+    expect(k.lines[k.target! - k.start]).toBe('다섯째 줄');
+    // 수정 허용 경로 아래 기준으로 적어도 찾는다
+    expect(svc.refSnippet(w.id, '기능 대조표.md', null).exists).toBe(true);
+    // 프로젝트 밖은 읽지 않는다: 상위 경로·절대 경로·밖을 가리키는 링크
+    expect(svc.refSnippet(w.id, '../../../../../../etc/hosts', null).exists).toBe(false);
+    expect(svc.refSnippet(w.id, '/etc/hosts', null).exists).toBe(false);
+    try { symlinkSync('/etc/hosts', join(dir, 'docs', 'link.md')); expect(svc.refSnippet(w.id, 'docs/link.md', null).exists).toBe(false); } catch { /* 링크를 만들 수 없는 환경 */ }
+    svc.missions.answer(w.id, '', 'stop');
+    svc.close();
+  });
+
   it('근거 부족만 있어 멈추면 선택지를 보여 주고, 고르면 그 결정을 따라 바로 이어서 진행한다', async () => {
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '[[mock:gaps-options-only]] 기능표를 정리하라');

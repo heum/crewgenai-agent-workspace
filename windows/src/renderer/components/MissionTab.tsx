@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { autoLayout, needsLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
+import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionRef, RefSnippet, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
 import { MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS_LABEL, RUN_STATUS_LABEL, billingLabel } from '../../shared/types';
 import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Collapsible, Empty, Loading, Modal } from './common';
@@ -576,9 +576,11 @@ function GapPicker({ mission, gaps, resume, onChanged }: { mission: Mission; gap
       {act.error && <Banner>{act.error}</Banner>}
       <ul className="gap-list pick-list">
         {gaps.map((g, i) => (
-          <li key={i}>
+          <li key={`${g.doc}|${g.issue}`}>
             <strong>{g.doc || '문서 미지정'}</strong>
             <div>{g.issue}</div>
+            {g.explain && <div className="gap-explain"><span className="gap-explain-label">쉽게 말하면</span>{g.explain}</div>}
+            <GapRefs key={`${mission.id}|${g.doc}|${g.issue}`} missionId={mission.id} refs={gapRefs(g)} />
             {g.need && <div className="small">{g.options?.length ? '정할 내용' : '채울 내용'}: {g.need}</div>}
             <div className="pick-options" role="radiogroup" aria-label={`${g.doc || '문서 미지정'} 결정`}>
               {(g.options ?? []).map((o, j) => (
@@ -612,6 +614,60 @@ function GapPicker({ mission, gaps, resume, onChanged }: { mission: Mission; gap
         <span className="muted small">{resume ? '고르지 않은 항목은 다음 계획에서 다시 확인 필요로 남습니다.' : '진행 중인 작업은 그대로 두고, 다음 계획부터 고른 결정을 그대로 따릅니다.'}</span>
       </div>
     </>
+  );
+}
+
+/** 근거 위치: 오퍼레이터가 적은 refs, 없으면 문서 칸에 적힌 파일 경로(예: a/b.md:87)를 찾아 쓴다 */
+function gapRefs(g: MissionGap): MissionRef[] {
+  if (g.refs?.length) return g.refs;
+  const out: MissionRef[] = [];
+  for (const m of `${g.doc} ${g.issue}`.matchAll(/((?:[\w가-힣.-]+\/)*[\w가-힣.-]+\.(?:md|markdown|html?|json|txt|csv|ya?ml|tsx?|jsx?|py))(?::(\d+))?/g)) {
+    if (!out.some((r) => r.path === m[1] && (r.line ?? null) === (m[2] ? Number(m[2]) : null))) out.push({ path: m[1], line: m[2] ? Number(m[2]) : null });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/** 근거 위치를 앱 안에서 바로 보기(해당 줄 앞뒤, 읽기 전용) · 기본 앱으로 열기 */
+function GapRefs({ missionId, refs }: { missionId: string; refs: MissionRef[] }) {
+  const act = useAction();
+  const [open, setOpen] = useState<number | null>(null);
+  const [snip, setSnip] = useState<RefSnippet | null>(null);
+  const req = useRef(0);
+  if (!refs.length) return null;
+  const show = (i: number) => act.run(async () => {
+    const my = ++req.current; // 늦게 온 이전 응답은 버린다
+    if (open === i) { setOpen(null); setSnip(null); return; }
+    const r = await ws().refSnippet(missionId, refs[i].path, refs[i].line ?? null);
+    if (my === req.current) { setSnip(r); setOpen(i); }
+  });
+  return (
+    <div className="gap-refs">
+      {act.error && <Banner>{act.error}</Banner>}
+      <div className="row gap wrap">
+        <span className="muted small">근거 위치</span>
+        {refs.map((r, i) => (
+          <button key={i} className={`btn-link small gap-ref${open === i ? ' on' : ''}`} disabled={act.busy} onClick={() => void show(i)} title="누르면 이 부분을 바로 보여 줍니다">
+            {r.path}{r.line ? `:${r.line}` : ''} {open === i ? '▴' : '▾'}
+          </button>
+        ))}
+      </div>
+      {open !== null && snip && (
+        <div className="ref-snippet">
+          <div className="row gap wrap ref-snippet-head">
+            <span className="mono small grow">{snip.path}{snip.total ? ` · ${snip.total}줄` : ''}</span>
+            {snip.exists && <button className="btn-link small" onClick={() => void act.run(async () => { const err = await ws().openPath(snip.path); if (err) throw new Error(err); })}>기본 앱으로 열기</button>}
+            {snip.exists && <button className="btn-link small" onClick={() => void act.run(() => ws().revealInFinder(snip.path))}>폴더에서 보기</button>}
+          </div>
+          {snip.note ? <div className="muted small">{snip.note}</div> : (
+            <pre className="ref-lines">{snip.lines.map((l, k) => {
+              const n = snip.start + k;
+              return <div key={n} className={n === snip.target ? 'hit' : ''}><span className="ln">{n}</span>{l || ' '}</div>;
+            })}</pre>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

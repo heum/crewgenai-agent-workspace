@@ -1,10 +1,11 @@
 // 앱 기능 계층 — Electron과 분리돼 있어 시험에서 직접 구동할 수 있다.
-import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants as fsc, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha } from './engine/fsutil';
-import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc } from '../shared/types';
+import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc, RefSnippet } from '../shared/types';
+import { redactKeepLines } from './cli/claudeCli';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
 import { gitRoot, gitShutdown, workspaceRepos } from './git';
@@ -210,6 +211,47 @@ export class Service {
     return { cleared: this.store.fireAgent(agentId) };
   }
   /** 사용자가 확인해야 진행되는 항목(모든 프로젝트). 에이전트가 스스로 풀 수 없는 것을 먼저 보여 주는 데 쓴다. */
+  /**
+   * 확인 필요 항목의 근거 위치 미리보기(읽기 전용). 경로는 프로젝트 폴더 기준이고, 못 찾으면 산출물·수정 허용 경로 아래에서 찾는다.
+   * 실제 경로(링크를 따라간 경로)가 그 프로젝트 폴더·참고 자료 안일 때만 읽고, 비밀값은 가린다.
+   */
+  refSnippet(missionId: string, ref: string, line: number | null): RefSnippet {
+    const m = this.missions.get(missionId);
+    const plan = this.store.getProject(m.projectId).plan;
+    const clean = ref.trim().replace(/^["'`]|["'`]$/g, '').slice(0, 1000);
+    const empty = (note: string): RefSnippet => ({ path: clean, exists: false, start: 1, lines: [], target: null, total: 0, note });
+    if (!clean || clean.includes('\0')) return empty('경로가 비어 있습니다.');
+    const roots = [plan.folder, ...plan.referenceDocs, ...plan.priorOutputs, ...this.store.listAgents(m.projectId).flatMap((a) => a.references)].filter(Boolean)
+      .map((r) => { try { return realpathSync(r); } catch { return null; } }).filter((r): r is string => !!r);
+    const inside = (p: string) => roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
+    const bases = isAbsolute(clean) ? [''] : [plan.folder, ...[plan.outputDir, ...plan.writablePaths].filter(Boolean).map((w) => join(plan.folder, w))];
+    let abs: string | null = null;
+    for (const b of bases) {
+      const c = b ? join(b, clean) : clean;
+      try { const r = realpathSync(c); if (inside(r) && statSync(r).isFile()) { abs = r; break; } } catch { /* 다음 후보 */ }
+    }
+    if (!abs) return empty('프로젝트 폴더·참고 자료 안에서 이 파일을 찾지 못했습니다(아직 없거나 경로가 다름).');
+    // 확인한 파일과 읽는 파일이 같아야 한다: 연 뒤 다시 실제 경로·파일 번호를 대조해, 확인 사이에 링크로 바꿔치기한 경우 읽지 않는다
+    let buf: Buffer;
+    const fd = openSync(abs, fsc.O_RDONLY | (fsc.O_NOFOLLOW ?? 0));
+    try {
+      const fst = fstatSync(fd);
+      let again: string; try { again = realpathSync(abs); } catch { again = ''; }
+      const st2 = again ? statSync(again) : null;
+      if (!fst.isFile() || again !== abs || !inside(again) || !st2 || st2.ino !== fst.ino || st2.dev !== fst.dev) return empty('파일이 확인 중에 바뀌어 미리 볼 수 없습니다. 다시 눌러 주세요.');
+      if (fst.size > 4 * 1024 * 1024) return { ...empty('파일이 커서 미리 볼 수 없습니다. 기본 앱으로 여세요.'), path: abs, exists: true };
+      buf = Buffer.alloc(fst.size); let off = 0;
+      while (off < buf.length) { const n = readSync(fd, buf, off, buf.length - off, off); if (n <= 0) break; off += n; }
+      buf = buf.subarray(0, off);
+    } finally { closeSync(fd); }
+    if (buf.includes(0)) return { ...empty('텍스트 파일이 아니어서 미리 볼 수 없습니다. 기본 앱으로 여세요.'), path: abs, exists: true };
+    const all = redactKeepLines(buf.toString('utf8')).split(/\r?\n/); // 파일 전체를 먼저 가린 뒤 줄을 고른다(여러 줄 비밀값)
+    const target = line && line >= 1 && line <= all.length ? Math.floor(line) : null;
+    const start = target ? Math.max(1, target - 12) : 1;
+    const end = target ? Math.min(all.length, target + 12) : Math.min(all.length, 40);
+    return { path: abs, exists: true, start, lines: all.slice(start - 1, end).map((l) => l.slice(0, 400)), target, total: all.length };
+  }
+
   attention(): Attention {
     const items: AttentionItem[] = [];
     for (const p of this.store.listProjects()) {
@@ -377,11 +419,16 @@ export class Service {
   }
 
   allowedPath(p: string, extraRoots: string[] = []): boolean {
-    const abs = resolve(p);
+    // 실제 경로(링크를 따라간 경로)로 비교한다: 링크로 밖을 가리키는 경로는 막고, 링크를 거쳐 고른 프로젝트 폴더는 통과
+    const real = (x: string) => { // 아직 없는 경로는 있는 가장 가까운 상위 폴더까지 실제 경로로 바꿔 붙인다
+      let cur = resolve(x); const rest: string[] = [];
+      for (;;) { try { return join(realpathSync(cur), ...rest.reverse()); } catch { const up = dirname(cur); if (up === cur) return resolve(x); rest.push(cur.slice(up.length).replace(/^[\\/]+/, '')); cur = up; } }
+    };
+    const abs = real(p);
     const roots = [...extraRoots];
     for (const pr of this.store.listProjects()) roots.push(pr.plan.folder, ...pr.plan.referenceDocs, ...pr.plan.priorOutputs);
     for (const pr of this.store.listProjects()) for (const a of this.store.listAgents(pr.id)) roots.push(...a.references);
-    return roots.filter(Boolean).some((r) => { const rr = resolve(r); return abs === rr || abs.startsWith(rr.endsWith(sep) ? rr : rr + sep); });
+    return roots.filter(Boolean).some((r) => { const rr = real(r); return abs === rr || abs.startsWith(rr.endsWith(sep) ? rr : rr + sep); });
   }
 
   close() { void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }

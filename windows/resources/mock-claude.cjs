@@ -148,7 +148,7 @@ async function main() {
     if (!ask && !plan.tasks.length) plan.question = '보류한 업무를 해결해야 진행할 수 있습니다.';
     if (!ask && user.includes('[[mock:gaps-with-tasks]]')) plan.gaps = [{ doc: '서비스 기획서', issue: '대상 사용자 범위가 애매하다', need: '1차 출시 대상 사용자군' }];
     const decided = prompt.includes('## 사용자 결정(');
-    const optGap = { doc: '기능 대조표.md', issue: '항목 A가 화면 시안과 제품에서 다르다', need: '어느 쪽을 기준으로 할지', options: ['HTML 기준 유지 — 제품을 HTML에 맞춘다', '제품 기준 승인 — HTML을 제품에 맞춘다'] };
+    const optGap = { doc: '기능 대조표.md', issue: '항목 A가 화면 시안과 제품에서 다르다', need: '어느 쪽을 기준으로 할지', explain: '기능 대조표 2줄에는 버튼이 위에 있다고 적혀 있지만 제품에는 본문에 있습니다. 어느 쪽을 맞출지 정해야 화면 작업을 시작할 수 있습니다.', refs: [{ path: 'docs/기능 대조표.md', line: 2 }], options: ['HTML 기준 유지 — 제품을 HTML에 맞춘다', '제품 기준 승인 — HTML을 제품에 맞춘다'] };
     if (!ask && user.includes('[[mock:gaps-options]]') && !decided) plan.gaps = [optGap];
     if (!ask && user.includes('[[mock:gaps-options-only]]') && !decided) { plan.tasks = []; plan.question = ''; plan.gaps = [optGap]; }
     if (user.includes('[[mock:ask-options]]') && !answered) { plan.tasks = []; plan.gaps = []; plan.question = '어느 기준으로 진행할까요?'; plan.questionOptions = ['HTML 기준', '제품 기준']; }

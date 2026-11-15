@@ -157,6 +157,13 @@ export function redact(s: string): string {
   for (const p of SECRET_PATTERNS) out = out.replace(p, (_m, pre?: string) => (typeof pre === 'string' && pre.length < 60 ? `${pre}[숨김]` : '[숨김]'));
   return out;
 }
+/** 줄 위치를 지키며 가리기: 여러 줄에 걸친 비밀값(개인 키 등)은 가린 표시 뒤에 같은 수의 빈 줄을 남긴다(파일 미리보기용) */
+export function redactKeepLines(s: string): string {
+  let out = s;
+  const nl = (x: string) => (x.match(/\n/g) ?? []).length;
+  for (const p of SECRET_PATTERNS) out = out.replace(p, (m: string, pre?: string) => (typeof pre === 'string' && pre.length < 60 ? `${pre}[숨김]` : '[숨김]') + '\n'.repeat(Math.max(0, nl(m) - (typeof pre === 'string' && pre.length < 60 ? nl(pre) : 0))));
+  return out;
+}
 export function redactDeep<T>(v: T): T {
   if (typeof v === 'string') return redact(v) as unknown as T;
   if (Array.isArray(v)) return v.map((x) => redactDeep(x)) as unknown as T;
