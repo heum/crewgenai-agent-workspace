@@ -28,6 +28,12 @@ export function repoDirs(folder: string): { rel: string; abs: string }[] {
   return names.filter((n) => existsSync(join(folder, n, '.git'))).map((n) => ({ rel: n, abs: join(folder, n) }));
 }
 
+/** 글(입력 경로·지시)에 '저장소이름/' 형태로 나온 연결 폴더 바로 아래 저장소들 */
+export function referencedRepos(folder: string, texts: string[]): string[] {
+  const all = texts.join('\n');
+  return repoDirs(folder).filter((r) => r.rel && new RegExp(`(^|[^A-Za-z0-9_.-])${r.rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`).test(all)).map((r) => r.rel);
+}
+
 export interface RepoCommand {
   repo: string; // 연결 폴더 기준 저장소 이름('' = 연결 폴더 자신)
   prefix: string; // Bash 허용 명령 접두어(작업 폴더 기준)

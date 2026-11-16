@@ -24,6 +24,10 @@ const STAFF_ITEMS = { type: 'array', items: { type: 'object', required: ['kind',
 const ASK_RULE = '- 사용자에게 묻는 것(gaps·question)은 사용자만 정할 수 있는 결정으로 한정한다: 제품이 어떻게 보이고 동작하는지, 범위·우선순위, 병합·배포·비용·외부 공개. 문서 줄 번호·개수·파일 위치·자료끼리의 작은 불일치·검증 기록 정리 같은 자료 정합성 문제는 묻지 않는다. 근거가 더 분명한 쪽(최신 사용자 결정 > 실제 코드 > 최신 문서)을 따르고, 따른 근거를 결과 보고의 기록 칸에 남긴다.';
 /** 준비·정리 작업의 끝: 완벽이 아니라 다음 일을 시작할 수 있을 만큼. */
 const ENOUGH_RULE = '- 기준 정리·자료 대조·검증 같은 준비 작업은 완벽을 목표로 하지 않는다. 다음 단계(개발·구현)를 시작할 수 있을 만큼 되면 넘어가고, 남은 정리는 개발 중 필요할 때 한다. 같은 자료를 다시 검증하는 사이클을 되풀이하지 않는다.';
+/** 사용자에게 수작업을 맡기지 않는다: 직원이 못 하는 일은 보류하고 다음 일로 간다. */
+/** 진전 없는 사이클이 이만큼 이어지면 멈추고 묻는다 */
+const IDLE_LIMIT = 2;
+const NO_MANUAL_RULE = '- 사용자에게 수작업을 맡기지 않는다: 앱에서 직원을 대신 실행하기, 터미널 명령 실행, 결과·원문 붙여넣기, 파일 직접 저장을 요청하거나 질문 선택지로 내지 않는다. 직원 권한·도구로 할 수 없는 일은 막힘(이유)으로 진행 보고에 남기고, 그 일 없이 할 수 있는 다음 개발 작업으로 넘어간다. 같은 막힘 때문에 같은 질문을 되풀이하지 않는다. 예외는 사용자만 할 수 있는 일(본인 계정 로그인, 비밀값 입력, 실제 메일·결제 같은 외부 발송 승인)뿐이며, 이때는 무엇을 왜 하는지 한 줄로 요청한다. 리뷰의 후속 항목([후속])은 다음 작업 목록에 기록만 하고 이번 작업을 다시 하지 않는다.';
 /** 판단 summary = 사용자가 보고 판단하는 진행 보고 */
 const REPORT_RULE = [
   '- summary는 사용자가 이것만 보고 진행을 판단하는 **진행 보고**다. 마크다운으로 아래 순서를 지킨다(없는 칸은 "없음"):',
@@ -285,7 +289,7 @@ export class MissionRunner {
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, questionOptions: null, gaps: null, denials: null, blockers: null, parkedSigs: [], cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
+    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, questionOptions: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
     void this.loop(id);
     return next;
   }
@@ -773,15 +777,14 @@ export class MissionRunner {
             const list = blocks.map((b) => `- ${b.agent} · ${b.tool}: ${b.target}`).join('\n');
             const merged = [...(cur.denials ?? []).filter((d) => !blocks.some((x) => x.sig === d.sig)), ...blocks].slice(0, 30);
             if (blocks.some((b) => parked.includes(b.sig))) {
-              // 보류했던 업무가 해결되지 않은 채 다시 막힘: 더 돌면 같은 실패만 반복하므로 멈추고 확인을 받는다
-              const q = `직원이 권한 때문에 작업을 끝내지 못했습니다(보류했던 업무가 같은 거부로 다시 막힘). 권한은 지시문으로 바뀌지 않으므로, 아래 항목을 앱 설정에서 허용하거나 지시를 바꾼 뒤 다시 시도하세요.\n${list}`;
-              this.event(m, 'question', q, { denials: blocks });
-              this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, denials: merged, denialSigs: blocks.map((b) => b.sig) });
-              return;
-            }
+              // 보류했던 업무가 같은 거부로 다시 막힘: 묻고 멈추지 않고 보류를 유지한 채 다른 일을 계속한다(진전 없는 사이클이 이어지면 아래에서 멈춤)
+              this.event(m, 'system', `보류했던 업무가 같은 권한 거부로 다시 막혀 보류를 유지합니다. 다른 작업을 계속합니다.\n${list}`, { denials: blocks });
+              this.set(id, { denials: merged, denialSigs: blocks.map((b) => b.sig) });
+            } else {
             // 처음 막힘: 그 업무만 보류(확인 필요)하고 나머지는 계속한다. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않는다.
             this.event(m, 'system', `권한 때문에 막힌 업무를 보류했습니다(확인 필요). 해결하기 전까지 다시 계획하지 않고 나머지 작업을 계속합니다.\n${list}`, { denials: blocks });
             this.set(id, { denials: merged, denialSigs: blocks.map((b) => b.sig), parkedSigs: [...new Set([...parked, ...blocks.map((b) => b.sig)])] });
+            }
           } else this.set(id, { denialSigs: blocks.map((b) => b.sig) });
         }
         // 실패가 내 PC 환경 문제이거나 지난 사이클과 같은 원인으로 반복되면, 다시 계획해도 같은 실패가 나므로 멈추고 사용자 검토를 받는다
@@ -798,13 +801,13 @@ export class MissionRunner {
             const bsig = (b: MissionBlocker) => `fail|${failureSig(b.reason, b.step)}`;
             const all = [...(this.get(id).blockers ?? []).filter((x) => !blockers.some((b) => bsig(b) === bsig(x))), ...blockers].slice(0, 20);
             if (blockers.some((b) => parked.includes(bsig(b)))) {
-              const q = `에이전트가 스스로 해결할 수 없는 문제로 멈췄습니다(보류했던 업무가 같은 원인으로 다시 실패). 같은 설정으로 다시 시도해도 같은 결과가 나오므로 확인이 필요합니다.\n${list}`;
-              this.event(m, 'question', q, { blockers });
-              this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, blockers: all, failSigs: items.map((x) => failureSig(x.reason, x.step)) });
-              return;
-            }
+              // 보류했던 업무가 같은 원인으로 다시 실패: 보류를 유지한 채 다른 일을 계속한다(진전 없는 사이클이 이어지면 아래에서 멈춤)
+              this.event(m, 'system', `보류했던 업무가 같은 원인으로 다시 실패해 보류를 유지합니다. 다른 작업을 계속합니다.\n${list}`, { blockers });
+              this.set(id, { blockers: all, failSigs: items.map((x) => failureSig(x.reason, x.step)) });
+            } else {
             this.event(m, 'system', `스스로 풀 수 없는 실패가 난 업무를 보류했습니다(확인 필요). 해결하기 전까지 다시 계획하지 않고 나머지 작업을 계속합니다.\n${list}`, { blockers });
             this.set(id, { blockers: all, parkedSigs: [...new Set([...parked, ...blockers.map(bsig)])], failSigs: items.map((x) => failureSig(x.reason, x.step)) });
+            }
           } else
           this.set(id, { failSigs: items.map((x) => failureSig(x.reason, x.step)) });
         }
@@ -835,6 +838,17 @@ export class MissionRunner {
           this.event(m, 'question', judge.question || judge.summary);
           return;
         }
+        // 진전 없는 사이클(직원이 실제 프로젝트에 반영한 변경이 없음)은 상한을 쓰지 않는다. 두 번 이어지면 같은 자리를 도는 것이므로 멈추고 묻는다.
+        const progressed = this.d.store.runAttempts(run.id).some((a) => a.role === 'author' && a.changedFiles.length > 0);
+        const idle = progressed ? 0 : (this.get(id).idleCycles ?? 0) + 1;
+        if (idle >= IDLE_LIMIT) {
+          const q = `최근 ${idle}개 사이클 동안 실제로 반영된 변경이 없었습니다(같은 자리를 돌고 있음). 오퍼레이터 판단: ${judge.summary}\n다음 초점: ${judge.nextFocus}\n방향을 바꿔 계속할까요, 종료할까요?`;
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: q, idleCycles: 0 });
+          this.event(m, 'question', q, { idle });
+          return;
+        }
+        if (!progressed) { m = this.set(id, { idleCycles: idle, maxCycles: m.maxCycles + 1 }); this.event(m, 'system', `사이클 ${m.cycle}은 반영된 변경이 없어 사이클 상한에 넣지 않습니다(상한 ${m.maxCycles}).`); }
+        else m = this.set(id, { idleCycles: 0 });
         if (m.cycle >= m.maxCycles) {
           const q = `사이클 ${m.cycle}회를 진행했습니다(설정 상한). 오퍼레이터 판단: ${judge.summary}. 다음 초점: ${judge.nextFocus}. 계속 진행할까요?`;
           this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: q });
@@ -982,7 +996,7 @@ export class MissionRunner {
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 권한을 허용할지·사용자가 직접 실행할지, 유지·되돌림 등)이면 options에 2~4개의 구체적인 선택지를 쓴다. 각 선택지는 고르면 무엇을 하게 되는지 한 문장으로 쓴다(예: 'HTML 기준 유지 — 제품을 HTML에 맞춰 고친다'). '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
-      ASK_RULE, ENOUGH_RULE,
+      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE,
       '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
@@ -1092,7 +1106,7 @@ export class MissionRunner {
       '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다.',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
-      REPORT_RULE, ASK_RULE, ENOUGH_RULE,
+      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE,
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
       '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',

@@ -71,15 +71,17 @@ describe('권한 거부', () => {
     svc.close();
   });
 
-  it('보류한 업무를 오퍼레이터가 다시 계획해 같은 거부가 나면 더 돌지 않고 멈춘다', async () => {
+  it('보류한 업무를 오퍼레이터가 다시 계획해 같은 거부가 나도 묻고 멈추지 않고, 보류를 유지한 채 나머지를 계속한다', async () => {
     const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     const m0 = await svc.startMission(p.id, '[[mock:ignore-parked]] [[mock:two-tasks]] [[mock:deny:bash:shasum -a 256 /x/a.html]] 해시');
     const m = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
-    expect(m.status).toBe('waiting_user');
-    expect(m.question).toContain('다시 막힘');
-    expect(svc.missions.detail(m.id).cycles.length).toBe(2);
+    expect(m.question ?? '').not.toContain('다시 막힘');
+    const d = svc.missions.detail(m.id);
+    expect(d.cycles.length).toBeGreaterThanOrEqual(2);
+    expect(d.events.some((e) => e.text.includes('보류를 유지'))).toBe(true);
+    expect((m.denials ?? []).length).toBeGreaterThan(0); // 보류한 업무는 확인 필요로 남는다
     await svc.missions.stop(m.id);
     svc.close();
   });

@@ -16,7 +16,7 @@ import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
 import { BUILTIN_CHECK, checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
-import { commandNote, levelNote, materializeLink, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
+import { commandNote, levelNote, materializeLink, referencedRepos, repoDirs, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -99,9 +99,24 @@ function absScope(folder: string, rel: string): string {
 }
 function absOverlap(a: string, b: string): boolean { return a === b || a.startsWith(b + sep) || b.startsWith(a + sep); } // Windows: 경로 구분자는 \\
 
+/** 필수 산출물: 막힌 부분이 있어도 만들고, 기존 산출물로 채우고, 사용자 판단은 결정 필요로 넘긴다(산출물 없음으로 끝내지 않음) */
+const MISSING_OUTPUT_RULE = [
+  '- 일부 단계(명령 실행·도구 사용)가 막혀도 필수 산출물 파일은 반드시 만든다. "만들지 못했다"로 끝내지 않는다.',
+  '- 직접 하지 못한 부분은 이전 사이클 결과물·관련 문서·코드 등 기존 산출물을 대조해 채울 수 있는 만큼 채우고, 각 내용의 근거(파일 경로)를 적는다.',
+  '- 끝내 채우지 못한 칸은 "미실행(이유)" 또는 "확인 필요(이유)"로 표시한다. 실행하지 않은 시험을 통과로 쓰지 않는다.',
+  '- 사용자가 정해야 하는 것만 마지막 응답에 "결정 필요: ..."로 쓴다. 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 요청하지 않는다.',
+].join('\n');
+
+/** 독립 검토의 재작업 기준: 막는 결함만 재작업, 경미한 지적은 후속으로 */
+const REVIEW_BAR = [
+  '- changes_requested는 막는 결함이 있을 때만 낸다: 정확성 오류, 보안 문제, 요구·완료 조건 위반, 시험 실패, 필수 산출물 누락. Codex 리뷰의 P0·P1 등급이 여기에 해당한다.',
+  '- 기록 정리·표현·줄 번호·작은 불일치·추가로 있으면 좋은 검증(Codex P2·P3 등급)은 재작업 사유가 아니다. 승인하고 followUps에 적는다(다음 작업 목록으로 넘어간다).',
+  '- issues에는 막는 결함만 쓴다.',
+].join('\n');
+
 const VERDICT_SCHEMA = {
   type: 'object',
-  properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } } },
+  properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } }, followUps: { type: 'array', items: { type: 'string' } } },
   required: ['verdict', 'summary', 'issues'],
 };
 
@@ -696,7 +711,8 @@ export class Engine {
       const a = await this.runClaude(runId, node, visit, attemptNo, 'author', agent, plan, prompt, scope, null, resumeSession);
       if (a.status === 'succeeded') { author = a; break; }
       lastReason = a.error || 'Claude 작업이 완료 조건을 충족하지 못했습니다.';
-      extra = `${feedback}\n이전 시도 실패 원인: ${lastReason}`.trim();
+      const missing = (a.acceptance?.checks ?? []).some((c) => !c.ok && /필수 산출물이 없습니다/.test(c.detail));
+      extra = `${feedback}\n이전 시도 실패 원인: ${lastReason}${missing ? `\n필수 산출물이 없어 실패했습니다. 막힌 부분이 있어도 산출물을 먼저 만드세요.\n${MISSING_OUTPUT_RULE}` : ''}`.trim();
     }
     if (!author) return { status: 'fail' as const, summary: '', outputs: [], reason: lastReason, feedbackText: lastReason };
 
@@ -721,6 +737,7 @@ export class Engine {
     const inputs = [...node.inputs, ...(node.useUpstreamOutputs ? upstream : [])];
     L.push('## 입력 자료', ...(inputs.length ? inputs.map((i) => `- ${i}`) : ['- (없음)']), '');
     L.push('## 산출물', ...node.outputs.map((o) => `- ${o.path} (${o.format})${o.required ? ' — 필수' : ''}`), '');
+    if (node.outputs.some((o) => o.required)) L.push('## 일부를 못 해도 산출물은 만든다', MISSING_OUTPUT_RULE, '');
     L.push('## 완료 조건', node.doneCriteria || agent.doneCriteria, '');
     L.push('## 수정 가능 경로', ...scope.map((s) => `- ${s || '(프로젝트 전체)'}`), '이 밖의 파일은 권한이 없어 수정이 거부된다. 검사 코드나 시험을 약화시켜 통과시키지 않는다.', '');
     if (feedback.trim()) L.push('## 재작업 요청', `(방문 ${visit}회차)`, feedback.trim(), '');
@@ -738,24 +755,29 @@ export class Engine {
         `# 독립 교차검토 — ${node.label}`, '', '작성자와 독립적으로, 읽기 전용으로 확인한다. 파일을 수정하지 않는다.', '',
         ...(node.kind === 'review' && node.instructions.trim() ? ['## 검토 지시', node.instructions.trim(), ''] : []),
         '## 검토 대상', ...targets.map((t) => `- ${t}`), '', '## 완료 조건', criteria || plan.doneCriteria, '',
-        '## 프로젝트 목표', plan.goal, '', '## 출력', 'verdict(approve|changes_requested), summary, issues 배열을 구조화 출력으로 반환한다. 근거 없이 승인하지 않는다.',
+        '## 프로젝트 목표', plan.goal, '', '## 판정 기준', REVIEW_BAR, '',
+        '## 출력', 'verdict(approve|changes_requested), summary, issues(막는 결함), followUps(다음 작업으로 미룰 경미한 지적)를 구조화 출력으로 반환한다. 근거 없이 승인하지 않는다.',
       ].join('\n');
       a = await this.runClaude(runId, node, visit, prior.length + 1, 'reviewer', reviewer, plan, prompt, [], VERDICT_SCHEMA, null);
     }
     const v = this.verdictOf(a);
-    const rec: ReviewRecord = { id: uid(), runId, nodeId: node.id, kind: 'agent', reviewerAgentId: reviewer.id, verdict: v.verdict, comments: [v.summary, ...v.issues.map((i) => `- ${i}`)].join('\n'), targetNodeId: null, subjectHash: sha256(targets.map((t) => fileSha(join(plan.folder, t))).join('|')), graphVersionId: this.s.getRun(runId).graphVersionId, stale: false, createdAt: now() };
+    const rec: ReviewRecord = { id: uid(), runId, nodeId: node.id, kind: 'agent', reviewerAgentId: reviewer.id, verdict: v.verdict, comments: [v.summary, ...v.issues.map((i) => `- ${i}`), ...v.followUps.map((i) => `- [후속] ${i}`)].join('\n'), targetNodeId: null, subjectHash: sha256(targets.map((t) => fileSha(join(plan.folder, t))).join('|')), graphVersionId: this.s.getRun(runId).graphVersionId, stale: false, createdAt: now() };
     if (!done) this.s.addReview(rec);
     return v;
   }
 
-  private verdictOf(a: Attempt): { verdict: 'approve' | 'changes_requested'; summary: string; issues: string[] } {
-    if (a.status !== 'succeeded') return { verdict: 'changes_requested', summary: `검토 실행 실패: ${a.error}`, issues: [a.error || '검토가 끝나지 않았습니다.'] };
+  private verdictOf(a: Attempt): { verdict: 'approve' | 'changes_requested'; summary: string; issues: string[]; followUps: string[] } {
+    if (a.status !== 'succeeded') return { verdict: 'changes_requested', summary: `검토 실행 실패: ${a.error}`, issues: [a.error || '검토가 끝나지 않았습니다.'], followUps: [] };
     const raw = this.meta(a.runId, `structured:${a.id}`);
-    let v: { verdict?: string; summary?: string; issues?: string[] } | null = null;
+    let v: { verdict?: string; summary?: string; issues?: string[]; followUps?: string[] } | null = null;
     try { v = raw ? JSON.parse(raw) : null; } catch { v = null; }
     if (!v) { const m = a.summary.match(/\{[\s\S]*"verdict"[\s\S]*\}/); try { v = m ? JSON.parse(m[0]) : null; } catch { v = null; } }
-    if (!v || (v.verdict !== 'approve' && v.verdict !== 'changes_requested')) return { verdict: 'changes_requested', summary: '검토 결과 형식을 확인할 수 없어 승인으로 처리하지 않았습니다.', issues: ['구조화된 검토 결과 없음'] };
-    return { verdict: v.verdict, summary: String(v.summary ?? ''), issues: Array.isArray(v.issues) ? v.issues.map(String) : [] };
+    if (!v || (v.verdict !== 'approve' && v.verdict !== 'changes_requested')) return { verdict: 'changes_requested', summary: '검토 결과 형식을 확인할 수 없어 승인으로 처리하지 않았습니다.', issues: ['구조화된 검토 결과 없음'], followUps: [] };
+    const issues = Array.isArray(v.issues) ? v.issues.map(String) : [];
+    const followUps = Array.isArray(v.followUps) ? v.followUps.map(String) : [];
+    // 막는 결함 없이 수정 요청만 낸 경우(경미한 지적뿐)는 재작업하지 않고 후속으로 넘긴다
+    if (v.verdict === 'changes_requested' && !issues.length && followUps.length) return { verdict: 'approve', summary: String(v.summary ?? ''), issues: [], followUps };
+    return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps };
   }
 
   /** Codex 리뷰: 읽기 전용 샌드박스·구조화 출력. 결과 보고서를 산출물 위치에 남겨 다음 Claude 재검토의 입력으로 넘긴다. */
@@ -918,6 +940,8 @@ export class Engine {
     // Bash를 쓰는 작성자는 격리 복사본에서 실행한다(같은 실행·단계는 같은 경로 → 세션 이어서 작업 가능).
     const isolate = role === 'author' && tools.includes('Bash');
     const workDir = isolate ? isolatedDir(`${runId}:${node.id}`) : plan.folder;
+    // 수정 범위의 저장소 + 입력 자료·지시에 이름이 나온 저장소(범위 검사에서 '맡은 저장소'로 본다)
+    const tops = scope.length && scope.every((x) => x && x !== '.' && !isAbsolute(x)) ? new Set([...scope.map((x) => x.replace(/^\.[\\/]/, '').split(/[\\/]/)[0]), ...referencedRepos(plan.folder, [...node.inputs, node.instructions])]) : null;
     // 자동 처리의 시험 명령 허용은 macOS판만: Windows판은 Bash 도구를 주지 않는다(시험은 업무 흐름의 검사 단계로 앱이 실행)
     const cmds: ReturnType<typeof repoTestCommands> = [];
     const sockets = this.o.testLocalSockets?.() ?? false;
@@ -963,7 +987,7 @@ export class Engine {
       const inOwn = (f: string) => role === 'author' && scope.some((s) => within(f, s));
       // 여러 저장소 모드: 수정 범위가 속한 저장소만 복사한다(상위 폴더 전체를 복사하지 않음)
       const wsInfo = isolate ? await workspaceRepos(plan.folder) : null;
-      const top = wsInfo?.mode === 'multi' && scope.length && scope.every((x) => x && x !== '.' && !x.startsWith('/')) ? new Set(scope.map((x) => x.replace(/^\.\//, '').split('/')[0])) : undefined;
+      const top = wsInfo?.mode === 'multi' && tops ? tops : undefined;
       const iso: IsoState | null = isolate ? prepareIsolated(plan.folder, workDir, inOwn, !!resumeSession, top) : null;
       // npm 시험 명령: Next.js 빌드는 링크한 node_modules를 받지 않으므로 그 저장소만 복제본(APFS 즉시 복제)으로 바꾼다
       if (iso) for (const rel of new Set(cmds.filter((c) => sockets || !c.localSockets).flatMap((c) => c.cloneDirs))) await materializeLink(workDir, rel, join(plan.folder, rel));
@@ -1005,7 +1029,13 @@ export class Engine {
         cleanupIsolated(workDir);
       } else {
         attempt.changedFiles = changed.filter(inOwn);
-        attempt.outOfScopeChanges = changed.filter((f) => !inOwn(f) && !others.some((o) => join(base, f) === o || join(base, f).startsWith(o + sep)));
+        const outside = changed.filter((f) => !inOwn(f) && !others.some((o) => join(base, f) === o || join(base, f).startsWith(o + sep)));
+        // 여러 저장소 연결: 직접 실행 직원은 수정 범위 안만 고칠 수 있다(CLI 권한). 맡은 저장소가 아닌 곳의 변경은
+        // 같은 시간에 사용자·다른 프로그램이 바꾼 것이므로 실패로 치지 않고 기록만 남긴다.
+        const repos = tops && !tools.includes('Bash') ? new Set(repoDirs(plan.folder).map((r) => r.rel).filter(Boolean)) : null;
+        const foreign = repos && tops ? outside.filter((f) => { const t = f.split(/[\\/]/)[0]; return repos.has(t) && !tops.has(t); }) : [];
+        if (foreign.length) addEv('system', `맡은 저장소 밖에서 다른 프로그램이 바꾼 파일 ${foreign.length}개는 범위 검사에서 제외했습니다: ${foreign.slice(0, 5).join(', ')}`, '');
+        attempt.outOfScopeChanges = outside.filter((f) => !foreign.includes(f));
       }
       attempt.exitCode = done.code; attempt.sessionId = sink.result?.sessionId ?? sink.sessionId ?? attempt.sessionId;
       const r = sink.result;

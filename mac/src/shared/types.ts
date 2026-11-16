@@ -514,6 +514,7 @@ export interface Mission {
   failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
   /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */
   parkedSigs?: string[];
+  idleCycles?: number; // 반영된 변경 없이 끝난 사이클이 연속 몇 번인가(상한에 넣지 않음, 이어지면 멈추고 물음)
   learnedSeq?: number; // 배운 것을 정리한 마지막 기록 번호
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */
   limitUntil?: string | null;

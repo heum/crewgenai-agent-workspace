@@ -5,7 +5,7 @@
 // - 이벤트 해석, 세션 ID, 프로세스 그룹 단위 취소
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { highDenyRules, MEDIUM_COMMANDS, type CommandLevel } from '../autopilot';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CliStatus, ToolName } from '../../shared/types';
@@ -117,15 +117,36 @@ export function scopeRule(scope: string): string {
   return s === '' || s === '.' ? 'Edit(./**)' : `Edit(./${s}/**)`;
 }
 
+/**
+ * 작업 폴더 기준 상대 규칙(./x)은 Bash에서 cd 하면 기준이 바뀌어 맞지 않게 된다(범위 안 쓰기까지 거부됨, 실제 CLI로 확인).
+ * 그래서 작업 폴더의 절대 경로(//경로, 링크를 푼 실제 경로 포함)로도 같은 규칙을 만든다. 상대 규칙도 함께 둔다.
+ */
+/** 아직 없는 폴더(실행 직전에 만들 격리 복사본)도 있는 상위 폴더까지 링크를 풀어 실제 경로를 만든다(/var → /private/var) */
+function realPathOf(p: string): string {
+  let head = p.replace(/\/+$/, ''); const tail: string[] = [];
+  while (head && head !== '/') {
+    try { return [realpathSync(head), ...tail].join('/'); } catch { tail.unshift(head.slice(head.lastIndexOf('/') + 1)); head = head.slice(0, head.lastIndexOf('/')); }
+  }
+  return p;
+}
+
+export function absRules(rule: string, cwd: string): string[] {
+  const m = rule.match(/^(\w+)\(\.\/(.*)\)$/);
+  if (!m || !cwd.startsWith('/')) return [rule];
+  const realCwd = realPathOf(cwd);
+  const bases = [...new Set([cwd, realCwd].map((b) => b.replace(/\/+$/, '')))];
+  return [rule, ...bases.map((b) => `${m[1]}(/${b}/${m[2]})`)];
+}
+
 export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const writer = spec.tools.includes('Edit') || spec.tools.includes('Write');
   const tools = [...new Set(spec.tools)];
   const allow: string[] = ['Read', 'Grep', 'Glob'];
-  if (writer) allow.push(...spec.editScopes.map(scopeRule));
+  if (writer) allow.push(...spec.editScopes.map(scopeRule).flatMap((r) => absRules(r, spec.cwd)));
   if (tools.includes('Bash')) for (const c of spec.allowedCommands.map((x) => x.trim()).filter(Boolean)) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'medium') for (const c of MEDIUM_COMMANDS) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'high') allow.push('Bash');
-  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'];
+  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'].flatMap((r) => absRules(r, spec.cwd));
   if (tools.includes('Bash') && spec.commandLevel === 'high') deny.push(...highDenyRules());
   const settings = {
     permissions: { allow, deny, defaultMode: 'dontAsk' },
