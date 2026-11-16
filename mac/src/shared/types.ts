@@ -34,7 +34,7 @@ export interface PlanVersion {
 }
 
 // ───────── Agent 직원 ─────────
-export type ToolName = 'Read' | 'Grep' | 'Glob' | 'Edit' | 'Write' | 'Bash' | 'WebFetch';
+export type ToolName = 'Read' | 'Grep' | 'Glob' | 'Edit' | 'Write' | 'Bash' | 'WebFetch' | 'Skill';
 
 export interface AgentFields {
   code: string; // "01" 등 표시 번호
@@ -335,7 +335,11 @@ export interface AppSettings {
   missionMaxCycles: number; // 오퍼레이터 루프가 사용자 확인 없이 도는 최대 사이클 수
   learning?: boolean; // 대화에서 배우기(기본 켬): 지시·답변에서 배운 것을 저장해 다음 지시·다른 프로젝트에 반영
   gitCommits: boolean; // 직원별 git 커밋·미션 스냅샷 사용
+  skillDirs?: string[]; // 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(이 PC의 절대 경로). 없으면 ~/.claude/skills·~/.agents/skills 중 있는 것
 }
+
+/** 설정 화면용: 스킬 폴더에서 찾은 스킬 */
+export interface SkillSource { path: string; ok: boolean; skills: string[]; note: string | null }
 
 // ───────── 실시간 이벤트(main → renderer) ─────────
 export type LiveEvent =
@@ -357,6 +361,8 @@ export interface WorkspaceApi {
   updatePlan(projectId: ID, plan: PlanFields): Promise<Project>;
   planHistory(projectId: ID): Promise<PlanVersion[]>;
   pickFolder(): Promise<string | null>;
+  pickSkillFolder(): Promise<string | null>;
+  skillSources(dirs: string[] | null): Promise<{ dirs: string[]; sources: SkillSource[] }>;
   pickFiles(): Promise<string[]>;
   pickSubfolder(base: string): Promise<string | null>; // base 하위 폴더를 상대 경로로
   revealInFinder(path: string): Promise<void>;

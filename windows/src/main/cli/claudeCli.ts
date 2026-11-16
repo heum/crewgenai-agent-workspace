@@ -151,6 +151,7 @@ export interface ClaudeRunSpec {
   jsonSchema: object | null;
   model: string;
   maxBudgetUsd: number | null;
+  pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
 }
 
 export function scopeRule(scope: string): string {
@@ -167,7 +168,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   // Bash 허용 명령 규칙은 넣지 않는다(Windows판은 Bash 도구를 주지 않음)
   const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'];
   // Bash 도구를 주지 않으므로 Bash 샌드박스 설정은 넣지 않는다(Windows에서는 샌드박스를 지원하지 않음)
-  const settings = { permissions: { allow, deny, defaultMode: 'dontAsk' } };
+  const settings = { permissions: { allow, deny, defaultMode: 'dontAsk' }, disableAllHooks: true, disableSkillShellExecution: true }; // 훅·스킬 셸 실행 끔: 스킬·플러그인이 권한 통제 밖에서 명령을 실행하지 못하게
   const args = [
     '-p',
     '--output-format', 'stream-json', '--verbose',
@@ -179,6 +180,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
     '--append-system-prompt', spec.appendSystemPrompt,
   ];
   for (const d of spec.readDirs) args.push('--add-dir', d);
+  if (tools.includes('Skill')) for (const d of spec.pluginDirs ?? []) args.push('--plugin-dir', d);
   if (spec.resumeSessionId) args.push('--resume', spec.resumeSessionId);
   else if (spec.sessionId) args.push('--session-id', spec.sessionId);
   if (spec.jsonSchema) args.push('--json-schema', JSON.stringify(spec.jsonSchema));

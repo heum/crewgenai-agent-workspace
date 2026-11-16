@@ -101,6 +101,7 @@ export interface ClaudeRunSpec {
   jsonSchema: object | null;
   model: string;
   maxBudgetUsd: number | null;
+  pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
 }
 
 export function scopeRule(scope: string): string {
@@ -117,6 +118,8 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'];
   const settings = {
     permissions: { allow, deny, defaultMode: 'dontAsk' },
+    disableAllHooks: true, // 스킬·플러그인이 훅으로 권한 통제 밖에서 명령을 실행하지 못하게
+    disableSkillShellExecution: true, // 스킬 본문의 !`명령`·```! 블록을 불러올 때 실행하지 않게
     sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, network: { allowedDomains: [] as string[] },
       // 참고 자료 폴더(--add-dir)는 읽기 전용: Bash 하위 프로그램의 쓰기도 막는다
       filesystem: { denyWrite: spec.readDirs.filter((d) => !(spec.cwd === d || spec.cwd.startsWith(d.replace(/\/+$/, '') + '/'))) } }, // 프로젝트를 포함하는 상위 폴더는 제외
@@ -132,6 +135,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
     '--append-system-prompt', spec.appendSystemPrompt,
   ];
   for (const d of spec.readDirs) args.push('--add-dir', d);
+  if (tools.includes('Skill')) for (const d of spec.pluginDirs ?? []) args.push('--plugin-dir', d);
   if (spec.resumeSessionId) args.push('--resume', spec.resumeSessionId);
   else if (spec.sessionId) args.push('--session-id', spec.sessionId);
   if (spec.jsonSchema) args.push('--json-schema', JSON.stringify(spec.jsonSchema));

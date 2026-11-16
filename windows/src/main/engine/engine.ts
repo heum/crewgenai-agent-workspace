@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { buildReport } from './report';
 import { effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
 import { laneBlocks } from './lanes';
+import { prepareSkillBundle, unpinSkillBundle } from '../skills';
 
 export interface Tracer {
   runStarted(run: Run, meta: Record<string, unknown>): void;
@@ -46,6 +47,8 @@ export interface EngineOptions {
   limitFallbackMs?: number;
   /** 사용자에 대해 배운 것(직원 지시에 붙인다) */
   learningsFor?: (projectId: string) => string;
+  /** 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(설정)와 사본을 둘 이 사용자 전용 폴더 */
+  skills?: () => { dirs: string[]; cacheDir: string };
 }
 
 /** 실행 메타에 남기는 사용 한도 대기 정보 */
@@ -889,6 +892,17 @@ export class Engine {
       if (fileRefs.length) readDirs.push(refDir);
     }
     if (refNotes.length) prompt = `${prompt}\n\n## 참고 자료 사본(읽기 전용)\n${refNotes.join('\n')}`;
+    // 스킬: 'Skill' 도구를 켠 작성자만. 고른 스킬 폴더에서 스킬 파일만 읽기 전용 사본으로 넘긴다.
+    const pluginDirs: string[] = [];
+    let unpinLater = () => {};
+    if (role === 'author' && tools.includes('Skill')) {
+      try {
+        const sk = this.o.skills?.();
+        const bundle = sk ? prepareSkillBundle(sk.dirs, sk.cacheDir) : null;
+        if (bundle) { pluginDirs.push(bundle.pluginRoot); readDirs.push(bundle.pluginRoot); }
+        if (bundle) unpinLater = () => unpinSkillBundle(bundle.pluginRoot);
+      } catch (e) { prompt = `${prompt}\n\n(스킬 사본을 만들지 못해 이번 실행은 기본 제공 스킬만 쓸 수 있습니다: ${redact(String((e as Error).message ?? e)).slice(0, 200)})`; }
+    }
     const sessionId = resumeSession ? null : randomUUID();
     // Bash를 쓰는 작성자는 격리 복사본에서 실행한다(같은 실행·단계는 같은 경로 → 세션 이어서 작업 가능).
     const isolate = role === 'author' && tools.includes('Bash');
@@ -896,21 +910,21 @@ export class Engine {
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000),
       cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : agent.allowedCommands,
-      readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, maxBudgetUsd: agent.maxBudgetUsd,
+      readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs,
     });
     const file = run.executor === 'mock' ? process.execPath : ex.cliPath;
-    if (!file) throw new Error('Claude CLI 경로가 없습니다.');
+    if (!file) { unpinLater(); throw new Error('Claude CLI 경로가 없습니다.'); }
     const argv = run.executor === 'mock' ? [this.o.mockScript, ...args] : args;
     const attempt: Attempt = {
       id: uid(), runId, nodeId: node.id, visit, attemptNo, agentId: agent.id, agentVersion: agent.version, role, status: 'running', pid: null, procStart: null,
       sessionId: sessionId ?? resumeSession, resumedFrom: resumeSession, promptHash: sha256(prompt), argvRedacted: redactArgs(args), exitCode: null, resultSubtype: null,
       isError: null, costUsd: null, usage: null, permissionDenials: [], acceptance: null, changedFiles: [], outOfScopeChanges: [], summary: '', error: '', startedAt: now(), finishedAt: null,
     };
-    try { this.s.insertAttempt(attempt); } catch { throw new Error(`중복 시도 차단: ${node.label} 방문 ${visit} 시도 ${attemptNo}`); }
+    try { this.s.insertAttempt(attempt); } catch { unpinLater(); throw new Error(`중복 시도 차단: ${node.label} 방문 ${visit} 시도 ${attemptNo}`); }
     this.o.emit({ type: 'attempt', attempt });
     // 격리 실행으로 Bash도 실제 프로젝트에 직접 쓰지 못하므로 수정 범위만 잠근다.
     const lockScope = role === 'author' ? scope : null;
-    const release = await this.acquire(runId, node.id, plan.folder, lockScope).catch((e) => { attempt.status = 'cancelled'; attempt.finishedAt = now(); this.saveAttempt(attempt); throw e; });
+    const release = await this.acquire(runId, node.id, plan.folder, lockScope).catch((e) => { unpinLater(); attempt.status = 'cancelled'; attempt.finishedAt = now(); this.saveAttempt(attempt); throw e; });
     let seq = 0;
     const sink: StreamSink = { sessionId: attempt.sessionId, result: null, limit: null };
     const addEv = (kind: Parameters<typeof this.s.addEvent>[0]['kind'], summary: string, raw: string) => {
@@ -988,7 +1002,7 @@ export class Engine {
       if (attempt.status === 'cancelled') throw new Cancelled();
       if (lim) this.hitLimit(runId, node, lim);
       return attempt;
-    } finally { release(); }
+    } finally { release(); unpinLater(); }
   }
 
   /** 중단된 격리 실행의 남은 작업을 '산출물만 확인' 선택 시 반영한다(범위 밖 변경이 있으면 반영하지 않음). */

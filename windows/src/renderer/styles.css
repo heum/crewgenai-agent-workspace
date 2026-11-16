@@ -1806,3 +1806,8 @@ textarea.input {
 .learn-text { font-size: 14px; }
 .learn-form { display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
 .btn-sm { padding: 3px 9px; font-size: 12px; }
+
+/* 스킬 폴더(설정) */
+.skill-src { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.skill-src-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.skill-src-head code { overflow-wrap: anywhere; }

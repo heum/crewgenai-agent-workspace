@@ -148,6 +148,8 @@ function register() {
     await shell.openPath(f);
   });
   h('getSettings', () => s().settings());
+  h('pickSkillFolder', async () => { const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'showHiddenFiles'], title: '스킬 폴더 선택(SKILL.md가 있는 폴더 또는 그 상위 폴더)' }); return r.canceled ? null : r.filePaths[0]; });
+  h('skillSources', (dirs) => s().skillSources(Array.isArray(dirs) ? (dirs as unknown[]).filter((x): x is string => typeof x === 'string') : null));
   h('saveSettings', (p, key) => s().saveSettings(p, key));
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));

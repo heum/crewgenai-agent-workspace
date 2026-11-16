@@ -4,7 +4,8 @@ import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha } from './engine/fsutil';
-import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc, RefSnippet } from '../shared/types';
+import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
+import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
@@ -78,6 +79,7 @@ export class Service {
       tracer: d.tracer?.(this),
       limitGraceMs: d.limitGraceMs, limitFallbackMs: d.limitFallbackMs,
       learningsFor: (pid) => (this.settings().learning !== false ? this.learnings.promptSection(pid, 1200) : ''),
+      skills: () => ({ dirs: this.skillDirs(), cacheDir: join(dirname(d.dbFile), 'skill-bundles') }),
     });
     this.missions = new MissionRunner({
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
@@ -159,10 +161,20 @@ export class Service {
   saveSettings(p: Partial<AppSettings>, key?: string | null): AppSettings {
     const cur = this.settings();
     const next = { ...cur, ...p, missionMaxCycles: Math.min(50, Math.max(1, Math.floor(Number(p.missionMaxCycles ?? cur.missionMaxCycles)) || 5)), maxConcurrent: Math.min(16, Math.max(1, Math.floor(Number(p.maxConcurrent ?? cur.maxConcurrent)) || 1)) };
+    if (p.skillDirs !== undefined) next.skillDirs = Array.isArray(p.skillDirs) ? [...new Set(p.skillDirs.filter((x) => typeof x === 'string' && isAbsolute(x)))].slice(0, 20) : undefined;
     const { langsmithKeySet: _k, ...persist } = next;
     this.store.setSetting('app', persist);
     if (key !== undefined) { if (this.d.secretStore) this.d.secretStore.set(key); else this.memSecret = key; }
     return this.settings();
+  }
+  /** 스킬 폴더: 설정값이 없으면 이 PC의 기본 위치 중 있는 것 */
+  skillDirs(): string[] {
+    const v = this.settings().skillDirs;
+    return Array.isArray(v) ? v.filter((p) => typeof p === 'string' && isAbsolute(p)) : defaultSkillDirs();
+  }
+  skillSources(dirs: string[] | null): { dirs: string[]; sources: SkillSource[] } {
+    const list = dirs ? dirs.filter((p) => typeof p === 'string' && isAbsolute(p)) : this.skillDirs();
+    return { dirs: list, sources: describeSkillSources(list) };
   }
   langsmithKey(): string | null { return this.d.secretStore ? this.d.secretStore.get() : this.memSecret; }
 
@@ -236,7 +248,7 @@ export class Service {
     const used = new Set(agents.map((x) => x.code));
     let n = 1; while (used.has(String(n).padStart(2, '0'))) n++;
     const code = String(n).padStart(2, '0');
-    const tools = (base?.tools ?? ['Read', 'Grep', 'Glob', 'Edit', 'Write']).filter((t) => t !== 'Bash' && t !== 'WebFetch');
+    const tools = (base?.tools ?? ['Read', 'Grep', 'Glob', 'Edit', 'Write']).filter((t) => t !== 'Bash' && t !== 'WebFetch' && t !== 'Skill');
     const a = this.saveAgent(m.projectId, null, {
       code, name, role, instructions, references: [], workPaths: p.workPaths, tools, allowedCommands: [],
       expectedOutput: base?.expectedOutput ?? '', doneCriteria: base?.doneCriteria ?? '', reviewerAgentId: base?.reviewerAgentId ?? null, model: base?.model ?? '',

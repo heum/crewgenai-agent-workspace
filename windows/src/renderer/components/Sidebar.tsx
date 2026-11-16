@@ -1,6 +1,6 @@
 import LearningsModal from './LearningsModal';
 import { useEffect, useState } from 'react';
-import type { AppSettings, CliStatus, CodexStatus, Project, Attention } from '../../shared/types';
+import type { AppSettings, CliStatus, CodexStatus, Project, Attention, SkillSource } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
 import { Markdown } from '../markdown';
 import type { QueueInfo } from '../App';
@@ -202,6 +202,11 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
   const [clearKey, setClearKey] = useState(false);
   const act = useAction();
   const [saved, setSaved] = useState(false);
+  const [skills, setSkills] = useState<{ dirs: string[]; sources: SkillSource[] } | null>(null);
+  const [skillsTouched, setSkillsTouched] = useState(false);
+  useEffect(() => { ws().skillSources(null).then(setSkills).catch(() => setSkills({ dirs: [], sources: [] })); }, []);
+  const setSkillDirs = (dirs: string[]) => act.run(async () => { setSkills(await ws().skillSources(dirs)); setSkillsTouched(true); });
+  const addSkillDir = () => act.run(async () => { const p = await ws().pickSkillFolder(); if (p && skills && !skills.dirs.includes(p)) { setSkills(await ws().skillSources([...skills.dirs, p])); setSkillsTouched(true); } });
   const save = () =>
     act.run(async () => {
       const keyArg = clearKey ? null : key.trim() ? key.trim() : undefined;
@@ -216,6 +221,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           codexEffort: s.codexEffort,
           missionMaxCycles: s.missionMaxCycles,
           gitCommits: s.gitCommits,
+          ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
         keyArg,
       );
@@ -258,6 +264,20 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" checked={!!s.gitCommits} onChange={(e) => setS({ ...s, gitCommits: e.target.checked })} /> 직원별 git 커밋·미션 스냅샷 사용 (권장)
       </label>
       <p className="muted small">직원이 바꾼 파일만 그 직원 이름으로 커밋합니다. push는 하지 않습니다. 미션 시작과 사이클마다 스냅샷을 남깁니다(저장소 하나면 git 태그, 여러 저장소면 앱 기록).</p>
+      <h3>스킬 폴더</h3>
+      <p className="muted small">직원 설정에서 도구 ‘Skill’을 켠 직원만 이 폴더의 스킬을 씁니다. 실행할 때마다 스킬 파일만 읽기 전용 사본으로 넘기며, 플러그인의 훅·MCP·명령은 가져오지 않습니다. 스킬을 써도 직원 권한(수정 폴더·Bash 허용 명령·웹)은 그대로입니다.</p>
+      {!skills && <p className="muted small">스킬 폴더 확인 중…</p>}
+      {skills && skills.sources.length === 0 && <p className="muted small">지정한 스킬 폴더가 없습니다. 이 경우 Claude CLI 기본 제공 스킬만 씁니다.</p>}
+      {skills && skills.sources.map((src) => (
+        <div key={src.path} className="skill-src">
+          <div className="skill-src-head">
+            <code className="mono small">{src.path}</code>
+            <button className="btn small" onClick={() => setSkillDirs(skills.dirs.filter((d) => d !== src.path))}>빼기</button>
+          </div>
+          <div className="muted small">{src.ok ? `스킬 ${src.skills.length}개: ${src.skills.slice(0, 12).join(', ')}${src.skills.length > 12 ? ' …' : ''}` : src.note}</div>
+        </div>
+      ))}
+      <div className="row"><button className="btn small" onClick={addSkillDir} disabled={!skills}>스킬 폴더 추가</button>{skillsTouched && <span className="muted small">저장해야 반영됩니다.</span>}</div>
       <h3>LangSmith 추적(선택)</h3>
       <p className="muted small">연결하지 않아도 로컬 실행·기록·검토는 모두 사용할 수 있습니다. 전송 시 비밀값·원문은 제거합니다.</p>
       <label className="check">

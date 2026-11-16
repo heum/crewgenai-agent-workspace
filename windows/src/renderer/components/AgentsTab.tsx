@@ -11,6 +11,7 @@ const TOOLS: { id: ToolName; label: string; hint: string }[] = [
   { id: 'Write', label: 'Write', hint: '파일 생성(작업 폴더 안)' },
   { id: 'Bash', label: 'Bash', hint: '허용 명령만 실행' },
   { id: 'WebFetch', label: 'WebFetch', hint: '웹 읽기' },
+  { id: 'Skill', label: 'Skill', hint: '이 PC의 스킬 사용(설정 > 스킬 폴더)' },
 ];
 
 const BLANK: AgentFields = {

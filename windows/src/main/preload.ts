@@ -8,7 +8,7 @@ const methods = [
   'listAgents', 'saveAgent', 'duplicateAgent', 'setAgentActive', 'loadAgentTemplates', 'agentTemplateSets', 'fireAgent',
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',
   'startRun', 'rerunFrom', 'pauseRun', 'resumeRun', 'cancelRun', 'resolveInterrupted', 'listRuns', 'runDetail', 'attemptEvents',
-  'submitReview', 'cliStatus', 'pickCliPath', 'openLoginTerminal', 'getSettings', 'saveSettings', 'helpDocs',
+  'submitReview', 'cliStatus', 'pickCliPath', 'openLoginTerminal', 'getSettings', 'saveSettings', 'pickSkillFolder', 'skillSources', 'helpDocs',
   'codexStatus', 'listMissions', 'attention', 'listLearnings', 'saveLearning', 'deleteLearning', 'markLearningsReviewed', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryParked', 'decideMission', 'refSnippet', 'resolveStaffProposal', 'retryMissionLimit', 'workingNow',
 ] as const;
 
