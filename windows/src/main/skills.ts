@@ -15,8 +15,9 @@ const SKIP_DIR = new Set(['.git', 'node_modules', '.venv', '__pycache__', '.DS_S
 const SECRET = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx)|id_rsa.*|id_ed25519.*|\.npmrc|\.netrc|credentials(\..*)?)$/i;
 
 /** 기본 스킬 폴더: 이 PC에 있는 것만 */
-export function defaultSkillDirs(): string[] {
-  return [join(homedir(), '.claude', 'skills'), join(homedir(), '.agents', 'skills')].filter((p) => isDir(p));
+/** 기본 스킬 폴더: 이 PC의 기본 위치 중 실제로 스킬이 하나 이상 있는 곳만(빈 폴더·다른 앱이 동기화용으로 만든 폴더는 보여 주지 않음) */
+export function defaultSkillDirs(home: string = homedir()): string[] {
+  return [join(home, '.claude', 'skills'), join(home, '.agents', 'skills')].filter((p) => isDir(p) && skillDirsIn(p).dirs.length > 0);
 }
 
 function isDir(p: string): boolean { try { return statSync(p).isDirectory(); } catch { return false; } }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildClaudeArgs } from '../src/main/cli/claudeCli';
-import { describeSkillSources, prepareSkillBundle, sanitizeSkillMd } from '../src/main/skills';
+import { defaultSkillDirs, describeSkillSources, prepareSkillBundle, sanitizeSkillMd } from '../src/main/skills';
 import { agentFields, e, mkService, n, plan, tmpProject, waitRun } from './helpers';
 
 function skill(dir: string, name: string, extra: Record<string, string> = {}) {
@@ -81,6 +81,14 @@ describe('스킬 사용', () => {
     expect(d[0].skills.sort()).toEqual(['alpha', 'beta']);
     expect(d[1].skills).toEqual(['gamma']);
     expect(d[2].ok).toBe(false);
+  });
+
+  it('기본 스킬 폴더: 스킬이 실제로 있는 기본 위치만 보여 준다(동기화용 하위 폴더만 있는 곳은 제외)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'crewgenai 홈 '));
+    mkdirSync(join(home, '.claude', 'skills', 'synced', 'bucket', 'pdf'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'skills', 'synced', 'bucket', 'pdf', 'SKILL.md'), '---\nname: pdf\n---\n');
+    skill(join(home, '.agents', 'skills'), 'tool');
+    expect(defaultSkillDirs(home)).toEqual([join(home, '.agents', 'skills')]);
   });
 
   it("CLI 인자: 'Skill' 도구가 있을 때만 --plugin-dir를 넘긴다", () => {
