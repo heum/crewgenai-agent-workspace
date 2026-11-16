@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha } from './engine/fsutil';
 import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
+import { projectSkillDirs } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
@@ -79,7 +80,9 @@ export class Service {
       tracer: d.tracer?.(this),
       limitGraceMs: d.limitGraceMs, limitFallbackMs: d.limitFallbackMs,
       learningsFor: (pid) => (this.settings().learning !== false ? this.learnings.promptSection(pid, 1200) : ''),
-      skills: () => ({ dirs: this.skillDirs(), cacheDir: join(dirname(d.dbFile), 'skill-bundles') }),
+      skills: (folder) => ({ dirs: [...new Set([...this.skillDirs(), ...(this.settings().autoAssist !== false ? projectSkillDirs(folder) : [])])], cacheDir: join(dirname(d.dbFile), 'skill-bundles') }),
+      autoAssist: () => this.settings().autoAssist !== false,
+      testLocalSockets: () => this.settings().testLocalSockets === true,
     });
     this.missions = new MissionRunner({
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
@@ -90,6 +93,7 @@ export class Service {
       projectDocs: (pid) => this.projectDocs(pid),
       learnings: this.learnings,
       learnEnabled: () => this.settings().learning !== false,
+      autoAssist: () => this.settings().autoAssist !== false,
     });
   }
 

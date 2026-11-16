@@ -102,6 +102,8 @@ export interface ClaudeRunSpec {
   model: string;
   maxBudgetUsd: number | null;
   pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
+  writeDirs?: string[]; // 작업 폴더 밖에서 Bash 하위 프로그램이 쓸 수 있는 폴더(실행별 임시 폴더, 시험 명령의 의존성 캐시)
+  localBinding?: boolean; // 로컬 소켓 열기 허용(Gradle 잠금·내장 서버 시험용). 외부 네트워크는 그대로 막는다
 }
 
 export function scopeRule(scope: string): string {
@@ -120,9 +122,13 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
     permissions: { allow, deny, defaultMode: 'dontAsk' },
     disableAllHooks: true, // 스킬·플러그인이 훅으로 권한 통제 밖에서 명령을 실행하지 못하게
     disableSkillShellExecution: true, // 스킬 본문의 !`명령`·```! 블록을 불러올 때 실행하지 않게
-    sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, network: { allowedDomains: [] as string[] },
+    sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false,
+      network: { allowedDomains: [] as string[], ...(spec.localBinding ? { allowLocalBinding: true } : {}) },
+      // Claude 인증 정보는 CLI 자신만 쓰고, 격리된 명령(저장소 스크립트 등)에서는 지운다
+      credentials: { envVars: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' as const })) },
       // 참고 자료 폴더(--add-dir)는 읽기 전용: Bash 하위 프로그램의 쓰기도 막는다
-      filesystem: { denyWrite: spec.readDirs.filter((d) => !(spec.cwd === d || spec.cwd.startsWith(d.replace(/\/+$/, '') + '/'))) } }, // 프로젝트를 포함하는 상위 폴더는 제외
+      filesystem: { denyWrite: spec.readDirs.filter((d) => !(spec.cwd === d || spec.cwd.startsWith(d.replace(/\/+$/, '') + '/'))), // 프로젝트를 포함하는 상위 폴더는 제외
+        ...(spec.writeDirs?.length ? { allowWrite: [...new Set(spec.writeDirs)] } : {}) } },
   };
   const args = [
     '-p',

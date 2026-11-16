@@ -341,14 +341,14 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           )}
         </div>
       </div>
+      {m.summary && (
+        <div className="card report-card">
+          <div className="report-head"><strong>진행 보고</strong><span className="muted small">사이클 {m.cycle} · 오퍼레이터 판단</span></div>
+          <Markdown text={m.summary} />
+        </div>
+      )}
       <Fold id="prompt" title="지시" className="mission-prompt" summary={m.prompt}>
         <div>{m.prompt}</div>
-        {m.summary && (
-          <>
-            <small className="muted">오퍼레이터 최근 판단</small>
-            <div>{m.summary}</div>
-          </>
-        )}
       </Fold>
       {act.error && <Banner>{act.error}</Banner>}
       {live && m.limitUntil && (

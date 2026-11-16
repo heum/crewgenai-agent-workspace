@@ -36,6 +36,8 @@ const tools = (opt('--tools') || '').split(',').filter(Boolean);
 const schema = opt('--json-schema');
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const cwd = process.cwd();
+// 시험용: 받은 인자·환경을 기록한다(CREWGENAI_MOCK_ARGV_DIR을 지정한 시험에서만)
+if (process.env.CREWGENAI_MOCK_ARGV_DIR) { try { fs.writeFileSync(path.join(process.env.CREWGENAI_MOCK_ARGV_DIR, `${sessionId}.json`), JSON.stringify({ argv, cwd, env: { TMPDIR: process.env.TMPDIR || '', JAVA_TOOL_OPTIONS: process.env.JAVA_TOOL_OPTIONS || '', AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY } })); } catch { /* 무시 */ } }
 
 function editAllowed(rel) {
   const norm = rel.replace(/^\.\//, '');

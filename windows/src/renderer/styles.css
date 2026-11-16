@@ -1808,6 +1808,11 @@ textarea.input {
 .btn-sm { padding: 3px 9px; font-size: 12px; }
 
 /* 스킬 폴더(설정) */
+.auto-list { margin: 4px 0 8px; padding-left: 18px; }
+.auto-list li { margin: 2px 0; }
 .skill-src { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 .skill-src-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .skill-src-head code { overflow-wrap: anywhere; }
+
+.report-card { margin: 8px 0; }
+.report-card .report-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }

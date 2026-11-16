@@ -3,10 +3,10 @@
 // SQLite(Store): 실행·시도·이벤트·산출물·검사·검토 기록, 방문 결과(재개 시 중복 실행 방지)
 import { Annotation, Command, END, START, StateGraph, interrupt, isGraphInterrupt } from '@langchain/langgraph';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type {
-  AcceptanceResult, Agent, Attempt, AttemptEvent, Billing, GraphNode, LiveEvent, NodeStatus, PlanFields, ReviewRecord, Run, RunDetail, RunNodeState, WorkGraph,
+  AcceptanceResult, Agent, Attempt, AttemptEvent, Billing, GraphNode, LiveEvent, NodeStatus, PlanFields, ReviewRecord, Run, RunDetail, RunNodeState, ToolName, WorkGraph,
 } from '../../shared/types';
 import {
   buildClaudeArgs, claudeLimit, cleanEnv, codexLimit, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactArgs, redactDeep, startProcess, type ProcessHandle, type ResultInfo,
@@ -15,7 +15,8 @@ import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
 import { checkEnvFilter } from '../checks';
-import { agentIdentity, commitWorkspace, workspaceDirtyPaths, workspaceRepos } from '../git';
+import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
+import { commandNote, materializeLink, repoTestCommands, scrubSecretEnv, workBranchName } from '../autopilot';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,7 +49,11 @@ export interface EngineOptions {
   /** 사용자에 대해 배운 것(직원 지시에 붙인다) */
   learningsFor?: (projectId: string) => string;
   /** 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(설정)와 사본을 둘 이 사용자 전용 폴더 */
-  skills?: () => { dirs: string[]; cacheDir: string };
+  skills?: (projectFolder: string) => { dirs: string[]; cacheDir: string };
+  /** 자동 처리(사람 손 줄이기): 쓰기 직원 스킬 기본 사용, 저장소 시험 명령 자동 허용, 보호 브랜치 대신 작업 브랜치에 커밋 */
+  autoAssist?: () => boolean;
+  /** 시험 명령에 로컬 소켓 허용(설정, 기본 끔): 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다 */
+  testLocalSockets?: () => boolean;
 }
 
 /** 실행 메타에 남기는 사용 한도 대기 정보 */
@@ -621,10 +626,11 @@ export class Engine {
     if (this.closed || !(this.o.gitCommits?.() ?? true) || !paths.length) return;
     const mission = this.meta(runId, 'mission') ?? '';
     const cycle = this.meta(runId, 'cycle') ?? '';
+    const branch = this.o.autoAssist?.() ? workBranchName(mission || runId) : undefined;
     const res = await commitWorkspace(plan.folder, paths, who, `[CREWGENAI] ${agentLabel} · ${node.label}`.slice(0, 120), {
       'Crewgenai-Mission': mission, 'Crewgenai-Cycle': cycle, 'Crewgenai-Run': runId, 'Crewgenai-Node': node.label.slice(0, 80),
       'Crewgenai-Agent': agentLabel, 'Crewgenai-Visit': attempt ? String(attempt.visit) : '', 'Crewgenai-Session': attempt?.sessionId ?? '',
-    }, exclude);
+    }, exclude, branch);
     if (attempt) { attempt.commitSha = res.sha; attempt.commitNote = res.error ?? res.skipped ?? ''; }
     if (!this.closed && attempt) {
       const ev = { attemptId: attempt.id, seq: 9000 + (attempt.attemptNo ?? 0), at: now(), kind: 'system' as const, summary: res.sha ? `git 커밋 ${res.commits.length > 1 || res.commits[0]?.repo ? res.sha : res.sha.slice(0, 8)} · 작성자 ${who.name} · ${paths.length}개 파일${res.skipped || res.error ? ` (${res.error ?? res.skipped})` : ''}` : `git 커밋 안 함: ${res.error ?? res.skipped}`, raw: '' };
@@ -871,7 +877,10 @@ export class Engine {
     let prompt = promptIn;
     const ex = this.o.executor();
     const run = this.s.getRun(runId);
-    const tools = role === 'reviewer' ? (['Read', 'Grep', 'Glob'] as const).slice() : agent.tools.filter((t) => t !== 'WebFetch');
+    const auto = this.o.autoAssist?.() ?? false;
+    const tools: ToolName[] = role === 'reviewer' ? ['Read', 'Grep', 'Glob'] : agent.tools.filter((t) => t !== 'WebFetch');
+    // 자동 처리: 파일을 쓰는 작성자는 스킬을 기본으로 쓴다
+    if (auto && role === 'author' && (tools.includes('Edit') || tools.includes('Write')) && !tools.includes('Skill')) tools.push('Skill');
     // 참고 자료: 프로젝트 밖 '폴더'만 --add-dir로(읽기) 연다. '파일'은 그 파일만 읽기 전용 사본으로 준다(부모 폴더 전체를 열지 않음).
     // 프로젝트를 포함하는 상위 폴더는 열지 않는다(상위 전체가 Bash 쓰기 영역이 되므로).
     const projReal = realFolder(plan.folder);
@@ -895,7 +904,7 @@ export class Engine {
     let unpinLater = () => {};
     if (role === 'author' && tools.includes('Skill')) {
       try {
-        const sk = this.o.skills?.();
+        const sk = this.o.skills?.(plan.folder);
         const bundle = sk ? prepareSkillBundle(sk.dirs, sk.cacheDir) : null;
         if (bundle) { pluginDirs.push(bundle.pluginRoot); readDirs.push(bundle.pluginRoot); }
         if (bundle) unpinLater = () => unpinSkillBundle(bundle.pluginRoot);
@@ -905,24 +914,35 @@ export class Engine {
     // Bash를 쓰는 작성자는 격리 복사본에서 실행한다(같은 실행·단계는 같은 경로 → 세션 이어서 작업 가능).
     const isolate = role === 'author' && tools.includes('Bash');
     const workDir = isolate ? isolatedDir(`${runId}:${node.id}`) : plan.folder;
+    // 자동 처리: 저장소에 실제로 있는 시험 명령을 허용한다(격리 복사본에 들어가는 저장소만)
+    const tops = scope.length && scope.every((x) => x && x !== '.' && !x.startsWith('/')) ? new Set(scope.map((x) => x.replace(/^\.\//, '').split('/')[0])) : null;
+    const cmds = auto && isolate ? repoTestCommands(plan.folder).filter((c) => !c.repo || !tops || tops.has(c.repo)) : [];
+    const sockets = this.o.testLocalSockets?.() ?? false;
+    if (cmds.length) prompt = `${prompt}\n\n${commandNote(cmds, sockets)}`;
+    // Bash 하위 프로그램용 실행별 임시 폴더(macOS 기본 임시 폴더는 격리 환경에서 쓸 수 없다)
+    const procTmp = isolate ? `${workDir}.tmp` : null;
+    if (procTmp) { rmSync(procTmp, { recursive: true, force: true }); mkdirSync(procTmp, { recursive: true, mode: 0o700 }); }
+    const procEnv: Record<string, string> = procTmp ? { TMPDIR: `${procTmp}/`, JAVA_TOOL_OPTIONS: `${process.env.JAVA_TOOL_OPTIONS ? `${process.env.JAVA_TOOL_OPTIONS} ` : ''}-Djava.io.tmpdir=${procTmp}` } : {};
+    const dropTmp = () => { if (procTmp) rmSync(procTmp, { recursive: true, force: true }); };
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000),
-      cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : agent.allowedCommands,
+      cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : [...agent.allowedCommands, ...cmds.map((c) => c.prefix)],
       readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs,
+      writeDirs: [...(procTmp ? [procTmp] : []), ...cmds.flatMap((c) => c.writeDirs)], localBinding: sockets && cmds.some((c) => c.localSockets),
     });
     const file = run.executor === 'mock' ? process.execPath : ex.cliPath;
-    if (!file) { unpinLater(); throw new Error('Claude CLI 경로가 없습니다.'); }
+    if (!file) { unpinLater(); dropTmp(); throw new Error('Claude CLI 경로가 없습니다.'); }
     const argv = run.executor === 'mock' ? [this.o.mockScript, ...args] : args;
     const attempt: Attempt = {
       id: uid(), runId, nodeId: node.id, visit, attemptNo, agentId: agent.id, agentVersion: agent.version, role, status: 'running', pid: null, procStart: null,
       sessionId: sessionId ?? resumeSession, resumedFrom: resumeSession, promptHash: sha256(prompt), argvRedacted: redactArgs(args), exitCode: null, resultSubtype: null,
       isError: null, costUsd: null, usage: null, permissionDenials: [], acceptance: null, changedFiles: [], outOfScopeChanges: [], summary: '', error: '', startedAt: now(), finishedAt: null,
     };
-    try { this.s.insertAttempt(attempt); } catch { unpinLater(); throw new Error(`중복 시도 차단: ${node.label} 방문 ${visit} 시도 ${attemptNo}`); }
+    try { this.s.insertAttempt(attempt); } catch { unpinLater(); dropTmp(); throw new Error(`중복 시도 차단: ${node.label} 방문 ${visit} 시도 ${attemptNo}`); }
     this.o.emit({ type: 'attempt', attempt });
     // 격리 실행으로 Bash도 실제 프로젝트에 직접 쓰지 못하므로 수정 범위만 잠근다.
     const lockScope = role === 'author' ? scope : null;
-    const release = await this.acquire(runId, node.id, plan.folder, lockScope).catch((e) => { unpinLater(); attempt.status = 'cancelled'; attempt.finishedAt = now(); this.saveAttempt(attempt); throw e; });
+    const release = await this.acquire(runId, node.id, plan.folder, lockScope).catch((e) => { unpinLater(); dropTmp(); attempt.status = 'cancelled'; attempt.finishedAt = now(); this.saveAttempt(attempt); throw e; });
     let seq = 0;
     const sink: StreamSink = { sessionId: attempt.sessionId, result: null, limit: null };
     const addEv = (kind: Parameters<typeof this.s.addEvent>[0]['kind'], summary: string, raw: string) => {
@@ -942,11 +962,13 @@ export class Engine {
       const wsInfo = isolate ? await workspaceRepos(plan.folder) : null;
       const top = wsInfo?.mode === 'multi' && scope.length && scope.every((x) => x && x !== '.' && !x.startsWith('/')) ? new Set(scope.map((x) => x.replace(/^\.\//, '').split('/')[0])) : undefined;
       const iso: IsoState | null = isolate ? prepareIsolated(plan.folder, workDir, inOwn, !!resumeSession, top) : null;
+      // npm 시험 명령: Next.js 빌드는 링크한 node_modules를 받지 않으므로 그 저장소만 복제본(APFS 즉시 복제)으로 바꾼다
+      if (iso) for (const rel of new Set(cmds.filter((c) => sockets || !c.localSockets).flatMap((c) => c.cloneDirs))) await materializeLink(workDir, rel, join(plan.folder, rel));
       const before = iso ? new Map(iso.before) : snapshot(workDir); // 세션 이어서 작업이면 중단 전 작업까지 포함해 비교
       const timeout = node.timeoutSec || agent.timeoutSec;
       if (ctl.abort.signal.aborted) throw new Cancelled(); // 한도·취소로 멈춘 실행에서 새 프로세스를 띄우지 않는다
       const h = startProcess(file, argv, {
-        cwd: workDir, env: cleanEnv(run.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1' } : {}), stdin: prompt, timeoutSec: timeout,
+        cwd: workDir, env: isolate ? scrubSecretEnv(cleanEnv(run.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1', ...procEnv } : procEnv)) : cleanEnv(run.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1', ...procEnv } : procEnv), stdin: prompt, timeoutSec: timeout,
         onStdoutLine: (l) => { const ev = interpretLine(l, sink); if (ev) addEv(ev.kind, ev.summary, ev.raw); },
         onStderrLine: (l) => { if (l.trim()) addEv('stderr', l.slice(0, 300), redact(l)); },
       });
@@ -956,7 +978,12 @@ export class Engine {
       ctl.procs.delete(attempt.id);
       if (this.closed) throw new Cancelled();
       const after = snapshot(workDir);
-      const changed = diffSnapshots(before, after);
+      let changed = diffSnapshots(before, after);
+      if (isolate && changed.length) {
+        // 격리 실행에서 빌드·시험이 만든 파일 중 git이 무시하는 것(build/, .next/ 등)은 변경으로 보지 않는다(반영·커밋 대상 아님)
+        const ign = await ignoredPaths(plan.folder, changed);
+        if (ign.size) { changed = changed.filter((f) => !ign.has(f)); addEv('system', `git이 무시하는 빌드·시험 산출물 ${ign.size}개는 반영하지 않았습니다.`, ''); }
+      }
       if (snapshotTruncated(after)) addEv('system', `변경 감지 대상 파일이 너무 많아 일부만 비교했습니다(최대 ${SNAPSHOT_LIMIT}개). 연결 폴더를 좁히거나 큰 폴더를 정리하세요.`, '');
       let conflicts: string[] = [];
       // 다른 작업이 실행 중이어도 검사를 면제하지 않는다. 다른 작업의 수정 범위(실제 경로)에 속한 변경만 제외한다.
@@ -1000,7 +1027,7 @@ export class Engine {
       if (attempt.status === 'cancelled') throw new Cancelled();
       if (lim) this.hitLimit(runId, node, lim);
       return attempt;
-    } finally { release(); unpinLater(); }
+    } finally { release(); unpinLater(); dropTmp(); }
   }
 
   /** 중단된 격리 실행의 남은 작업을 '산출물만 확인' 선택 시 반영한다(범위 밖 변경이 있으면 반영하지 않음). */

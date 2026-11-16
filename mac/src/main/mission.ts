@@ -14,11 +14,28 @@ import { allowedRoots, escapes, normRel, validateGraph } from './engine/validate
 import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
-import { missionCommitsSince, revertCommits, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
+import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
+import { docReposFor, repoTestCommands, workBranchName } from './autopilot';
 
 const STAFF_ITEMS = { type: 'array', items: { type: 'object', required: ['kind', 'agentCode', 'name', 'role', 'instructions', 'reason'], properties: {
   kind: { type: 'string', enum: ['add', 'update'] }, agentCode: { type: 'string' }, name: { type: 'string' }, role: { type: 'string' }, instructions: { type: 'string' },
   workPaths: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' } } } };
+/** 사용자에게 무엇을 묻는가: 사용자만 정할 수 있는 결정만. 자료 정합성 문제는 직원·오퍼레이터가 처리하고 기록한다. */
+const ASK_RULE = '- 사용자에게 묻는 것(gaps·question)은 사용자만 정할 수 있는 결정으로 한정한다: 제품이 어떻게 보이고 동작하는지, 범위·우선순위, 병합·배포·비용·외부 공개. 문서 줄 번호·개수·파일 위치·자료끼리의 작은 불일치·검증 기록 정리 같은 자료 정합성 문제는 묻지 않는다. 근거가 더 분명한 쪽(최신 사용자 결정 > 실제 코드 > 최신 문서)을 따르고, 따른 근거를 결과 보고의 기록 칸에 남긴다.';
+/** 준비·정리 작업의 끝: 완벽이 아니라 다음 일을 시작할 수 있을 만큼. */
+const ENOUGH_RULE = '- 기준 정리·자료 대조·검증 같은 준비 작업은 완벽을 목표로 하지 않는다. 다음 단계(개발·구현)를 시작할 수 있을 만큼 되면 넘어가고, 남은 정리는 개발 중 필요할 때 한다. 같은 자료를 다시 검증하는 사이클을 되풀이하지 않는다.';
+/** 판단 summary = 사용자가 보고 판단하는 진행 보고 */
+const REPORT_RULE = [
+  '- summary는 사용자가 이것만 보고 진행을 판단하는 **진행 보고**다. 마크다운으로 아래 순서를 지킨다(없는 칸은 "없음"):',
+  '  1. 한 줄 요약: 이번 사이클에 실제로 된 것.',
+  '  2. `| 항목 | 상태 | 확인 방법 |` 표: 이번 사이클에 다룬 기능·작업 항목(문서의 ID가 있으면 ID와 쉬운 이름). 상태는 계획 / 코드 작성 / 시험 통과(직접 실행해 결과를 본 것만) / PR 필요(저장소·브랜치) / 막힘(이유) 중 하나. 확인 방법은 스크린샷·결과 파일 경로·시험 명령과 결과 수.',
+  '  3. 진척: 이번 범위 전체 항목 수 대비 PR 필요·시험 통과·작업 중·막힘·시작 전 개수.',
+  '  4. 사용자가 할 일: PR 병합(저장소·브랜치·한 줄 요약), 제품 결정(최대 3개, 쉬운 말).',
+  '  5. 다음 사이클에 할 것(항목 3~5개).',
+  '  6. 기록(접어 두는 칸): 자료 불일치를 어떻게 처리했는지 등 판단에 필요 없는 세부. 짧게.',
+  '- 측정하지 않은 것은 상태를 올리지 않는다. 문서만 있는 항목을 코드·시험 통과로 쓰지 않는다.',
+].join('\n');
+
 const PLAN_SCHEMA = {
   type: 'object', required: ['summary', 'question', 'gaps', 'tasks'],
   properties: {
@@ -67,6 +84,7 @@ export interface MissionDeps {
   /** 배운 것 — 지시·답변에서 배운 사실을 저장하고 오퍼레이터 지시에 붙인다 */
   learnings?: LearningStore;
   learnEnabled?: () => boolean;
+  autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
@@ -321,7 +339,8 @@ export class MissionRunner {
     const inside = (p: string, r: string) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
     const readable = (p: string, ag: Agent) => { const a = resolve(folder, p); return inside(a, folder) || [...refs, ...ag.references.map((r) => resolve(folder, r))].some((r) => inside(a, r)); }; // 직원에게 준 참조 자료도 읽을 수 있다
     const toks = (c: string) => c.trim().split(/\s+/).filter(Boolean);
-    const allowed = (a: Agent, c: string) => BASH_OK && a.tools.includes('Bash') && a.allowedCommands.some((pfx) => { const p = toks(pfx); const t = toks(c); return p.length > 0 && p.every((x, i) => t[i] === x); });
+    const auto = this.d.autoAssist?.() ? repoTestCommands(plan.folder).map((c) => c.prefix) : []; // 자동 처리: 저장소 시험 명령은 실행 때 허용된다
+    const allowed = (a: Agent, c: string) => BASH_OK && a.tools.includes('Bash') && [...a.allowedCommands, ...auto].some((pfx) => { const p = toks(pfx); const t = toks(c); return p.length > 0 && p.every((x, i) => t[i] === x); });
     const keep: PlanTask[] = []; const held: { task: PlanTask; denials: MissionDenial[] }[] = [];
     for (const t of tasks) {
       const a = by(t.agentCode);
@@ -442,6 +461,25 @@ export class MissionRunner {
       this.learningNow.delete(id);
       if (this.learnAgain.delete(id) && !this.closed) void this.learn(id);
     }
+  }
+
+  // ───── 문서 저장소 최신화(자동 처리) ─────
+  /**
+   * 사이클 시작 때 이 프로젝트가 쓰는 문서 저장소만 fast-forward로 최신화한다. 실패는 기록만 하고 진행한다.
+   * 대상: 빌드 파일이 없는 저장소 중 참고 문서·이전 결과물·수정 허용 경로가 그 저장소 안을 가리키거나 스킬을 가져오는 저장소.
+   * 연결 폴더 전체처럼 저장소를 포함하는 상위 경로는 대상을 정하는 근거로 보지 않는다(관련 없는 저장소를 건드리지 않게).
+   */
+  private async syncDocs(m: Mission, plan: PlanFields) {
+    if (!this.d.autoAssist?.() || !(this.d.gitCommits?.() ?? true) || this.closed) return;
+    const docs = docReposFor(plan.folder, [...plan.referenceDocs, ...plan.priorOutputs, ...plan.writablePaths]);
+    const moved: string[] = []; const skipped: string[] = [];
+    for (const r of docs.slice(0, 20)) {
+      if (this.closed) return;
+      const res = await syncRepoFastForward(r.abs);
+      if (res.moved) moved.push(`${r.rel || '연결 폴더'} ${res.note}`);
+      else if (res.note) skipped.push(`${r.rel || '연결 폴더'}: ${res.note}`);
+    }
+    if (moved.length || skipped.length) this.event(m, 'system', [moved.length ? `문서 저장소 최신화: ${moved.join(', ')}` : '', skipped.length ? `최신화하지 않음: ${skipped.join(' / ')}` : ''].filter(Boolean).join('\n'));
   }
 
   // ───── 스냅샷·되돌리기 ─────
@@ -647,6 +685,8 @@ export class MissionRunner {
 
         // 1) 오퍼레이터 계획
         m = this.set(id, { status: 'planning', stage: 'plan', currentRunId: null });
+        await this.syncDocs(m, project.plan);
+        if (this.closed || this.get(id).status === 'stopped') return;
         const plan = await this.patient(id, () => this.callOperator<Plan>(this.get(id), project.plan, this.planPrompt(this.get(id), project.plan, agents), PLAN_SCHEMA));
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_plan', `사이클 ${m.cycle} 계획: ${plan.summary} (작업 ${plan.tasks.length}개)`, plan);
@@ -940,9 +980,11 @@ export class MissionRunner {
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 권한을 허용할지·사용자가 직접 실행할지, 유지·되돌림 등)이면 options에 2~4개의 구체적인 선택지를 쓴다. 각 선택지는 고르면 무엇을 하게 되는지 한 문장으로 쓴다(예: 'HTML 기준 유지 — 제품을 HTML에 맞춰 고친다'). '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
+      ASK_RULE, ENOUGH_RULE,
       '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
+      ...(this.d.autoAssist?.() ? [`- 자동 처리(앱이 함): 직원 변경은 dev·main에 커밋하지 않고 작업 브랜치 ${workBranchName(m.id)}에 커밋된다(push·PR·병합은 사용자). 따라서 저장소가 dev·main이라는 이유로 작업을 보류하거나 브랜치 생성을 확인 필요로 올리지 않는다. Bash를 가진 직원에게는 저장소에 있는 시험 명령(scripts/gradle.sh·scripts/check.sh·npm check)이 자동 허용된다(네트워크 없음).`] : []),
       '- needs: 작업에 Bash 명령이 필요하면 commands에 실제 실행할 명령을, 프로젝트 폴더 밖에서 읽어야 하는 파일·폴더가 있으면 readPaths에 절대 경로를 쓴다. 담당 직원에게 허용되지 않은 것이 있으면 그 작업은 실행하지 않고 사용자 확인으로 돌린다. 필요 없으면 빈 배열.',
       '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다. 그렇지 않으면 question은 빈 문자열.',
       '- 이전 사이클의 결과·판단을 이어받아 남은 일만 계획한다. 작업은 1~4개로 작게 나눈다.',
@@ -1048,6 +1090,7 @@ export class MissionRunner {
       '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다.',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
+      REPORT_RULE, ASK_RULE, ENOUGH_RULE,
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
       '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',

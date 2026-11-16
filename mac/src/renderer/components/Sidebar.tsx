@@ -221,6 +221,8 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           codexEffort: s.codexEffort,
           missionMaxCycles: s.missionMaxCycles,
           gitCommits: s.gitCommits,
+          autoAssist: s.autoAssist !== false,
+          testLocalSockets: s.testLocalSockets === true,
           ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
         keyArg,
@@ -264,8 +266,22 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" checked={!!s.gitCommits} onChange={(e) => setS({ ...s, gitCommits: e.target.checked })} /> 직원별 git 커밋·미션 스냅샷 사용 (권장)
       </label>
       <p className="muted small">직원이 바꾼 파일만 그 직원 이름으로 커밋합니다. push는 하지 않습니다. 미션 시작과 사이클마다 스냅샷을 남깁니다(저장소 하나면 git 태그, 여러 저장소면 앱 기록).</p>
+      <h3>자동 처리</h3>
+      <label className="check">
+        <input type="checkbox" checked={s.autoAssist !== false} onChange={(e) => setS({ ...s, autoAssist: e.target.checked })} /> 사람 손이 덜 가게 자동 처리 (권장)
+      </label>
+      <ul className="muted small auto-list">
+        <li>저장소가 dev·main 등에 있으면 직원 변경을 거기에 커밋하지 않고 작업 브랜치(feat/crewgenai-미션)를 만들어 커밋합니다. push·PR·병합은 사람이 합니다.</li>
+        <li>Bash를 가진 직원은 저장소에 있는 시험 명령(scripts/gradle.sh, scripts/check.sh, npm check)을 허용 없이 실행합니다. 네트워크는 막힌 채 내려받아 둔 의존성만 씁니다.</li>
+        <li>파일을 쓰는 직원은 Skill을 기본으로 쓰고, 연결 폴더 저장소의 skills/·.claude/skills/도 스킬 폴더에 더합니다.</li>
+        <li>사이클을 시작할 때 문서 저장소(빌드 파일이 없는 저장소)를 fast-forward로만 최신화합니다. 사용자 변경과 겹치면 그대로 둡니다.</li>
+      </ul>
+      <label className="check">
+        <input type="checkbox" disabled={s.autoAssist === false} checked={s.testLocalSockets === true} onChange={(e) => setS({ ...s, testLocalSockets: e.target.checked })} /> 시험 명령에 로컬 소켓 허용 (Gradle·Spring 시험에 필요)
+      </label>
+      <p className="muted small">켜면 Gradle 시험이 격리 환경에서 돕니다. 대신 격리된 시험도 이 PC에서 켜져 있는 로컬 서비스(예: localhost의 프록시·DB·개발 서버)에 접속할 수 있게 됩니다. 외부 인터넷은 계속 막힙니다. 끄면 Gradle 시험은 ‘실행 못 함’으로 기록됩니다.</p>
       <h3>스킬 폴더</h3>
-      <p className="muted small">직원 설정에서 도구 ‘Skill’을 켠 직원만 이 폴더의 스킬을 씁니다. 실행할 때마다 스킬 파일만 읽기 전용 사본으로 넘기며, 플러그인의 훅·MCP·명령은 가져오지 않습니다. 스킬을 써도 직원 권한(수정 폴더·Bash 허용 명령·웹)은 그대로입니다.</p>
+      <p className="muted small">직원 설정에서 도구 ‘Skill’을 켠 직원(자동 처리가 켜져 있으면 파일을 쓰는 직원도)이 이 폴더의 스킬을 씁니다. 실행할 때마다 스킬 파일만 읽기 전용 사본으로 넘기며, 플러그인의 훅·MCP·명령은 가져오지 않습니다. 스킬을 써도 직원 권한(수정 폴더·Bash 허용 명령·웹)은 그대로입니다.</p>
       {!skills && <p className="muted small">스킬 폴더 확인 중…</p>}
       {skills && skills.sources.length === 0 && <p className="muted small">지정한 스킬 폴더가 없습니다. 이 경우 Claude CLI 기본 제공 스킬만 씁니다.</p>}
       {skills && skills.sources.map((src) => (

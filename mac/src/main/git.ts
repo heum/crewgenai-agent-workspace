@@ -7,6 +7,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { PROTECTED_BRANCHES } from './autopilot';
 import { cleanEnv } from './cli/claudeCli';
 
 export interface GitResult { ok: boolean; out: string; err: string; raw: string }
@@ -97,10 +98,36 @@ export interface CommitInfo { sha: string | null; skipped: string | null; error:
  * 지정한 경로만 커밋한다(문자 그대로의 경로). 작성자 = 직원, 커미터 = 사용자 git 설정(없으면 CREWGENAI).
  * exclude: 작업 시작 전에 이미 사용자 변경이 있던 경로 — 사용자 변경이 섞이지 않도록 자동 커밋하지 않는다.
  */
-export function commitPaths(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string> = new Set()): Promise<CommitInfo> {
-  return withRepoLock(folder, () => commitNow(folder, paths, author, subject, trailers, exclude)).catch((e) => ({ sha: null, skipped: null, error: (e as Error).message }));
+export function commitPaths(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string> = new Set(), workBranch?: string): Promise<CommitInfo> {
+  return withRepoLock(folder, () => commitNow(folder, paths, author, subject, trailers, exclude, workBranch)).catch((e) => ({ sha: null, skipped: null, error: (e as Error).message }));
 }
-async function commitNow(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string>): Promise<CommitInfo> {
+
+/**
+ * 보호 브랜치(dev·main 등)에 있으면 작업 브랜치로 옮긴다. 작업 트리의 변경(직원 변경·사용자 미커밋 변경)은 그대로 따라간다.
+ * - 같은 이름이 없으면 지금 커밋에서 새로 만든다.
+ * - 있고 그 브랜치의 커밋이 모두 지금 브랜치에 들어 있으면(병합됐거나 뒤처짐) 지금 커밋으로 다시 맞춘다.
+ * - 있고 지금 브랜치에 없는 커밋이 있으면 섞지 않도록 뒤에 번호를 붙인 새 브랜치를 만든다.
+ * 분리된 HEAD(detached)나 보호 브랜치가 아니면 그대로 둔다.
+ */
+async function ensureWorkBranch(folder: string, name: string): Promise<{ note: string | null; error: string | null }> {
+  const cur = await git(folder, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  if (!cur.ok || !PROTECTED_BRANCHES.has(cur.out)) return { note: null, error: null };
+  if (!(await git(folder, ['check-ref-format', '--branch', name])).ok) return { note: null, error: `작업 브랜치 이름이 올바르지 않습니다: ${name}` };
+  let target = name; let args = ['switch', '-c', name];
+  if ((await git(folder, ['rev-parse', '--verify', '-q', `refs/heads/${name}`])).ok) {
+    if ((await git(folder, ['merge-base', '--is-ancestor', `refs/heads/${name}`, 'HEAD'])).ok) args = ['switch', '-C', name];
+    else {
+      let n = 2;
+      while (n < 50 && (await git(folder, ['rev-parse', '--verify', '-q', `refs/heads/${name}-${n}`])).ok) n++;
+      target = `${name}-${n}`; args = ['switch', '-c', target];
+    }
+  }
+  const r = await git(folder, args);
+  if (!r.ok) return { note: null, error: `${cur.out}에 바로 커밋하지 않으려고 작업 브랜치 ${target}로 바꾸려 했으나 실패해 커밋하지 않았습니다: ${(r.err || r.out).slice(0, 200)}` };
+  return { note: `${cur.out}에 바로 커밋하지 않고 작업 브랜치 ${target}에 커밋`, error: null };
+}
+
+async function commitNow(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string>, workBranch?: string): Promise<CommitInfo> {
   const all = [...new Set(paths.filter((p) => p && !p.startsWith('..') && !isAbsolute(p)))];
   const held = all.filter((p) => exclude.has(p));
   const rel = all.filter((p) => !exclude.has(p));
@@ -113,12 +140,20 @@ async function commitNow(folder: string, paths: string[], author: { name: string
   if (!add.ok) return { sha: null, skipped: null, error: `git add 실패: ${add.err.slice(0, 300)}` };
   const staged = await git(folder, ['diff', '--cached', '--name-only', '--', ...rel]);
   if (!staged.out) return { sha: null, skipped: `커밋할 변경 없음(이미 같은 내용)${heldNote}`, error: null };
+  // 커밋할 변경이 있을 때만 브랜치를 옮긴다(스테이징한 변경도 그대로 따라간다)
+  let branchNote = '';
+  if (workBranch && await gitHasCommit(folder)) {
+    const b = await ensureWorkBranch(folder, workBranch);
+    if (b.error) return { sha: null, skipped: null, error: b.error };
+    if (b.note) branchNote = ` (${b.note})`;
+  }
   const msg = `${subject}\n\n${Object.entries(trailers).filter(([, v]) => v).map(([k, v]) => `${k}: ${v.replace(/\n/g, ' ')}`).join('\n')}\n`;
   // 경로 지정 커밋: 사용자가 미리 스테이징해 둔 다른 경로는 이 커밋에 들어가지 않는다
   const c = await git(folder, ['commit', '-m', msg, '--', ...rel], { GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, ...(await committerEnv(folder)) });
   if (!c.ok) return { sha: null, skipped: null, error: `git commit 실패: ${(c.err || c.out).slice(0, 400)}` };
   const head = await git(folder, ['rev-parse', 'HEAD']);
-  return { sha: head.out || null, skipped: heldNote ? heldNote.trim() : null, error: null };
+  const note = `${heldNote}${branchNote}`.trim();
+  return { sha: head.out || null, skipped: note || null, error: null };
 }
 
 export function tagSnapshot(folder: string, tag: string): Promise<{ sha: string | null; error: string | null }> {
@@ -227,10 +262,10 @@ export async function workspaceDirtyPaths(folder: string, ws?: Workspace): Promi
 export interface MultiCommit { sha: string | null; skipped: string | null; error: string | null; commits: { repo: string; sha: string }[] }
 
 /** 경로를 저장소별로 나눠 각 저장소에 따로 커밋한다. 저장소 밖 경로와 커밋이 없는 저장소는 커밋하지 않고 이유를 남긴다. */
-export async function commitWorkspace(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string> = new Set()): Promise<MultiCommit> {
+export async function commitWorkspace(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string> = new Set(), workBranch?: string): Promise<MultiCommit> {
   const w = await workspaceRepos(folder);
   if (w.mode === 'single') {
-    const r = await commitPaths(folder, paths, author, subject, trailers, exclude);
+    const r = await commitPaths(folder, paths, author, subject, trailers, exclude, workBranch);
     return { ...r, commits: r.sha ? [{ repo: '', sha: r.sha }] : [] };
   }
   if (w.mode === 'none') return { sha: null, skipped: 'git 저장소가 아님', error: null, commits: [] };
@@ -247,7 +282,7 @@ export async function commitWorkspace(folder: string, paths: string[], author: {
   const commits: { repo: string; sha: string }[] = []; const notes: string[] = []; const errors: string[] = [];
   for (const [repo, g] of groups) {
     if (!repo.hasCommit) { notes.push(`${repo.rel}: 커밋이 없는 저장소라 자동 커밋하지 않음`); continue; }
-    const r = await commitPaths(repo.abs, g.paths, author, subject, trailers, g.exclude);
+    const r = await commitPaths(repo.abs, g.paths, author, subject, trailers, g.exclude, workBranch);
     if (r.sha) commits.push({ repo: repo.rel, sha: r.sha });
     if (r.error) errors.push(`${repo.rel}: ${r.error}`);
     else if (r.skipped) notes.push(`${repo.rel}: ${r.skipped}`);
@@ -266,6 +301,56 @@ export async function workspaceHeads(folder: string): Promise<{ repo: string; ab
   for (const r of w.repos) {
     const h = await git(r.abs, ['rev-parse', '--verify', '-q', 'HEAD']);
     if (h.ok && h.out) out.push({ repo: r.rel, abs: r.abs, sha: h.out });
+  }
+  return out;
+}
+
+/**
+ * 문서 저장소 최신화: 보호 브랜치(dev·main 등)에 있고 추적 브랜치가 있을 때만 받아 와서 fast-forward한다.
+ * 병합 커밋을 만들지 않고, 사용자 미커밋 변경과 겹치면 git이 거부하므로 그대로 둔다. 사용자 커밋이 앞서 있으면 건드리지 않는다.
+ */
+export function syncRepoFastForward(abs: string, timeoutMs = 30000): Promise<{ moved: boolean; note: string | null }> {
+  return withRepoLock(abs, async () => {
+    if (await gitBusy(abs)) return { moved: false, note: null };
+    const cur = await git(abs, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    if (!cur.ok || !PROTECTED_BRANCHES.has(cur.out)) return { moved: false, note: null };
+    const remote = (await git(abs, ['config', `branch.${cur.out}.remote`])).out;
+    const merge = (await git(abs, ['config', `branch.${cur.out}.merge`])).out;
+    if (!remote || remote === '.' || !merge.startsWith('refs/heads/')) return { moved: false, note: null };
+    const env: Record<string, string> = process.env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }; // 암호를 묻지 않는다
+    const f = await git(abs, ['fetch', '--quiet', '--no-tags', remote, merge], env, timeoutMs);
+    if (!f.ok) return { moved: false, note: `받아 오지 못함(${f.err.split('\n')[0].slice(0, 120)})` };
+    const before = (await git(abs, ['rev-parse', 'HEAD'])).out;
+    const m = await git(abs, ['merge', '--ff-only', '--quiet', '--no-overwrite-ignore', '--no-autostash', 'FETCH_HEAD']); // git이 무시하는 로컬 파일도 덮어쓰지 않는다
+    if (!m.ok) return { moved: false, note: `최신화하지 않음(사용자 변경과 겹치거나 fast-forward 불가)` };
+    const after = (await git(abs, ['rev-parse', 'HEAD'])).out;
+    return { moved: before !== after, note: before !== after ? `${before.slice(0, 8)} → ${after.slice(0, 8)}` : null };
+  }).catch((e) => ({ moved: false, note: (e as Error).message }));
+}
+
+/** 연결 폴더 기준 경로 중 git이 무시하는 경로(빌드·시험 산출물 등). 저장소 밖 경로는 무시 대상으로 보지 않는다. */
+export async function ignoredPaths(folder: string, paths: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!paths.length) return out;
+  const w = await workspaceRepos(folder);
+  const groups = new Map<RepoInfo, { inner: string; orig: string }[]>();
+  for (const p of paths) {
+    const hit = repoOf(w, p);
+    if (!hit || !hit.inner) continue;
+    const g = groups.get(hit.repo) ?? [];
+    g.push({ inner: hit.inner, orig: p });
+    groups.set(hit.repo, g);
+  }
+  for (const [repo, g] of groups) {
+    for (let i = 0; i < g.length; i += 200) {
+      const part = g.slice(i, i + 200);
+      // check-ignore는 literal 경로 지정을 받지 않는다: 이 호출만 끄고, ':'로 시작하는 경로(경로 지정 문법)는 넘기지 않는다
+      const names = part.map((x) => x.inner).filter((x) => !x.startsWith(':'));
+      if (!names.length) continue;
+      const r = await git(repo.abs, ['-c', 'core.quotePath=false', 'check-ignore', '--', ...names], { GIT_LITERAL_PATHSPECS: '0' });
+      const hits = new Set(r.raw.split('\n').filter(Boolean));
+      for (const x of part) if (hits.has(x.inner)) out.add(x.orig);
+    }
   }
   return out;
 }

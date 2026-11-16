@@ -152,6 +152,8 @@ export interface ClaudeRunSpec {
   model: string;
   maxBudgetUsd: number | null;
   pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
+  writeDirs?: string[]; // 작업 폴더 밖에서 Bash 하위 프로그램이 쓸 수 있는 폴더(실행별 임시 폴더, 시험 명령의 의존성 캐시)
+  localBinding?: boolean; // 로컬 소켓 열기 허용(Gradle 잠금·내장 서버 시험용). 외부 네트워크는 그대로 막는다
 }
 
 export function scopeRule(scope: string): string {

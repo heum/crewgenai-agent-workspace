@@ -93,7 +93,9 @@ export function relUnder(root: string, abs: string): string | null {
 // 실행 후 수정 범위 안의 변경만 실제 프로젝트에 반영하고, 범위 밖 변경은 반영하지 않는다(사전 차단).
 
 const ISO_SKIP = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.next', 'DerivedData', '.gradle', '.DS_Store']);
-const ISO_LINK = ['node_modules']; // 의존성 폴더는 링크(읽기용). 변경 탐지 대상이 아니다.
+const ISO_LINK = ['node_modules', '.venv', '.gradle']; // 의존성 폴더는 링크(읽기용, 저장소 시험 명령용). 변경 탐지 대상이 아니다.
+/** 여러 저장소 모드에서 연결 폴더 바로 아래의 숨김 도구 폴더(예: 공용 JDK·Node)는 복사하지 않고 링크한다(읽기용). */
+const rootToolDir = (name: string) => name.startsWith('.') && !['.git', '.claude', '.DS_Store'].includes(name);
 
 export function isolatedDir(key: string): string {
   return join(tmpdir(), 'crewgenai-iso', createHash('sha256').update(key).digest('hex').slice(0, 16));
@@ -113,8 +115,10 @@ export function prepareIsolated(project: string, dir: string, inScope: (rel: str
   cleanupIsolated(dir);
   mkdirSync(dir, { recursive: true });
   const projReal = realpathSync(project);
+  const rootIsRepo = existsSync(join(project, '.git'));
   cpSync(project, dir, { recursive: true, dereference: false, verbatimSymlinks: true, filter: (src) => {
     const rel = relative(project, src).split(sep).join('/');
+    if (!rootIsRepo && rel !== '' && !rel.includes('/') && rootToolDir(rel) && lst(src)?.isDirectory()) return false; // 아래에서 링크
     if (rel !== '' && rel.split('/').some((seg) => ISO_SKIP.has(seg))) return false;
     if (rel.split('/').some((seg, i, a) => seg === 'worktrees' && a[i - 1] === '.claude')) return false;
     if (topLimit && rel.includes('/') === false && rel !== '' && lst(src)?.isDirectory() && !topLimit.has(rel)) return false; // 여러 저장소: 범위 밖 저장소는 복사하지 않음
@@ -124,6 +128,11 @@ export function prepareIsolated(project: string, dir: string, inScope: (rel: str
     return true;
   } });
   for (const l of ISO_LINK) { const p = join(project, l); if (existsSync(p)) { try { symlinkSync(p, join(dir, l)); } catch { /* 무시 */ } } }
+  if (!rootIsRepo) {
+    for (const e of readdirSync(project, { withFileTypes: true })) {
+      if (e.isDirectory() && rootToolDir(e.name) && !existsSync(join(dir, e.name))) { try { symlinkSync(join(project, e.name), join(dir, e.name)); } catch { /* 무시 */ } }
+    }
+  }
   // 바로 아래 폴더(여러 저장소 모드의 각 저장소)의 의존성 폴더도 링크한다 — 복사본에서 그 저장소의 검사·시험 명령이 돌도록
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (!e.isDirectory()) continue;
