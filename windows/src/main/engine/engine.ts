@@ -16,7 +16,7 @@ import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
 import { BUILTIN_CHECK, checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
-import { commandNote, materializeLink, repoTestCommands, scrubSecretEnv, workBranchName } from '../autopilot';
+import { commandNote, levelNote, materializeLink, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -54,6 +54,8 @@ export interface EngineOptions {
   autoAssist?: () => boolean;
   /** 시험 명령에 로컬 소켓 허용(설정, 기본 끔): 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다 */
   testLocalSockets?: () => boolean;
+  /** 명령 허용 범위(설정, 기본 중간) */
+  commandLevel?: () => CommandLevel;
 }
 
 /** 실행 메타에 남기는 사용 한도 대기 정보 */
@@ -1032,10 +1034,10 @@ export class Engine {
   }
 
   /** 중단된 격리 실행의 남은 작업을 '산출물만 확인' 선택 시 반영한다(범위 밖 변경이 있으면 반영하지 않음). */
-  private applyLeftoverIsolation(runId: string, node: GraphNode, plan: PlanFields, scope: string[], agent: Agent): AcceptanceResult['checks'][number] | null {
-    if (!agent.tools.includes('Bash')) return null;
+  private applyLeftoverIsolation(runId: string, node: GraphNode, plan: PlanFields, scope: string[], _agent: Agent): AcceptanceResult['checks'][number] | null {
+    // 격리 실행 여부는 직원 설정이 아니라 실제로 남은 격리 복사본·상태 파일로 판단한다(범위 설정으로 Bash를 받은 직원 포함)
     const dir = isolatedDir(`${runId}:${node.id}`);
-    if (!existsSync(dir)) return null;
+    if (!existsSync(dir) || !existsSync(`${dir}.state.json`)) return null;
     const inOwn = (f: string) => scope.some((s) => within(f, s));
     const st = prepareIsolated(plan.folder, dir, inOwn, true);
     const changed = diffSnapshots(new Map(st.before), snapshot(dir));

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { docReposFor, isDocRepo, materializeLink, projectSkillDirs, repoTestCommands, scrubSecretEnv, workBranchName } from '../src/main/autopilot';
+import { docReposFor, isDocRepo, levelAllows, materializeLink, projectSkillDirs, repoTestCommands, scrubSecretEnv, workBranchName } from '../src/main/autopilot';
 import { buildClaudeArgs } from '../src/main/cli/claudeCli';
 import { cleanupIsolated, isolatedDir, prepareIsolated } from '../src/main/engine/fsutil';
 import { commitPaths, ignoredPaths, syncRepoFastForward } from '../src/main/git';
@@ -143,6 +143,29 @@ describe('자동 처리: 저장소 시험 명령·스킬·문서 저장소', () 
     expect(on[on.indexOf('--model') + 1]).toBe('claude-opus-5-5');
     expect(buildClaudeArgs({ ...base, effort: 'medium; rm -rf' })).not.toContain('--effort');
     expect(buildClaudeArgs(base)).not.toContain('--effort');
+  });
+
+  it('명령 허용 범위: 중간은 조회·파일 정리·빌드·시험, 높음은 위험 명령 외 전부, 낮음은 없음', () => {
+    for (const c of ['ls -la docs', 'cd backend', 'git log -1', 'npx tsc --noEmit', 'npm run check', './gradlew test', 'find . -name x', 'shasum -a 256 a']) expect(levelAllows('medium', c)).toBe(true);
+    for (const c of ['rm -rf build', 'python3 x.py', 'curl http://x', 'git push origin dev', 'npx some-pkg', 'git commit -m x']) expect(levelAllows('medium', c)).toBe(false);
+    for (const c of ['rm -rf build', 'python3 x.py', 'node a.js', 'sed -i s/a/b/ f']) expect(levelAllows('high', c)).toBe(true);
+    for (const c of ['git push origin dev', 'sudo ls', 'open .', 'curl http://x', 'ssh host', 'kill 1', 'osascript -e x', 'security find-generic-password']) expect(levelAllows('high', c)).toBe(false);
+    expect(levelAllows('low', 'ls')).toBe(false);
+    // 묶은 명령은 부분마다 본다
+    expect(levelAllows('medium', 'ls -la | head -3')).toBe(true);
+    expect(levelAllows('medium', 'ls | curl https://example.com')).toBe(false);
+    expect(levelAllows('medium', 'cd backend && npm test')).toBe(false); // CLI가 거부하는 형태
+    expect(levelAllows('medium', 'ls $(whoami)')).toBe(false);
+    expect(levelAllows('high', 'cd backend && npm test')).toBe(true);
+    expect(levelAllows('high', 'ls; git push origin dev')).toBe(false);
+    expect(levelAllows('medium', "rg 'foo|bar' src")).toBe(true); // 따옴표 안의 | 는 나누지 않는다
+    expect(levelAllows('medium', 'ls & curl https://example.com')).toBe(false);
+    expect(levelAllows('low', 'npm test && curl https://x', ['npm test'])).toBe(false); // 직원 허용 명령도 부분마다
+    expect(levelAllows('low', 'npm test -- --run', ['npm test'])).toBe(true);
+    expect(levelAllows('medium', 'echo "$(id)"')).toBe(false);
+    expect(levelAllows('medium', 'npm test 2>&1')).toBe(true); // 리디렉션은 구분자가 아니다
+    for (const c of ['/bin/kill 123', 'command kill 123', 'env kill 123', 'env FOO=1 git push origin', 'xargs kill']) expect(levelAllows('high', c)).toBe(false);
+    expect(levelAllows('medium', 'rg "foo\\"|bar" src')).toBe(true); // 큰따옴표 안의 \" 는 닫는 따옴표가 아니다
   });
 
   it('git이 무시하는 파일(빌드 산출물)을 찾는다', async () => {

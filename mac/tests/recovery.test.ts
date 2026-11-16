@@ -29,7 +29,7 @@ describe('5-2. 앱 비정상 종료 후 복원·재개', () => {
     expect(alive(orphan)).toBe(true); // 하위 Claude 프로세스는 남아 있다(고아)
 
     const svc = new Service({ dbFile, mockScript: MOCK, emit: () => {} });
-    svc.saveSettings({ executor: 'mock' });
+    svc.saveSettings({ executor: 'mock', commandLevel: 'low' });
     await svc.engine.recoverOnStartup();
     await sleep(500);
     expect(alive(orphan)).toBe(false); // 세션 ID로 앱이 시작한 프로세스임을 확인한 뒤 종료

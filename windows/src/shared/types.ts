@@ -337,6 +337,7 @@ export interface AppSettings {
   learning?: boolean; // 대화에서 배우기(기본 켬): 지시·답변에서 배운 것을 저장해 다음 지시·다른 프로젝트에 반영
   gitCommits: boolean; // 직원별 git 커밋·미션 스냅샷 사용
   autoAssist?: boolean; // 자동 처리(기본 켬): 작업 브랜치 자동 생성, 저장소 시험 명령 허용, 프로젝트 스킬·쓰기 직원 스킬, 문서 저장소 최신화
+  commandLevel?: 'low' | 'medium' | 'high'; // 직원 명령 허용 범위(기본 중간). 격리·네트워크 없음 안에서 묻지 않고 허용할 명령의 폭
   testLocalSockets?: boolean; // 자동 처리 시험 명령에 로컬 소켓 허용(기본 끔). 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다
   skillDirs?: string[]; // 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(이 PC의 절대 경로). 없으면 ~/.claude/skills·~/.agents/skills 중 있는 것
 }

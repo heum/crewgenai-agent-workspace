@@ -1,9 +1,9 @@
 // 자동 처리(사람 손 줄이기): 작업 브랜치 자동 생성, 저장소 시험 명령 허용, 프로젝트 스킬, 문서 저장소 최신화
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { docReposFor, isDocRepo, materializeLink, projectSkillDirs, repoTestCommands, scrubSecretEnv, workBranchName } from '../src/main/autopilot';
+import { docReposFor, isDocRepo, levelAllows, materializeLink, projectSkillDirs, repoTestCommands, scrubSecretEnv, workBranchName } from '../src/main/autopilot';
 import { buildClaudeArgs } from '../src/main/cli/claudeCli';
 import { cleanupIsolated, isolatedDir, prepareIsolated } from '../src/main/engine/fsutil';
 import { commitPaths, ignoredPaths, syncRepoFastForward } from '../src/main/git';
@@ -165,6 +165,67 @@ describe('자동 처리: 저장소 시험 명령·스킬·문서 저장소', () 
     expect(on[on.indexOf('--model') + 1]).toBe('claude-opus-5-5');
     expect(buildClaudeArgs({ ...base, effort: 'medium; rm -rf' })).not.toContain('--effort');
     expect(buildClaudeArgs(base)).not.toContain('--effort');
+  });
+
+  it('명령 허용 범위: 중간은 조회·파일 정리·빌드·시험, 높음은 위험 명령 외 전부, 낮음은 없음', () => {
+    for (const c of ['ls -la docs', 'cd backend', 'git log -1', 'npx tsc --noEmit', 'npm run check', './gradlew test', 'find . -name x', 'shasum -a 256 a']) expect(levelAllows('medium', c)).toBe(true);
+    for (const c of ['rm -rf build', 'python3 x.py', 'curl http://x', 'git push origin dev', 'npx some-pkg', 'git commit -m x']) expect(levelAllows('medium', c)).toBe(false);
+    for (const c of ['rm -rf build', 'python3 x.py', 'node a.js', 'sed -i s/a/b/ f']) expect(levelAllows('high', c)).toBe(true);
+    for (const c of ['git push origin dev', 'sudo ls', 'open .', 'curl http://x', 'ssh host', 'kill 1', 'osascript -e x', 'security find-generic-password']) expect(levelAllows('high', c)).toBe(false);
+    expect(levelAllows('low', 'ls')).toBe(false);
+    // 묶은 명령은 부분마다 본다
+    expect(levelAllows('medium', 'ls -la | head -3')).toBe(true);
+    expect(levelAllows('medium', 'ls | curl https://example.com')).toBe(false);
+    expect(levelAllows('medium', 'cd backend && npm test')).toBe(false); // CLI가 거부하는 형태
+    expect(levelAllows('medium', 'ls $(whoami)')).toBe(false);
+    expect(levelAllows('high', 'cd backend && npm test')).toBe(true);
+    expect(levelAllows('high', 'ls; git push origin dev')).toBe(false);
+    expect(levelAllows('medium', "rg 'foo|bar' src")).toBe(true); // 따옴표 안의 | 는 나누지 않는다
+    expect(levelAllows('medium', 'ls & curl https://example.com')).toBe(false);
+    expect(levelAllows('low', 'npm test && curl https://x', ['npm test'])).toBe(false); // 직원 허용 명령도 부분마다
+    expect(levelAllows('low', 'npm test -- --run', ['npm test'])).toBe(true);
+    expect(levelAllows('medium', 'echo "$(id)"')).toBe(false);
+    expect(levelAllows('medium', 'npm test 2>&1')).toBe(true); // 리디렉션은 구분자가 아니다
+    for (const c of ['/bin/kill 123', 'command kill 123', 'env kill 123', 'env FOO=1 git push origin', 'xargs kill']) expect(levelAllows('high', c)).toBe(false);
+    expect(levelAllows('medium', 'rg "foo\\"|bar" src')).toBe(true); // 큰따옴표 안의 \" 는 닫는 따옴표가 아니다
+  });
+
+  it('CLI 인자: 범위에 따라 Bash 허용 규칙을 넣고, 높음은 위험 명령을 거부 규칙으로 막는다', () => {
+    const base = { prompt: 'p', appendSystemPrompt: 's', cwd: '/w', editScopes: [], allowedCommands: [], readDirs: [], sessionId: null, resumeSessionId: null, jsonSchema: null, model: '', maxBudgetUsd: null, tools: ['Read', 'Bash'] as ('Read' | 'Bash')[] };
+    const perms = (lv: 'low' | 'medium' | 'high') => { const a = buildClaudeArgs({ ...base, commandLevel: lv }); return JSON.parse(a[a.indexOf('--settings') + 1]).permissions as { allow: string[]; deny: string[] }; };
+    expect(perms('low').allow.some((x) => x.startsWith('Bash'))).toBe(false);
+    expect(perms('medium').allow).toContain('Bash(ls *)');
+    expect(perms('medium').allow).not.toContain('Bash');
+    expect(perms('high').allow).toContain('Bash');
+    expect(perms('high').deny).toEqual(expect.arrayContaining(['Bash(git push *)', 'Bash(sudo *)', 'Bash(open *)', 'Bash(/bin/kill *)', 'Bash(env kill *)']));
+    const noBash = buildClaudeArgs({ ...base, tools: ['Read'], commandLevel: 'high' });
+    expect(JSON.parse(noBash[noBash.indexOf('--settings') + 1]).permissions.allow).not.toContain('Bash');
+  });
+
+  it('실행: 범위 중간이면 쓰기 직원이 Bash(격리 실행)를 받고 실제 폴더는 읽기 전용으로 열리며, 범위 밖 변경은 실제 폴더에 반영되지 않는다', async () => {
+    const root = tmpProject();
+    const be = repo(root, 'backend');
+    const argvDir = join(root, '..', 'argv-lv'); mkdirSync(argvDir);
+    process.env.CREWGENAI_MOCK_ARGV_DIR = argvDir;
+    const svc = mkService(root);
+    const p = svc.createProject(plan(root, { writablePaths: ['backend/docs'] }));
+    const w = svc.saveAgent(p.id, null, agentFields('01', '작성자', { tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write'] }));
+    const inp = n('input', '입력');
+    const work = n('agent', '작성', { agentId: w.id, instructions: '[[mock:write-outside:backend/leak.txt]]', writeScope: ['backend/docs'], outputs: [{ path: 'backend/docs/결과.md', format: 'markdown', required: true }] });
+    const m = n('merge', '취합');
+    const saved = svc.saveGraph(p.id, { nodes: [inp, work, m], edges: [e(inp, work), e(work, m)] }, '시험');
+    const run = await svc.startRun(p.id, saved.version!.id);
+    await waitRun(svc, run.id, ['review_wait', 'failed', 'succeeded']);
+    const a = svc.store.runAttempts(run.id).find((x) => x.role === 'author')!;
+    const rec = JSON.parse(readFileSync(join(argvDir, `${a.sessionId}.json`), 'utf8')) as { argv: string[]; cwd: string };
+    expect(rec.argv[rec.argv.indexOf('--tools') + 1].split(',')).toContain('Bash');
+    expect(JSON.parse(rec.argv[rec.argv.indexOf('--settings') + 1]).permissions.allow).toContain('Bash(git log *)');
+    expect(rec.argv.some((x, i) => rec.argv[i - 1] === '--add-dir' && x === root)).toBe(true); // 실제 폴더는 읽기 전용
+    expect(rec.cwd).not.toBe(root); // 격리 복사본에서 실행
+    expect(existsSync(join(be, 'leak.txt'))).toBe(false); // 범위 밖 변경은 반영 안 함
+    expect(a.outOfScopeChanges.join(' ')).toContain('backend/leak.txt');
+    delete process.env.CREWGENAI_MOCK_ARGV_DIR;
+    svc.close();
   });
 
   it('git이 무시하는 파일(빌드 산출물)을 찾는다', async () => {

@@ -5,7 +5,7 @@ import { agentFields, e, n, plan } from '../helpers';
 
 const [dbFile, folder, mock] = process.argv.slice(2);
 const svc = new Service({ dbFile, mockScript: mock, emit: () => {} });
-svc.saveSettings({ executor: 'mock', maxConcurrent: 2 });
+svc.saveSettings({ executor: 'mock', maxConcurrent: 2, commandLevel: 'low' }); // 실제 폴더에서 바로 작업하는 경로를 시험
 const p = svc.createProject(plan(folder));
 const w = svc.saveAgent(p.id, null, agentFields('01', '작성자'));
 const inp = n('input', '입력');

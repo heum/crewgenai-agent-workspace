@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha } from './engine/fsutil';
 import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
-import { projectSkillDirs } from './autopilot';
+import { COMMAND_LEVELS, projectSkillDirs, type CommandLevel } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
@@ -83,6 +83,7 @@ export class Service {
       skills: (folder) => ({ dirs: [...new Set([...this.skillDirs(), ...(this.settings().autoAssist !== false ? projectSkillDirs(folder) : [])])], cacheDir: join(dirname(d.dbFile), 'skill-bundles') }),
       autoAssist: () => this.settings().autoAssist !== false,
       testLocalSockets: () => this.settings().testLocalSockets === true,
+      commandLevel: () => this.commandLevel(),
     });
     this.missions = new MissionRunner({
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
@@ -94,6 +95,7 @@ export class Service {
       learnings: this.learnings,
       learnEnabled: () => this.settings().learning !== false,
       autoAssist: () => this.settings().autoAssist !== false,
+      commandLevel: () => this.commandLevel(),
     });
   }
 
@@ -171,6 +173,8 @@ export class Service {
     if (key !== undefined) { if (this.d.secretStore) this.d.secretStore.set(key); else this.memSecret = key; }
     return this.settings();
   }
+  /** 명령 허용 범위: 설정값이 없거나 잘못되면 중간 */
+  commandLevel(): CommandLevel { const v = this.settings().commandLevel; return COMMAND_LEVELS.includes(v as CommandLevel) ? (v as CommandLevel) : 'medium'; }
   /** 스킬 폴더: 설정값이 없으면 이 PC의 기본 위치 중 있는 것 */
   skillDirs(): string[] {
     const v = this.settings().skillDirs;

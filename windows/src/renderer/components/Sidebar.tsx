@@ -223,6 +223,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           gitCommits: s.gitCommits,
           autoAssist: s.autoAssist !== false,
           testLocalSockets: s.testLocalSockets === true,
+          commandLevel: s.commandLevel ?? 'medium',
           ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
         keyArg,
@@ -280,6 +281,20 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" disabled={s.autoAssist === false} checked={s.testLocalSockets === true} onChange={(e) => setS({ ...s, testLocalSockets: e.target.checked })} /> 시험 명령에 로컬 소켓 허용 (Gradle·Spring 시험에 필요)
       </label>
       <p className="muted small">켜면 Gradle 시험이 격리 환경에서 돕니다. 대신 격리된 시험도 이 PC에서 켜져 있는 로컬 서비스(예: localhost의 프록시·DB·개발 서버)에 접속할 수 있게 됩니다. 외부 인터넷은 계속 막힙니다. 끄면 Gradle 시험은 ‘실행 못 함’으로 기록됩니다.</p>
+      <h3>명령 허용 범위</h3>
+      <p className="muted small">Windows판은 직원에게 Bash(명령 실행)를 주지 않으므로 이 설정은 쓰이지 않습니다. 시험·빌드는 업무 흐름의 검사 단계로 앱이 실행합니다.</p>
+      <div className="radio-row">
+        <label><input type="radio" checked={s.commandLevel === 'low'} onChange={() => setS({ ...s, commandLevel: 'low' })} /> 낮음</label>
+        <label><input type="radio" checked={(s.commandLevel ?? 'medium') === 'medium'} onChange={() => setS({ ...s, commandLevel: 'medium' })} /> 중간 (권장)</label>
+        <label><input type="radio" checked={s.commandLevel === 'high'} onChange={() => setS({ ...s, commandLevel: 'high' })} /> 높음</label>
+      </div>
+      <ul className="muted small auto-list">
+        <li><b>낮음</b>: 직원 설정의 허용 명령과 저장소 시험 명령만. 그 밖의 명령은 '확인 필요'로 올라옵니다.</li>
+        <li><b>중간</b>: 위에 더해 조회·탐색(ls·find·grep·cat·git log 등), 파일 정리(mkdir·cp·mv), 빌드·시험 도구(npm run·npx tsc·pytest·gradle·make 등)를 묻지 않고 허용. 파일을 쓰는 직원에게 Bash를 줍니다.</li>
+        <li><b>높음</b>: 거의 모든 명령을 허용. 권한 상승(sudo)·원격 접속·전송(ssh·curl)·git push·앱 실행(open·osascript)·키체인·시스템 설정·프로세스 종료만 막습니다.</li>
+        <li>어느 범위든 명령은 프로젝트 격리 복사본 안에서 네트워크 없이 돌고, 수정 허용 범위 밖 변경은 실제 프로젝트에 반영되지 않습니다.</li>
+        <li>높음의 차단 목록은 보조 장치입니다(경로를 바꾸거나 다른 명령으로 감싸는 우회를 완전히 막지는 못함). 실제 보호는 격리입니다: 네트워크 없음, 쓰기는 복사본·임시 폴더만. 다만 같은 사용자 권한으로 도는 다른 프로그램을 종료하는 것 같은 일은 격리가 막지 못할 수 있으니, 낯선 저장소에서는 중간을 쓰세요.</li>
+      </ul>
       <h3>스킬 폴더</h3>
       <p className="muted small">직원 설정에서 도구 ‘Skill’을 켠 직원(자동 처리가 켜져 있으면 파일을 쓰는 직원도)이 이 폴더의 스킬을 씁니다. 실행할 때마다 스킬 파일만 읽기 전용 사본으로 넘기며, 플러그인의 훅·MCP·명령은 가져오지 않습니다. 스킬을 써도 직원 권한(수정 폴더·Bash 허용 명령·웹)은 그대로입니다.</p>
       {!skills && <p className="muted small">스킬 폴더 확인 중…</p>}

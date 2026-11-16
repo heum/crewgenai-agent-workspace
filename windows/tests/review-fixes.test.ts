@@ -29,6 +29,7 @@ describe('Codex 리뷰 반영', () => {
 
   it('#3 병렬 실행 중에도 범위 밖 변경을 면제하지 않는다', async () => {
     const { dir, svc, p } = setup();
+    svc.saveSettings({ commandLevel: 'low' }); // 실제 폴더에서 바로 작업하는 경로
     mkdirSync(join(dir, 'forbidden'), { recursive: true });
     const w = svc.saveAgent(p.id, null, agentFields('01', '작성자'));
     const inp = n('input', '입력');

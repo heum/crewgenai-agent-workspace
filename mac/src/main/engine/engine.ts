@@ -16,7 +16,7 @@ import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
 import { checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
-import { commandNote, materializeLink, repoTestCommands, scrubSecretEnv, workBranchName } from '../autopilot';
+import { commandNote, levelNote, materializeLink, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
 import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -54,6 +54,8 @@ export interface EngineOptions {
   autoAssist?: () => boolean;
   /** 시험 명령에 로컬 소켓 허용(설정, 기본 끔): 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다 */
   testLocalSockets?: () => boolean;
+  /** 명령 허용 범위(설정, 기본 중간) */
+  commandLevel?: () => CommandLevel;
 }
 
 /** 실행 메타에 남기는 사용 한도 대기 정보 */
@@ -881,6 +883,9 @@ export class Engine {
     const tools: ToolName[] = role === 'reviewer' ? ['Read', 'Grep', 'Glob'] : agent.tools.filter((t) => t !== 'WebFetch');
     // 자동 처리: 파일을 쓰는 작성자는 스킬을 기본으로 쓴다
     if (auto && role === 'author' && (tools.includes('Edit') || tools.includes('Write')) && !tools.includes('Skill')) tools.push('Skill');
+    // 명령 허용 범위가 중간·높음이면 파일을 쓰는 작성자에게 Bash를 준다(격리 복사본에서 실행)
+    const level: CommandLevel = this.o.commandLevel?.() ?? 'low';
+    if (level !== 'low' && role === 'author' && (tools.includes('Edit') || tools.includes('Write')) && !tools.includes('Bash')) tools.push('Bash');
     // 참고 자료: 프로젝트 밖 '폴더'만 --add-dir로(읽기) 연다. '파일'은 그 파일만 읽기 전용 사본으로 준다(부모 폴더 전체를 열지 않음).
     // 프로젝트를 포함하는 상위 폴더는 열지 않는다(상위 전체가 Bash 쓰기 영역이 되므로).
     const projReal = realFolder(plan.folder);
@@ -919,6 +924,9 @@ export class Engine {
     const cmds = auto && isolate ? repoTestCommands(plan.folder).filter((c) => !c.repo || !tops || tops.has(c.repo)) : [];
     const sockets = this.o.testLocalSockets?.() ?? false;
     if (cmds.length) prompt = `${prompt}\n\n${commandNote(cmds, sockets)}`;
+    if (isolate && level !== 'low') prompt = `${prompt}\n\n${levelNote(level)}`;
+    // 격리 실행: 실제 프로젝트 폴더는 읽기 전용으로 연다(다른 저장소·참고 문서를 절대 경로로 읽을 수 있게). 고치는 것은 작업 폴더(복사본)에서만
+    if (isolate && !readDirs.includes(plan.folder)) { readDirs.push(plan.folder); prompt = `${prompt}\n\n## 작업 폴더\n- 지금 작업 폴더는 프로젝트의 격리 복사본이다. 파일은 작업 폴더 기준 상대 경로로 고친다. 실제 프로젝트 폴더(${plan.folder})는 읽기만 할 수 있다.`; }
     // Bash 하위 프로그램용 실행별 임시 폴더(macOS 기본 임시 폴더는 격리 환경에서 쓸 수 없다)
     const procTmp = isolate ? `${workDir}.tmp` : null;
     if (procTmp) { rmSync(procTmp, { recursive: true, force: true }); mkdirSync(procTmp, { recursive: true, mode: 0o700 }); }
@@ -927,7 +935,7 @@ export class Engine {
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000),
       cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : [...agent.allowedCommands, ...cmds.map((c) => c.prefix)],
-      readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, effort: agent.effort, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs,
+      readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, effort: agent.effort, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs, commandLevel: role === 'author' ? level : 'low',
       writeDirs: [...(procTmp ? [procTmp] : []), ...cmds.flatMap((c) => c.writeDirs)], localBinding: sockets && cmds.some((c) => c.localSockets),
     });
     const file = run.executor === 'mock' ? process.execPath : ex.cliPath;
@@ -1031,10 +1039,10 @@ export class Engine {
   }
 
   /** 중단된 격리 실행의 남은 작업을 '산출물만 확인' 선택 시 반영한다(범위 밖 변경이 있으면 반영하지 않음). */
-  private applyLeftoverIsolation(runId: string, node: GraphNode, plan: PlanFields, scope: string[], agent: Agent): AcceptanceResult['checks'][number] | null {
-    if (!agent.tools.includes('Bash')) return null;
+  private applyLeftoverIsolation(runId: string, node: GraphNode, plan: PlanFields, scope: string[], _agent: Agent): AcceptanceResult['checks'][number] | null {
+    // 격리 실행 여부는 직원 설정이 아니라 실제로 남은 격리 복사본·상태 파일로 판단한다(범위 설정으로 Bash를 받은 직원 포함)
     const dir = isolatedDir(`${runId}:${node.id}`);
-    if (!existsSync(dir)) return null;
+    if (!existsSync(dir) || !existsSync(`${dir}.state.json`)) return null;
     const inOwn = (f: string) => scope.some((s) => within(f, s));
     const st = prepareIsolated(plan.folder, dir, inOwn, true);
     const changed = diffSnapshots(new Map(st.before), snapshot(dir));

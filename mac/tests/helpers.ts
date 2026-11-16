@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path';
 import type { AgentFields, GraphEdge, GraphNode, LiveEvent, PlanFields, Run } from '../src/shared/types';
 import { Service } from '../src/main/service';
 
+// 모의 CLI의 상태 표시(한 번만 실패 등)는 고정 위치에 둔다: 직원 실행은 실행마다 비우는 임시 폴더(TMPDIR)를 받기 때문
+process.env.CREWGENAI_MOCK_STATE = process.env.CREWGENAI_MOCK_STATE || tmpdir();
 export const MOCK = resolve(__dirname, '../resources/mock-claude.cjs');
 export const MOCK_CODEX = resolve(__dirname, '../resources/mock-codex.cjs');
 

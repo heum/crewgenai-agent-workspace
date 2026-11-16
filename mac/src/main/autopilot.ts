@@ -149,3 +149,88 @@ export function scrubSecretEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const [k, v] of Object.entries(env)) if (KEEP_ENV.has(k) || !SECRET_ENV.test(k)) out[k] = v;
   return out;
 }
+
+// ───── 명령 허용 범위(설정: 낮음·중간·높음) ─────
+// 직원 명령은 격리 복사본 안에서 OS 격리(네트워크 없음, 쓰기는 복사본·임시 폴더만)로 실행된다. 범위는 그 안에서 묻지 않고 허용할 명령의 폭이다.
+export type CommandLevel = 'low' | 'medium' | 'high';
+export const COMMAND_LEVELS: CommandLevel[] = ['low', 'medium', 'high'];
+
+/** 중간: 조회·탐색, 파일 정리(복사본 안), 빌드·시험 도구. 접두어(앞 단어들)로 맞춘다. */
+export const MEDIUM_COMMANDS = [
+  // 조회·탐색
+  'cd', 'ls', 'pwd', 'find', 'tree', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'file', 'stat', 'du', 'diff', 'cmp', 'sort', 'uniq', 'cut', 'tr',
+  'echo', 'printf', 'test', 'which', 'shasum', 'md5', 'sha256sum', 'jq', 'date', 'basename', 'dirname', 'realpath',
+  'git status', 'git diff', 'git log', 'git show', 'git branch', 'git rev-parse', 'git ls-files', 'git grep', 'git blame',
+  // 파일 정리(격리 복사본 안)
+  'mkdir', 'touch', 'cp', 'mv',
+  // 빌드·시험
+  'npm test', 'npm run', 'npx tsc', 'npx vitest', 'npx eslint', 'npx jest', 'npx prettier', 'npx playwright test', 'node --test',
+  'pytest', 'python -m pytest', 'python3 -m pytest', './gradlew', 'gradle', 'mvn', './mvnw', 'make', 'go test', 'go build', 'go vet',
+  'cargo test', 'cargo build', 'cargo check', 'flutter test', 'flutter analyze', 'dart test', 'dart analyze',
+];
+
+/** 높음에서도 막는 명령: 권한 상승, 원격 접속·전송, 저장소 원격 변경, 격리 밖 앱 실행, 키체인·시스템 설정, 다른 프로세스 종료 */
+export const HIGH_DENY = [
+  'sudo', 'su', 'doas', 'ssh', 'scp', 'sftp', 'rsync', 'curl', 'wget', 'nc', 'telnet', 'ftp',
+  'git push', 'git remote', 'git config', 'gh',
+  'open', 'osascript', 'security', 'launchctl', 'crontab', 'defaults', 'networksetup', 'systemsetup', 'diskutil', 'csrutil', 'spctl',
+  'kill', 'pkill', 'killall', 'shutdown', 'reboot', 'halt',
+];
+
+const toks = (c: string) => c.trim().split(/\s+/).filter(Boolean);
+/** 차단 목록 대조용: 앞의 감싸는 명령(env·command·exec·nohup·xargs·time·nice)과 실행 파일 경로를 벗긴다 */
+const WRAPPERS = new Set(['env', 'command', 'exec', 'nohup', 'xargs', 'time', 'nice', 'builtin']);
+function unwrap(c: string): string {
+  const t = toks(c);
+  while (t.length && (WRAPPERS.has(t[0].split('/').pop() ?? '') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0]) || (t[0].startsWith('-') && t.length > 1))) t.shift();
+  if (t.length) t[0] = t[0].split('/').pop() ?? t[0];
+  return t.join(' ');
+}
+/** 높음의 CLI 거부 규칙: 이름 그대로, 흔한 경로·감싸는 명령 형태까지(최선 노력. 실제 보호는 OS 격리) */
+export function highDenyRules(): string[] {
+  const forms = (d: string) => [d, ...['/bin/', '/usr/bin/', '/usr/sbin/', '/sbin/', '/usr/local/bin/', '/opt/homebrew/bin/'].map((p) => p + d), ...['env', 'command', 'exec', 'nohup', 'xargs'].map((w) => `${w} ${d}`)];
+  return HIGH_DENY.flatMap((d) => forms(d).flatMap((f) => [`Bash(${f})`, `Bash(${f} *)`]));
+}
+const startsWith = (cmd: string, prefix: string) => { const p = toks(prefix); const t = toks(cmd); return p.length > 0 && p.every((x, i) => t[i] === x); };
+
+/**
+ * 셸 명령을 따옴표를 지키며 &&, ||, ;, |, & 기준으로 나눈다. 명령 치환($( ), 백틱)·여러 줄·닫히지 않은 따옴표는 판단하지 않고 null.
+ */
+export function splitCommand(cmd: string): string[] | null {
+  if (/\n|\r/.test(cmd)) return null;
+  const parts: string[] = []; let cur = ''; let q: '"' | "'" | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (q === '"' && ch === '\\') { cur += ch + (cmd[i + 1] ?? ''); i++; continue; } // 큰따옴표 안의 이스케이프(\" 등)
+    if (q) { if (ch === q) q = null; else if (q === '"' && (ch === '`' || (ch === '$' && cmd[i + 1] === '('))) return null; cur += ch; continue; }
+    if (ch === "'" || ch === '"') { q = ch; cur += ch; continue; }
+    if (ch === '`' || (ch === '$' && cmd[i + 1] === '(')) return null;
+    if (ch === '\\') { cur += ch + (cmd[i + 1] ?? ''); i++; continue; }
+    if (ch === '&' && (cmd[i - 1] === '>' || cmd[i + 1] === '>')) { cur += ch; continue; } // 리디렉션(2>&1, &>)은 구분자가 아니다
+    if (ch === ';' || ch === '|' || ch === '&') { if (cur.trim()) parts.push(cur.trim()); cur = ''; if ((ch === '|' || ch === '&') && cmd[i + 1] === ch) i++; continue; }
+    cur += ch;
+  }
+  if (q) return null;
+  if (cur.trim()) parts.push(cur.trim());
+  return parts.length ? parts : null;
+}
+
+/**
+ * 실행 전 점검용: 이 범위와 직원별 허용 명령(접두어)으로 그 명령의 모든 부분이 허용되는가.
+ * 중간에서는 'cd'를 다른 명령과 묶으면 Claude CLI가 거부하므로 허용하지 않는다.
+ */
+export function levelAllows(level: CommandLevel, cmd: string, prefixes: string[] = []): boolean {
+  const parts = splitCommand(cmd);
+  if (!parts) return false;
+  const byPrefix = (c: string) => prefixes.some((p) => startsWith(c, p));
+  if (level === 'high') return parts.every((c) => !HIGH_DENY.some((d) => startsWith(unwrap(c), d)));
+  if (level === 'medium' && parts.length > 1 && parts.some((c) => startsWith(c, 'cd'))) return false;
+  return parts.every((c) => byPrefix(c) || (level === 'medium' && MEDIUM_COMMANDS.some((m) => startsWith(c, m))));
+}
+
+/** 직원 프롬프트에 붙이는 안내 */
+export function levelNote(level: CommandLevel): string {
+  if (level === 'high') return `## 명령 허용 범위: 높음\n- 격리 복사본 안(네트워크 없음)에서 대부분의 명령을 바로 실행할 수 있다. 다음은 막혀 있다: ${HIGH_DENY.join(', ')}.`;
+  if (level === 'medium') return `## 명령 허용 범위: 중간\n- 다음으로 시작하는 명령은 바로 실행할 수 있다(격리 복사본 안, 네트워크 없음): ${MEDIUM_COMMANDS.join(', ')}.\n- 폴더를 옮길 때는 'cd 폴더'를 따로 한 번 실행한 뒤 다음 명령을 실행한다('cd 폴더 && 명령'처럼 묶으면 거부된다). 파이프(|)로 위 명령끼리 잇는 것은 된다.\n- 그 밖의 명령이 꼭 필요하면 시도하지 말고 '확인 필요'에 명령 문자열을 적는다.`;
+  return '';
+}

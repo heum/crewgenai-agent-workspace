@@ -4,6 +4,7 @@
 // - 도구·파일 접근 범위는 CLI의 권한 엔진(--restricted, dontAsk, allow 규칙, Bash 샌드박스)으로 집행
 // - 이벤트 해석, 세션 ID, 프로세스 그룹 단위 취소
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { highDenyRules, MEDIUM_COMMANDS, type CommandLevel } from '../autopilot';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -102,6 +103,7 @@ export interface ClaudeRunSpec {
   model: string;
   maxBudgetUsd: number | null;
   effort?: string; // 추론 강도. 허용 값만 --effort로 넘긴다
+  commandLevel?: CommandLevel; // 명령 허용 범위(Bash가 있을 때만): 중간=조회·빌드·시험 명령, 높음=위험 명령 외 전부
   pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
   writeDirs?: string[]; // 작업 폴더 밖에서 Bash 하위 프로그램이 쓸 수 있는 폴더(실행별 임시 폴더, 시험 명령의 의존성 캐시)
   localBinding?: boolean; // 로컬 소켓 열기 허용(Gradle 잠금·내장 서버 시험용). 외부 네트워크는 그대로 막는다
@@ -121,7 +123,10 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const allow: string[] = ['Read', 'Grep', 'Glob'];
   if (writer) allow.push(...spec.editScopes.map(scopeRule));
   if (tools.includes('Bash')) for (const c of spec.allowedCommands.map((x) => x.trim()).filter(Boolean)) allow.push(`Bash(${c})`, `Bash(${c} *)`);
+  if (tools.includes('Bash') && spec.commandLevel === 'medium') for (const c of MEDIUM_COMMANDS) allow.push(`Bash(${c})`, `Bash(${c} *)`);
+  if (tools.includes('Bash') && spec.commandLevel === 'high') allow.push('Bash');
   const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'];
+  if (tools.includes('Bash') && spec.commandLevel === 'high') deny.push(...highDenyRules());
   const settings = {
     permissions: { allow, deny, defaultMode: 'dontAsk' },
     disableAllHooks: true, // 스킬·플러그인이 훅으로 권한 통제 밖에서 명령을 실행하지 못하게

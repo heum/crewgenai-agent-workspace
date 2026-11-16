@@ -15,7 +15,7 @@ import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
-import { docReposFor, repoTestCommands, workBranchName } from './autopilot';
+import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
 
 const STAFF_ITEMS = { type: 'array', items: { type: 'object', required: ['kind', 'agentCode', 'name', 'role', 'instructions', 'reason'], properties: {
   kind: { type: 'string', enum: ['add', 'update'] }, agentCode: { type: 'string' }, name: { type: 'string' }, role: { type: 'string' }, instructions: { type: 'string' },
@@ -85,6 +85,7 @@ export interface MissionDeps {
   learnings?: LearningStore;
   learnEnabled?: () => boolean;
   autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
+  commandLevel?: () => CommandLevel; // 명령 허용 범위
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
@@ -338,9 +339,10 @@ export class MissionRunner {
     const refs = [...plan.referenceDocs, ...plan.priorOutputs].map((r) => resolve(folder, r));
     const inside = (p: string, r: string) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
     const readable = (p: string, ag: Agent) => { const a = resolve(folder, p); return inside(a, folder) || [...refs, ...ag.references.map((r) => resolve(folder, r))].some((r) => inside(a, r)); }; // 직원에게 준 참조 자료도 읽을 수 있다
-    const toks = (c: string) => c.trim().split(/\s+/).filter(Boolean);
     const auto = this.d.autoAssist?.() ? repoTestCommands(plan.folder).map((c) => c.prefix) : []; // 자동 처리: 저장소 시험 명령은 실행 때 허용된다
-    const allowed = (a: Agent, c: string) => BASH_OK && a.tools.includes('Bash') && [...a.allowedCommands, ...auto].some((pfx) => { const p = toks(pfx); const t = toks(c); return p.length > 0 && p.every((x, i) => t[i] === x); });
+    const level: CommandLevel = BASH_OK ? (this.d.commandLevel?.() ?? 'low') : 'low';
+    const hasBash = (a: Agent) => a.tools.includes('Bash') || (level !== 'low' && (a.tools.includes('Edit') || a.tools.includes('Write'))); // 중간·높음이면 쓰기 직원도 Bash를 받는다
+    const allowed = (a: Agent, c: string) => BASH_OK && hasBash(a) && levelAllows(level, c, [...a.allowedCommands, ...auto]); // 묶은 명령은 부분마다 범위·직원 허용 명령으로 본다
     const keep: PlanTask[] = []; const held: { task: PlanTask; denials: MissionDenial[] }[] = [];
     for (const t of tasks) {
       const a = by(t.agentCode);

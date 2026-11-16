@@ -65,14 +65,14 @@ async function main() {
   if (prompt.includes('[[mock:leak]]')) out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: 'env: ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKE1234 token: ghp_FAKEFAKEFAKEFAKEFAKEFAKE12' }] } });
   const isOperator = prompt.includes('# 오퍼레이터 ');
   // 화면 시험용: 임시 폴더에 crewgenai-mock-slow-claude 파일이 있으면 그 밀리초만큼 늦게 시작한다(모든 호출)
-  const slowF = path.join(require('node:os').tmpdir(), 'crewgenai-mock-slow-claude');
+  const slowF = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), 'crewgenai-mock-slow-claude');
   if (fs.existsSync(slowF)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(fs.readFileSync(slowF, 'utf8')) || 0);
   for (const m of isOperator ? [] : prompt.matchAll(/\[\[mock:wait-while:(.+?)\]\]/g)) {
     out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: `${m[1]} 파일이 사라질 때까지 대기합니다.` }] } });
     while (fs.existsSync(path.resolve(cwd, m[1]))) await new Promise((r) => setTimeout(r, 100));
   }
   for (const m of prompt.matchAll(/\[\[mock:limit-once:([\w-]+)\]\]/g)) {
-    const flag = path.join(require('node:os').tmpdir(), `crewgenai-mock-limit-${m[1]}`);
+    const flag = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), `crewgenai-mock-limit-${m[1]}`);
     if (fs.existsSync(flag)) continue;
     fs.writeFileSync(flag, String(Date.now()));
     const resetsAt = Math.floor(Date.now() / 1000) + 1;
@@ -122,7 +122,7 @@ async function main() {
     const ask = user.includes('[[mock:ask]]') && !answered;
     const gm = user.match(/\[\[mock:gaps-once:([\w-]+)\]\]/);
     if (gm) {
-      const flag = path.join(require('node:os').tmpdir(), `crewgenai-mock-gaps-${gm[1]}`);
+      const flag = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), `crewgenai-mock-gaps-${gm[1]}`);
       if (!fs.existsSync(flag)) {
         fs.writeFileSync(flag, String(Date.now()));
         const docsLine = (prompt.split('## 근거 문서')[1] || '').split('\n## ')[0];

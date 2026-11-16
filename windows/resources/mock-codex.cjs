@@ -21,7 +21,7 @@ process.stdin.on('end', () => {
   }
   const res = { verdict: findings.length ? 'changes_requested' : 'approve', summary: findings.length ? '수정 필요' : '문제 없음', findings };
   // 화면 시험용: 임시 폴더에 crewgenai-mock-slow-codex 파일이 있으면 그 안의 밀리초만큼 늦게 끝난다
-  const slow = path.join(require('node:os').tmpdir(), 'crewgenai-mock-slow-codex');
+  const slow = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), 'crewgenai-mock-slow-codex');
   const wait = fs.existsSync(slow) ? Number(fs.readFileSync(slow, 'utf8')) || 0 : 0;
   setTimeout(() => {
     process.stdout.write('codex(모의) 리뷰 완료\n');

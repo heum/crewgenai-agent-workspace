@@ -240,6 +240,7 @@ describe('5. 취소·시간 초과·중복 방지·충돌 제어', () => {
 describe('6. 권한과 산출물·비밀값', () => {
   it('허용 범위 밖 편집 시도는 거부로 기록되고, 범위 밖 직접 변경은 탐지해 실패 처리한다', async () => {
     const { dir, svc, p } = setup();
+    svc.saveSettings({ commandLevel: 'low' }); // 실제 폴더에서 바로 작업하는 경로(격리 실행은 범위 밖 변경을 반영 전에 차단한다)
     mkdirSync(join(dir, 'secret area'), { recursive: true });
     const { gv, work } = linear(svc, p.id, { marker: '[[mock:try-edit:secret area/x.txt]] [[mock:write-outside:secret area/leak.txt]]' });
     const run = await svc.startRun(p.id, gv.id);
