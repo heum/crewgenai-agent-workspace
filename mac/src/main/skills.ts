@@ -15,9 +15,19 @@ const SKIP_DIR = new Set(['.git', 'node_modules', '.venv', '__pycache__', '.DS_S
 const SECRET = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx)|id_rsa.*|id_ed25519.*|\.npmrc|\.netrc|credentials(\..*)?)$/i;
 
 /** 기본 스킬 폴더: 이 PC에 있는 것만 */
-/** 기본 스킬 폴더: 이 PC의 기본 위치 중 실제로 스킬이 하나 이상 있는 곳만(빈 폴더·다른 앱이 동기화용으로 만든 폴더는 보여 주지 않음) */
+/** 숨김이 아닌 하위 폴더 */
+function subdirs(p: string): string[] { try { return readdirSync(p, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => join(p, e.name)).sort(); } catch { return []; } }
+
+/**
+ * 기본 스킬 폴더: 이 PC의 기본 위치 중 실제로 스킬이 하나 이상 있는 곳만.
+ * - ~/.claude/skills, ~/.agents/skills
+ * - Claude 데스크톱 앱이 계정의 스킬을 동기화해 둔 곳: ~/.claude/skills/synced/<계정 묶음>(스킬 폴더),
+ *   ~/.claude/plugins/synced/<계정 묶음>/<플러그인>(플러그인마다 하나씩 → 스킬 이름이 '플러그인:스킬'로 보인다)
+ */
 export function defaultSkillDirs(home: string = homedir()): string[] {
-  return [join(home, '.claude', 'skills'), join(home, '.agents', 'skills')].filter((p) => isDir(p) && skillDirsIn(p).dirs.length > 0);
+  const c = join(home, '.claude');
+  const cands = [join(c, 'skills'), join(home, '.agents', 'skills'), ...subdirs(join(c, 'skills', 'synced')), ...subdirs(join(c, 'plugins', 'synced')).flatMap(subdirs)];
+  return cands.filter((p) => isDir(p) && skillDirsIn(p).dirs.length > 0);
 }
 
 function isDir(p: string): boolean { try { return statSync(p).isDirectory(); } catch { return false; } }
@@ -36,7 +46,8 @@ function skillDirsIn(src: string): { name: string; dirs: string[] } {
   if (existsSync(join(r, '.claude-plugin'))) return { name: pluginName(r) ?? slug(basename(r)), dirs: inSkills(join(r, 'skills')) }; // 플러그인 하나
   const direct = inSkills(r);
   const plugins = children(r).map((n) => join(r, n)).filter((d) => existsSync(join(d, '.claude-plugin')));
-  const name = src.endsWith(join('.claude', 'skills')) ? 'user' : src.endsWith(join('.agents', 'skills')) ? 'agents' : slug(basename(r));
+  const name = src.endsWith(join('.claude', 'skills')) ? 'user' : src.endsWith(join('.agents', 'skills')) ? 'agents'
+    : src.includes(join('.claude', 'skills', 'synced')) ? 'claude' : slug(basename(r)); // Claude 앱이 동기화한 계정 스킬
   return { name, dirs: [...direct, ...plugins.flatMap((p) => inSkills(join(p, 'skills')))] };
 }
 

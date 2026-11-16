@@ -88,7 +88,16 @@ describe('스킬 사용', () => {
     mkdirSync(join(home, '.claude', 'skills', 'synced', 'bucket', 'pdf'), { recursive: true });
     writeFileSync(join(home, '.claude', 'skills', 'synced', 'bucket', 'pdf', 'SKILL.md'), '---\nname: pdf\n---\n');
     skill(join(home, '.agents', 'skills'), 'tool');
-    expect(defaultSkillDirs(home)).toEqual([join(home, '.agents', 'skills')]);
+    // Claude 앱 동기화 위치: 계정 묶음(스킬 폴더)과 그 안의 플러그인 하나하나
+    const bucket = join(home, '.claude', 'skills', 'synced', 'bucket');
+    const pb = join(home, '.claude', 'plugins', 'synced', 'acct');
+    mkdirSync(join(pb, 'p1', '.claude-plugin'), { recursive: true }); writeFileSync(join(pb, 'p1', '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'superpowers' }));
+    skill(join(pb, 'p1', 'skills'), 'debugging');
+    mkdirSync(join(pb, 'p2', '.claude-plugin'), { recursive: true }); // 스킬 없는 플러그인은 제외
+    mkdirSync(join(home, '.claude', 'skills', 'synced', '.bucket-x'), { recursive: true }); // 숨김 폴더 제외
+    expect(defaultSkillDirs(home)).toEqual([join(home, '.agents', 'skills'), bucket, join(pb, 'p1')]);
+    const b = prepareSkillBundle(defaultSkillDirs(home), join(home, 'out'))!;
+    expect(b.skills.sort()).toEqual(['agents:tool', 'claude:pdf', 'superpowers:debugging']);
   });
 
   it("CLI 인자: 'Skill' 도구가 있을 때만 --plugin-dir를 넘긴다", () => {
