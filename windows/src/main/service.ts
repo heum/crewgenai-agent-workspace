@@ -3,8 +3,8 @@ import { closeSync, constants as fsc, copyFileSync, existsSync, fstatSync, lstat
 import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
-import { fileSha } from './engine/fsutil';
-import type { Attention, AttentionItem, Learning, LearningFields, DocItem, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
+import { fileSha, isAppTempPath } from './engine/fsutil';
+import type { Attention, AttentionItem, Learning, LearningFields, DocItem, MissionChoice, PendingDecision, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
 import { COMMAND_LEVELS, projectSkillDirs, type CommandLevel } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
@@ -199,7 +199,8 @@ export class Service {
     return this.store.createProject(p);
   }
   updatePlan(id: string, plan: PlanFields) {
-    const p = normalizePlan(plan);
+    // 앱 임시 폴더(격리 복사본 등) 경로는 참고 자료로 저장하지 않는다(지나면 사라지고, 격리 실행의 쓰기를 막음)
+    const p = normalizePlan({ ...plan, referenceDocs: (plan.referenceDocs ?? []).filter((r) => !isAppTempPath(r)), priorOutputs: (plan.priorOutputs ?? []).filter((r) => !isAppTempPath(r)) });
     if (!p.name) throw new Error('프로젝트 이름을 입력하세요.');
     if (!p.folder || !existsSync(p.folder)) throw new Error('연결한 프로젝트 폴더가 없습니다.');
     return this.store.updatePlan(id, p);
@@ -333,6 +334,28 @@ export class Service {
     const order: AttentionItem['kind'][] = ['denied', 'blocked', 'gaps', 'question', 'staff', 'resume', 'review'];
     items.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
     return { items, learningsToReview: this.learnings.toReview() };
+  }
+
+  /** 사용자가 버튼으로 고를 결정 목록(오퍼레이터 질문의 선택지, 근거 부족 항목의 선택지). 추천은 안내만 하고 고르지 않는다. */
+  pendingDecisions(): PendingDecision[] {
+    const out: PendingDecision[] = [];
+    const asChoices = (choices: MissionChoice[] | null | undefined, options: string[] | null | undefined): MissionChoice[] =>
+      choices?.length ? choices : (options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' }));
+    for (const p of this.store.listProjects()) {
+      for (const m of this.missions.list(p.id)) {
+        if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정(근거 부족 항목)은 보여 준다
+        const title = m.prompt.split('\n').map((l) => l.replace(/^#+\s*/, '').trim()).find(Boolean)?.slice(0, 80) ?? '미션';
+        const base = { projectId: p.id, projectName: p.plan.name, missionId: m.id, missionTitle: title, cycle: m.cycle };
+        if (m.status === 'waiting_user' && m.question && (m.questionOptions?.length ?? 0) > 0) {
+          out.push({ ...base, key: `${m.id}|q|${m.cycle}|${m.question.slice(0, 200)}`, kind: 'question', task: `오퍼레이터 질문 · 사이클 ${m.cycle}`, question: m.question, explain: '', doc: '', issue: '', choices: asChoices(m.questionChoices, m.questionOptions), waiting: true });
+        }
+        for (const g of m.gaps ?? []) {
+          if (!g.options?.length) continue;
+          out.push({ ...base, key: `${m.id}|g|${g.doc}|${g.issue}`, kind: 'gap', task: g.doc || '문서 미지정', question: g.issue, explain: g.explain ?? g.need ?? '', doc: g.doc, issue: g.issue, choices: asChoices(g.choices, g.options), waiting: m.status === 'waiting_user' });
+        }
+      }
+    }
+    return out;
   }
 
   /** 배운 것 직접 추가·수정(사용자가 한 것이므로 검토한 것으로 본다) */

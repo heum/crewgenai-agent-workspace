@@ -371,6 +371,7 @@ export interface WorkspaceApi {
   pickSubfolder(base: string): Promise<string | null>; // base 하위 폴더를 상대 경로로
   revealInFinder(path: string): Promise<void>;
   openPath(path: string): Promise<string>;
+  openLocalUrl(url: string): Promise<void>; // 이 컴퓨터(localhost)의 화면 주소만 기본 브라우저로 연다
   previewFile(path: string): Promise<void>; // 격리 창 미리보기
   readTextFile(path: string): Promise<string>;
   // 직원
@@ -412,6 +413,7 @@ export interface WorkspaceApi {
   codexStatus(refresh: boolean): Promise<CodexStatus>;
   listMissions(projectId: ID): Promise<Mission[]>;
   attention(): Promise<Attention>;
+  pendingDecisions(): Promise<PendingDecision[]>;
   listLearnings(): Promise<Learning[]>;
   saveLearning(id: ID | null, fields: LearningFields & { active?: boolean }): Promise<Learning>;
   deleteLearning(id: ID): Promise<void>;
@@ -489,6 +491,18 @@ export type MissionStatus = 'planning' | 'running' | 'evaluating' | 'waiting_use
 /** 루프 다이어그램에서 강조할 현재 단계 */
 export type MissionStage = 'instruction' | 'plan' | 'execute' | 'codex' | 'claude_review' | 'judge' | 'ask_user' | 'done' | 'stopped';
 
+/** 작업이 끝날 때 사용자가 바로 열어 볼 결과물: 파일(문서·스크린샷·코드) 또는 이 컴퓨터의 화면 주소 */
+export interface MissionResult {
+  task: string; // 어떤 작업의 결과인지
+  title: string;
+  kind: 'file' | 'url';
+  path: string; // 파일은 절대 경로, 화면은 http://localhost… 주소
+  relPath: string; // 파일은 프로젝트 기준 경로, 화면은 주소 그대로
+  exists: boolean;
+  changed: string; // 무엇이 달라졌는지
+  check: string; // 무엇을 확인하면 되는지
+}
+
 export interface Mission {
   id: ID;
   projectId: ID;
@@ -508,12 +522,15 @@ export interface Mission {
   staffProposals?: StaffProposal[];
   /** 오퍼레이터가 직접 물은 질문이면 배열(선택형이면 선택지, 아니면 빈 배열). 앱이 만든 안내 문구면 null */
   questionOptions?: string[] | null;
+  questionChoices?: MissionChoice[] | null; // 선택지 설명(고르면 달라지는 것·추천과 이유). 추천은 안내일 뿐 자동으로 고르지 않는다
   denials?: MissionDenial[] | null; // 권한 거부로 멈춘 경우 거부 항목
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
   blockers?: MissionBlocker[] | null; // 에이전트가 스스로 풀 수 없는 실패로 멈춘 경우
   failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
   /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */
   parkedSigs?: string[];
+  results?: MissionResult[]; // 마지막 판단의 '열어 볼 결과물'(작업별)
+  resultsCycle?: number;
   idleCycles?: number; // 반영된 변경 없이 끝난 사이클이 연속 몇 번인가(상한에 넣지 않음, 이어지면 멈추고 물음)
   learnedSeq?: number; // 배운 것을 정리한 마지막 기록 번호
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */
@@ -526,9 +543,12 @@ export interface Mission {
 export interface MissionGap {
   doc: string; issue: string; need: string;
   /** 사용자가 고르면 되는 결정이면 오퍼레이터가 낸 선택지(2~4개) */ options?: string[];
+  /** 선택지 설명(options와 같은 순서) */ choices?: MissionChoice[];
   /** 문서를 읽지 않은 사용자도 알 수 있게 쓴 쉬운 설명(배경·왜 중요한지·고르면 어떻게 되는지) */ explain?: string;
   /** 근거 위치: 프로젝트 폴더 기준 경로(또는 참고 문서 절대 경로)와 줄 번호 */ refs?: MissionRef[];
 }
+/** 사용자가 고를 선택지 */
+export interface MissionChoice { label: string; effect: string; recommended: boolean; why: string; action?: 'stop' } // action=stop: 고르면 미션을 종료
 export interface MissionRef { path: string; line?: number | null }
 /**
  * 오퍼레이터의 직원 제안: 새 직원(포지션) 추가, 기존 직원의 역할·지시 변경. 사용자가 적용해야 반영된다.
@@ -664,3 +684,16 @@ export interface AttentionItem {
   runId?: ID;
 }
 export interface Attention { items: AttentionItem[]; learningsToReview: number }
+/** 사용자가 버튼으로 고를 결정(어느 탭에서든 팝업으로 보여 준다) */
+export interface PendingDecision {
+  key: string;
+  projectId: ID; projectName: string;
+  missionId: ID; missionTitle: string; cycle: number;
+  kind: 'question' | 'gap';
+  task: string; // 어떤 작업·문서의 결정인지
+  question: string; // 무엇을 정해야 하는지
+  explain: string; // 쉬운 설명(있을 때)
+  doc: string; issue: string; // 근거 부족 항목 결정용
+  choices: MissionChoice[];
+  waiting: boolean; // 미션이 이 결정을 기다리며 멈춰 있는가
+}

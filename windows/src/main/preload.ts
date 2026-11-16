@@ -4,12 +4,12 @@ import type { LiveEvent, WorkspaceApi } from '../shared/types';
 
 const methods = [
   'listProjects', 'createProject', 'updatePlan', 'planHistory', 'pickFolder', 'pickFiles', 'pickSubfolder',
-  'revealInFinder', 'openPath', 'previewFile', 'readTextFile',
+  'revealInFinder', 'openPath', 'openLocalUrl', 'previewFile', 'readTextFile',
   'listAgents', 'saveAgent', 'duplicateAgent', 'setAgentActive', 'loadAgentTemplates', 'agentTemplateSets', 'fireAgent',
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',
   'startRun', 'rerunFrom', 'pauseRun', 'resumeRun', 'cancelRun', 'resolveInterrupted', 'listRuns', 'runDetail', 'attemptEvents',
   'submitReview', 'cliStatus', 'pickCliPath', 'openLoginTerminal', 'getSettings', 'saveSettings', 'pickSkillFolder', 'skillSources', 'helpDocs',
-  'codexStatus', 'listMissions', 'attention', 'listLearnings', 'saveLearning', 'deleteLearning', 'markLearningsReviewed', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryParked', 'decideMission', 'refSnippet', 'resolveStaffProposal', 'retryMissionLimit', 'workingNow',
+  'codexStatus', 'listMissions', 'attention', 'pendingDecisions', 'listLearnings', 'saveLearning', 'deleteLearning', 'markLearningsReviewed', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryParked', 'decideMission', 'refSnippet', 'resolveStaffProposal', 'retryMissionLimit', 'workingNow',
 ] as const;
 
 const api: Record<string, unknown> = {};

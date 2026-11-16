@@ -17,7 +17,7 @@ import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
 import { BUILTIN_CHECK, checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { commandNote, levelNote, materializeLink, referencedRepos, repoDirs, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
-import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
+import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, fileSha, isAppTempPath, isolatedDir, prepareIsolated, snapshot, SNAPSHOT_LIMIT, snapshotTruncated, type IsoState } from './fsutil';
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { buildReport } from './report';
@@ -910,7 +910,7 @@ export class Engine {
     // 참고 자료: 프로젝트 밖 '폴더'만 --add-dir로(읽기) 연다. '파일'은 그 파일만 읽기 전용 사본으로 준다(부모 폴더 전체를 열지 않음).
     // 프로젝트를 포함하는 상위 폴더는 열지 않는다(상위 전체가 Bash 쓰기 영역이 되므로).
     const projReal = realFolder(plan.folder);
-    const refs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs])].filter((p) => isAbsolute(p) && !within(p, plan.folder) && existsSync(p));
+    const refs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs])].filter((p) => isAbsolute(p) && !within(p, plan.folder) && existsSync(p) && !isAppTempPath(p));
     const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
     const ancestor = (p: string) => { const r = realFolder(p); return projReal === r || projReal.startsWith(r + sep); };
     const readDirs = refs.filter((p) => isDir(p) && !ancestor(p));

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { referencedRepos } from '../src/main/autopilot';
 import { absRules, buildClaudeArgs } from '../src/main/cli/claudeCli';
-import { gitInit, tmpProject } from './helpers';
+import { gitInit, mkService, plan, tmpProject } from './helpers';
 
 describe('사이클 줄이기', () => {
   it('수정 범위 규칙은 작업 폴더 절대 경로로도 만든다(Bash에서 cd 해도 범위 안 쓰기가 거부되지 않게)', () => {
@@ -25,5 +25,81 @@ describe('사이클 줄이기', () => {
     for (const n of ['api-server', 'web', 'docs-repo']) { mkdirSync(join(root, n)); gitInit(join(root, n)); }
     expect(referencedRepos(root, ['docs-repo/stage01/out.md', 'api-server/scripts/gradle.sh test 를 실행한다'])).toEqual(['api-server', 'docs-repo']);
     expect(referencedRepos(root, ['my-web/x 와 webapp 은 다른 이름'])).toEqual([]);
+  });
+});
+
+describe('작업별 결과물', () => {
+  it('판단이 적은 결과물 중 프로젝트 안 파일과 이 컴퓨터 화면 주소만 남긴다', async () => {
+    const { resolveResults } = await import('../src/main/mission');
+    const { writeFileSync, symlinkSync } = await import('node:fs');
+    const d = tmpProject();
+    mkdirSync(join(d, 'docs'), { recursive: true }); writeFileSync(join(d, 'docs', 'a.md'), 'A');
+    const outside = tmpProject(); writeFileSync(join(outside, 'secret.txt'), 'S');
+    symlinkSync(join(outside, 'secret.txt'), join(d, 'docs', 'link.txt'));
+    const rs = resolveResults(d, [
+      { task: 'T1', title: '문서', path: 'docs/a.md', changed: '추가', check: '표 확인' },
+      { task: 'T1', title: '아직 없음', path: 'docs/none.png', changed: '', check: '' },
+      { task: 'T2', title: '화면', path: 'http://localhost:3211/review/login', changed: '', check: '' },
+      { task: 'T2', title: '외부', path: 'https://example.com/x', changed: '', check: '' },
+      { task: 'T3', title: '밖', path: '../etc/passwd', changed: '', check: '' },
+      { task: 'T3', title: '링크로 밖', path: 'docs/link.txt', changed: '', check: '' },
+    ]);
+    expect(rs.map((r) => [r.title, r.kind, r.exists])).toEqual([['문서', 'file', true], ['아직 없음', 'file', false], ['화면', 'url', true]]);
+    expect(rs[0].relPath).toBe('docs/a.md');
+    expect(rs[0].check).toBe('표 확인');
+  });
+});
+
+describe('격리 복사본 쓰기 막힘(실제 미션에서 발견)', () => {
+  it('앱 임시 폴더(격리 복사본 등) 경로는 참고 자료로 저장·사용하지 않는다', async () => {
+    const { isAppTempPath, isolatedDir } = await import('../src/main/engine/fsutil');
+    const { tmpdir } = await import('node:os');
+    const iso = isolatedDir('x:y');
+    expect(isAppTempPath(iso)).toBe(true);
+    expect(isAppTempPath(join(iso, '..'))).toBe(true); // 격리 복사본 루트
+    expect(isAppTempPath(realpathSync(tmpdir()) + '/crewgenai-iso/abc/doc.md')).toBe(true);
+    expect(isAppTempPath(join(tmpdir(), 'other', 'a.md'))).toBe(false);
+    expect(isAppTempPath(tmpProject())).toBe(false);
+  });
+
+  it('작업 폴더를 포함하는 상위 폴더는(링크 경로·실제 경로가 달라도) 참고 폴더로 열지 않는다(쓰기 금지도, 쓰기 허용도 되지 않게)', async () => {
+    const { tmpdir } = await import('node:os');
+    const parent = join(tmpdir(), `crewgenai-iso-test-${Date.now()}`); mkdirSync(join(parent, 'w'), { recursive: true });
+    const cwd = join(parent, 'w'); // /var/… 형태
+    const args = buildClaudeArgs({ prompt: 'x', appendSystemPrompt: '', cwd, tools: ['Read', 'Bash'], editScopes: [], allowedCommands: [], readDirs: [realpathSync(parent), '/opt/ref'], sessionId: null, resumeSessionId: null, jsonSchema: null, model: '', maxBudgetUsd: null, commandLevel: 'medium' });
+    const s = JSON.parse(args[args.indexOf('--settings') + 1]);
+    expect(s.sandbox.filesystem.denyWrite).toEqual(['/opt/ref']);
+    expect(args.filter((a, i) => args[i - 1] === '--add-dir')).toEqual(['/opt/ref']);
+  });
+
+  it('기획 저장 때 참고 자료에서 앱 임시 폴더 경로를 뺀다(예전에 들어간 경로도 다음 저장 때 정리)', async () => {
+    const { isolatedDir } = await import('../src/main/engine/fsutil');
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir));
+    const keep = tmpProject();
+    const saved = svc.updatePlan(p.id, { ...p.plan, referenceDocs: [keep, isolatedDir('a:b'), join(isolatedDir('a:b'), '..')], priorOutputs: [join(isolatedDir('c:d'), 'x.md')] });
+    expect(saved.plan.referenceDocs).toEqual([keep]);
+    expect(saved.plan.priorOutputs).toEqual([]);
+    svc.close();
+  });
+});
+
+describe('결정 팝업 선택지', () => {
+  it('선택지는 4개까지, 추천은 하나만 남기고 이유는 추천 안에만 둔다', async () => {
+    const { cleanChoices } = await import('../src/main/mission');
+    const c = cleanChoices([
+      { label: 'A안', effect: 'A로 고친다', recommended: true, why: '근거가 분명' },
+      { label: 'B안', effect: 'B로 고친다', recommended: true, why: '이것도' },
+      { label: 'A안', effect: '중복', recommended: false, why: '' },
+      { label: '', effect: '빈 문구', recommended: false, why: '' },
+      { label: 'C안', effect: '', recommended: false, why: '무시' },
+      { label: 'D안', effect: '', recommended: false, why: '' },
+      { label: 'E안', effect: '', recommended: false, why: '' },
+    ]);
+    expect(c.map((x) => x.label)).toEqual(['A안', 'B안', 'C안', 'D안']);
+    expect(c.filter((x) => x.recommended).map((x) => x.label)).toEqual(['A안']);
+    expect(c[1].why).toBe('');
+    expect(c[2].why).toBe('');
+    expect(cleanChoices('x')).toEqual([]);
   });
 });

@@ -10,6 +10,7 @@ import RunTab from './components/RunTab';
 import ReviewTab from './components/ReviewTab';
 import MissionTab from './components/MissionTab';
 import OfficeTab from './components/OfficeTab';
+import DecisionCenter from './components/DecisionCenter';
 
 type Tab = 'mission' | 'plan' | 'agents' | 'office' | 'flow' | 'run' | 'review';
 const TABS: { id: Tab; label: string }[] = [
@@ -193,6 +194,7 @@ export default function App() {
           </div>
         )}
       </main>
+      <DecisionCenter onOpenMission={(projectId, missionId) => { setSelectedId(projectId); setTab('mission'); setFocusMission({ id: missionId, n: Date.now() }); }} />
     </div>
   );
 }

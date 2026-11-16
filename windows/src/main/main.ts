@@ -108,6 +108,7 @@ function register() {
   });
   h('revealInFinder', (p: string) => { guard(p); shell.showItemInFolder(p); });
   h('openPath', (p: string) => { guard(p); return shell.openPath(p); });
+  h('openLocalUrl', (u: string) => { if (typeof u !== 'string' || !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i.test(u)) throw new Error('이 컴퓨터(localhost)의 화면 주소만 열 수 있습니다.'); return shell.openExternal(u); });
   h('previewFile', (p: string) => previewWindow(p));
   h('readTextFile', (p: string) => { guard(p); if (statSync(p).size > 2_000_000) throw new Error('파일이 너무 커서 미리 볼 수 없습니다.'); return readFileSync(p, 'utf8'); });
   h('listAgents', (id, includeFired) => s().store.listAgents(id, !!includeFired));
@@ -154,6 +155,7 @@ function register() {
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));
   h('attention', () => s().attention());
+  h('pendingDecisions', () => s().pendingDecisions());
   h('listLearnings', () => s().learnings.list());
   h('saveLearning', (id, f) => { const r = s().saveLearning(id, f); emit({ type: 'learning' }); return r; });
   h('deleteLearning', (id) => { s().learnings.remove(id); emit({ type: 'learning' }); });

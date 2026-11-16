@@ -1815,3 +1815,25 @@ textarea.input {
 
 .report-card { margin: 8px 0; }
 .report-card .report-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+.results-card { margin: 8px 0; border-left: 3px solid var(--accent, #3b82f6); }
+.results-card .report-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+.results-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.results-list li { padding: 6px 0; border-bottom: 1px solid var(--border, #e5e7eb); }
+.results-list li:last-child { border-bottom: 0; }
+.results-fb textarea { flex: 1; min-width: 0; }
+.result-view { max-height: 70vh; overflow: auto; margin-top: 8px; }
+.decision-badge { position: fixed; right: 20px; bottom: 20px; z-index: 900; padding: 10px 16px; border-radius: 999px; border: 0; background: var(--warn, #d97706); color: #fff; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.18); cursor: pointer; }
+.decision-modal { max-width: 720px; width: 92vw; }
+.decision-body { display: flex; flex-direction: column; gap: 10px; }
+.decision-where { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--bg-soft, #f5f6f8); }
+.decision-q { font-weight: 600; white-space: pre-wrap; }
+.decision-explain { white-space: pre-wrap; color: var(--muted, #555); }
+.decision-rec { padding: 6px 10px; border-radius: 8px; background: var(--info-soft, #eef4ff); }
+.decision-choices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.decision-choice { width: 100%; text-align: left; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px; }
+.decision-choices li.is-rec .decision-choice { border-color: var(--accent, #3b82f6); }
+.decision-label { font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.decision-effect { color: var(--muted, #555); white-space: normal; }
+.decision-own .input { flex: 1; min-width: 0; }
+.decision-done { padding: 8px 10px; border-radius: 8px; background: var(--ok-soft, #ecfdf3); margin-bottom: 8px; }
+.decision-nav { justify-content: flex-end; align-items: center; }

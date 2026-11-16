@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
@@ -17,6 +17,9 @@ import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
 
+/** 사용자가 고를 선택지: 고르면 무엇이 달라지는지(effect), 추천 여부와 이유. 추천은 안내일 뿐 자동으로 고르지 않는다. */
+const CHOICE_ITEMS = { type: 'array', items: { type: 'object', required: ['label', 'effect', 'recommended', 'why'], properties: {
+  label: { type: 'string' }, effect: { type: 'string' }, recommended: { type: 'boolean' }, why: { type: 'string' } } } };
 const STAFF_ITEMS = { type: 'array', items: { type: 'object', required: ['kind', 'agentCode', 'name', 'role', 'instructions', 'reason'], properties: {
   kind: { type: 'string', enum: ['add', 'update'] }, agentCode: { type: 'string' }, name: { type: 'string' }, role: { type: 'string' }, instructions: { type: 'string' },
   workPaths: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' } } } };
@@ -25,6 +28,13 @@ const ASK_RULE = '- 사용자에게 묻는 것(gaps·question)은 사용자만 �
 /** 준비·정리 작업의 끝: 완벽이 아니라 다음 일을 시작할 수 있을 만큼. */
 const ENOUGH_RULE = '- 기준 정리·자료 대조·검증 같은 준비 작업은 완벽을 목표로 하지 않는다. 다음 단계(개발·구현)를 시작할 수 있을 만큼 되면 넘어가고, 남은 정리는 개발 중 필요할 때 한다. 같은 자료를 다시 검증하는 사이클을 되풀이하지 않는다.';
 /** 사용자에게 수작업을 맡기지 않는다: 직원이 못 하는 일은 보류하고 다음 일로 간다. */
+/** 작업마다 사용자가 바로 열어 볼 결과물을 남긴다(계획·판단 공통) */
+const RESULT_RULE = [
+  '- 작업마다 사용자가 바로 열어 보고 확인할 수 있는 결과물을 남긴다. 작업 성격에 맞게: 화면 작업은 결과 화면 스크린샷(png) 또는 열어 볼 수 있는 html, 기능·서버 작업은 시험 결과 요약 문서와 바뀐 코드 파일, 설계·문서 작업은 그 문서. 계획의 outputs에 이 결과물을 넣는다.',
+  '- 결과물이 사용자가 볼 수 없는 준비 작업(대조·검증 기록 정리)만으로 사이클을 채우지 않는다.',
+].join('\n');
+/** 판단: 작업별 결과물 목록 */
+const RESULTS_RULE = '- results: 이번 사이클 작업마다 사용자가 열어 볼 결과물을 넣는다. path는 프로젝트 폴더 기준 상대 경로(실제로 있는 파일만) 또는 이 컴퓨터에서 실행 중인 화면 주소(http://localhost:포트/…, 실제로 띄운 경우만). changed에는 무엇이 달라졌는지 한 문장, check에는 사용자가 열어서 확인할 것(어디를 보고 무엇이 맞으면 되는지) 한 문장을 쓴다. 실패한 작업도 확인할 결과물이 있으면 넣고 changed에 실패를 밝힌다. 진행 보고(summary)에는 결과물 목록을 다시 쓰지 않는다.';
 /** 진전 없는 사이클이 이만큼 이어지면 멈추고 묻는다 */
 const IDLE_LIMIT = 2;
 const NO_MANUAL_RULE = '- 사용자에게 수작업을 맡기지 않는다: 앱에서 직원을 대신 실행하기, 터미널 명령 실행, 결과·원문 붙여넣기, 파일 직접 저장을 요청하거나 질문 선택지로 내지 않는다. 직원 권한·도구로 할 수 없는 일은 막힘(이유)으로 진행 보고에 남기고, 그 일 없이 할 수 있는 다음 개발 작업으로 넘어간다. 같은 막힘 때문에 같은 질문을 되풀이하지 않는다. 예외는 사용자만 할 수 있는 일(본인 계정 로그인, 비밀값 입력, 실제 메일·결제 같은 외부 발송 승인)뿐이며, 이때는 무엇을 왜 하는지 한 줄로 요청한다. 리뷰의 후속 항목([후속])은 다음 작업 목록에 기록만 하고 이번 작업을 다시 하지 않는다.';
@@ -43,8 +53,8 @@ const REPORT_RULE = [
 const PLAN_SCHEMA = {
   type: 'object', required: ['summary', 'question', 'gaps', 'tasks'],
   properties: {
-    summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, staffProposals: STAFF_ITEMS,
-    gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, explain: { type: 'string' },
+    summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS,
+    gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, choices: CHOICE_ITEMS, explain: { type: 'string' },
       refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
       properties: { title: { type: 'string' }, agentCode: { type: 'string' }, instructions: { type: 'string' }, writeScope: { type: 'array', items: { type: 'string' } },
@@ -55,12 +65,14 @@ const PLAN_SCHEMA = {
 };
 const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
-  properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' } },
+  properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
+    results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' } } } } },
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
-interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; gaps?: MissionGap[]; tasks: PlanTask[] }
-interface Judge { staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; nextFocus: string }
+interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
+interface RawResult { task?: string; title?: string; path?: string; changed?: string; check?: string }
+interface Judge { results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터가 낸 선택지 정리: 빈 값·중복을 빼고 최대 4개, 각 200자 */
 function cleanOptions(v: unknown): string[] {
@@ -68,6 +80,24 @@ function cleanOptions(v: unknown): string[] {
   const out: string[] = [];
   for (const x of v) { const t = String(x ?? '').trim().slice(0, 200); if (t && !out.includes(t)) out.push(t); if (out.length >= 4) break; }
   return out;
+}
+/** 선택지 정리: 최대 4개, 추천은 하나만(처음 것). 선택지 문구가 없으면 버린다. */
+export function cleanChoices(v: unknown): MissionChoice[] {
+  if (!Array.isArray(v)) return [];
+  const out: MissionChoice[] = []; let rec = false;
+  for (const x of v as Record<string, unknown>[]) {
+    const label = redact(String(x?.label ?? '').trim()).slice(0, 200);
+    if (!label || out.some((c) => c.label === label)) continue;
+    const recommended = !!x?.recommended && !rec; if (recommended) rec = true;
+    out.push({ label, effect: redact(String(x?.effect ?? '').trim()).slice(0, 400), recommended, why: recommended ? redact(String(x?.why ?? '').trim()).slice(0, 300) : '' });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+/** 질문 선택지: 설명이 있는 선택지를 우선하고, 없으면 예전 문구 목록 */
+function pickChoices(choices: unknown, options: unknown): { opts: string[]; choices: MissionChoice[] } {
+  const ch = cleanChoices(choices);
+  return ch.length ? { opts: ch.map((c) => c.label), choices: ch } : { opts: cleanOptions(options), choices: [] };
 }
 const gapKey = (g: { doc: string; issue: string }) => `${g.doc.trim()}|${g.issue.trim()}`;
 
@@ -290,7 +320,7 @@ export class MissionRunner {
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, questionOptions: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
+    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
     void this.loop(id);
     return next;
   }
@@ -701,10 +731,10 @@ export class MissionRunner {
         this.collectStaff(id, plan.staffProposals, agents);
         const gaps = (Array.isArray(plan.gaps) ? plan.gaps : []).filter((g) => g && (String(g.issue ?? '').trim() || String(g.need ?? '').trim()))
           .slice(0, 12).map((g): MissionGap => {
-            const o = cleanOptions(g.options); const explain = String(g.explain ?? '').trim().slice(0, 1200);
+            const pc = pickChoices((g as { choices?: unknown }).choices, g.options); const o = pc.opts; const explain = String(g.explain ?? '').trim().slice(0, 1200);
             const refs = (Array.isArray(g.refs) ? g.refs : []).filter((r) => r && String(r.path ?? '').trim()).slice(0, 4)
               .map((r) => ({ path: String(r.path).trim().slice(0, 500), line: Number.isInteger(r.line) && Number(r.line) > 0 ? Number(r.line) : null }));
-            return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), ...(o.length ? { options: o } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
+            return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), ...(o.length ? { options: o } : {}), ...(pc.choices.length ? { choices: pc.choices } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
           })
           .filter((g) => !(this.get(id).decisions ?? []).some((d) => gapKey(d) === gapKey(g))); // 이미 결정한 항목은 다시 묻지 않는다(계획 중에 고른 결정 포함)
         // 사용자가 '나중에'로 남긴 항목은 새 계획이 다른 항목을 내도 결정·해결 전까지 유지한다
@@ -718,15 +748,15 @@ export class MissionRunner {
         } else if (gaps.length) {
           // 근거가 없어 시작할 수 있는 작업이 하나도 없음: 채워야 할 부분을 알려 주고 멈춘다(문서를 보완한 뒤 이어서 진행)
           const q = `근거 문서를 보완해 주세요.${plan.question.trim() ? ` ${plan.question.trim()}` : ''}\n${gaps.map((g) => `- [${g.doc || '문서 미지정'}] ${g.issue}${g.need ? ` → 채울 내용: ${g.need}` : ''}`).join('\n')}`;
-          const qo = plan.question.trim() ? cleanOptions(plan.questionOptions) : null; // 오퍼레이터가 함께 물은 질문은 근거 부족 항목과 같이 보여 준다
+          const qc = plan.question.trim() ? pickChoices(plan.questionChoices, plan.questionOptions) : null; const qo = qc ? qc.opts : null; // 오퍼레이터가 함께 물은 질문은 근거 부족 항목과 같이 보여 준다
           this.event(m, 'question', q, { gaps });
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, gaps, questionOptions: qo });
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', question: q, gaps, questionOptions: qo, questionChoices: qc?.choices.length ? qc.choices : null });
           return;
         }
         if (plan.question.trim() || plan.tasks.length === 0) {
-          const opts = plan.question.trim() ? cleanOptions(plan.questionOptions) : [];
+          const pq = plan.question.trim() ? pickChoices(plan.questionChoices, plan.questionOptions) : { opts: [], choices: [] }; const opts = pq.opts;
           this.event(m, 'question', plan.question.trim() || '진행할 작업을 정하지 못했습니다. 추가 지시가 필요합니다.', opts.length ? { options: opts } : undefined);
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', question: plan.question.trim() || '진행할 작업을 정하지 못했습니다. 무엇을 할지 알려 주세요.', questionOptions: opts });
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', question: plan.question.trim() || '진행할 작업을 정하지 못했습니다. 무엇을 할지 알려 주세요.', questionOptions: opts, questionChoices: pq.choices.length ? pq.choices : null });
           return;
         }
 
@@ -827,6 +857,7 @@ export class MissionRunner {
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_judge', `판단: ${judge.decision === 'continue' ? '계속' : judge.decision === 'done' ? '완료' : '사용자 확인'} — ${judge.summary}`, judge);
         this.collectStaff(id, judge.staffProposals, this.d.ensureAgents(m.projectId).filter((a) => a.active));
+        m = this.set(id, { results: resolveResults(project.plan.folder, judge.results), resultsCycle: m.cycle });
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
           this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}${open ? `\n(보류한 업무 ${open}건은 확인이 필요합니다)` : ''}` });
@@ -835,8 +866,8 @@ export class MissionRunner {
           return;
         }
         if (judge.decision === 'ask_user') {
-          const opts = judge.question ? cleanOptions(judge.questionOptions) : [];
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: judge.question || judge.summary, questionOptions: opts });
+          const jq = judge.question ? pickChoices(judge.questionChoices, judge.questionOptions) : { opts: [], choices: [] }; const opts = jq.opts;
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: judge.question || judge.summary, questionOptions: opts, questionChoices: jq.choices.length ? jq.choices : null });
           this.event(m, 'question', judge.question || judge.summary);
           return;
         }
@@ -853,7 +884,11 @@ export class MissionRunner {
         else m = this.set(id, { idleCycles: 0 });
         if (m.cycle >= m.maxCycles) {
           const q = `사이클 ${m.cycle}회를 진행했습니다(설정 상한). 오퍼레이터 판단: ${judge.summary}. 다음 초점: ${judge.nextFocus}. 계속 진행할까요?`;
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: q });
+          const capChoices: MissionChoice[] = [
+            { label: '계속 진행', effect: `사이클 상한을 늘려 다음 초점(${judge.nextFocus.slice(0, 120)})부터 이어서 진행합니다.`, recommended: true, why: '오퍼레이터가 남은 일이 분명하고 사용자 확인 없이 진행할 수 있다고 판단했습니다.' },
+            { label: '여기서 종료', effect: '미션을 종료합니다. 지금까지의 결과물과 기록은 그대로 남고, 나중에 이어서 다시 시작할 수 있습니다.', recommended: false, why: '', action: 'stop' },
+          ];
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: q, questionOptions: capChoices.map((c) => c.label), questionChoices: capChoices });
           this.event(m, 'question', q, { cap: true });
           return;
         }
@@ -997,15 +1032,15 @@ export class MissionRunner {
       '- outputs의 path는 만들 파일 경로다. 여러 파일을 담는 폴더를 산출물로 하려면 폴더 경로를 쓰고, 그 안 파일의 형식을 format에 쓴다(폴더 안에 그 형식 파일이 하나 이상 있어야 통과). 형식을 가리지 않으면 any.',
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
-      "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 권한을 허용할지·사용자가 직접 실행할지, 유지·되돌림 등)이면 options에 2~4개의 구체적인 선택지를 쓴다. 각 선택지는 고르면 무엇을 하게 되는지 한 문장으로 쓴다(예: 'HTML 기준 유지 — 제품을 HTML에 맞춰 고친다'). '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
-      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE,
+      "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 유지·되돌림, 범위·우선순위 등)이면 choices에 2~4개의 선택지를 쓴다: label(예: 'HTML 기준 유지'), effect(고르면 무엇이 달라지는지 쉬운 한 문장, 예: '제품 화면을 HTML에 맞춰 고친다'), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장). 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 선택지로 내지 않는다. '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
+      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULT_RULE,
       '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
       ...(this.d.autoAssist?.() ? [`- 자동 처리(앱이 함): 직원 변경은 dev·main에 커밋하지 않고 작업 브랜치 ${workBranchName(m.id)}에 커밋된다(push·PR·병합은 사용자). 따라서 저장소가 dev·main이라는 이유로 작업을 보류하거나 브랜치 생성을 확인 필요로 올리지 않는다. Bash를 가진 직원에게는 저장소에 있는 시험 명령(scripts/gradle.sh·scripts/check.sh·npm check)이 자동 허용된다(네트워크 없음).`] : []),
       '- needs: 작업에 Bash 명령이 필요하면 commands에 실제 실행할 명령을, 프로젝트 폴더 밖에서 읽어야 하는 파일·폴더가 있으면 readPaths에 절대 경로를 쓴다. 담당 직원에게 허용되지 않은 것이 있으면 그 작업은 실행하지 않고 사용자 확인으로 돌린다. 필요 없으면 빈 배열.',
       '- 이 PC(Windows판)에서는 직원이 Bash 명령을 쓸 수 없다. 명령이 꼭 필요한 일은 needs.commands에 적어 사용자에게 맡긴다.',
-      '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다. 그렇지 않으면 question은 빈 문자열.',
+      '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만). 그렇지 않으면 question은 빈 문자열.',
       '- 이전 사이클의 결과·판단을 이어받아 남은 일만 계획한다. 작업은 1~4개로 작게 나눈다.',
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
@@ -1106,10 +1141,10 @@ export class MissionRunner {
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
       '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다.',
-      '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionOptions에 2~4개의 구체적인 선택지를 쓴다.',
+      '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
-      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE,
+      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULTS_RULE,
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
       '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',
@@ -1151,4 +1186,29 @@ export class MissionRunner {
     if (!v) throw new Error('오퍼레이터가 구조화된 결과를 돌려주지 않았습니다.');
     return v;
   }
+}
+
+const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i;
+
+/** 판단이 적은 결과물을 확인한다: 화면 주소는 이 컴퓨터(localhost)만, 파일은 프로젝트 폴더 안(링크를 푼 실제 경로 기준)만. */
+export function resolveResults(folder: string, raw: unknown): MissionResult[] {
+  const out: MissionResult[] = [];
+  let root = folder; try { root = realpathSync(folder); } catch { /* 폴더 없음 */ }
+  for (const r of (Array.isArray(raw) ? raw : []).slice(0, 20) as RawResult[]) {
+    const p = String(r?.path ?? '').trim();
+    if (!p) continue;
+    const base = { task: String(r.task ?? '').slice(0, 200), title: String(r.title ?? '').slice(0, 200) || p.slice(0, 200), changed: redact(String(r.changed ?? '')).slice(0, 600), check: redact(String(r.check ?? '')).slice(0, 600) };
+    if (/^[a-z]+:\/\//i.test(p)) {
+      if (LOCAL_URL.test(p)) out.push({ ...base, kind: 'url', path: p, relPath: p, exists: true });
+      continue; // 외부 주소는 넣지 않는다
+    }
+    const abs = isAbsolute(p) ? resolve(p) : resolve(folder, p);
+    let real = abs; let exists = false;
+    try { real = realpathSync(abs); exists = statSync(real).isFile() || statSync(real).isDirectory(); } catch { exists = false; }
+    const rel = relative(root, real);
+    const relLex = relative(resolve(folder), abs);
+    if ((exists ? rel : relLex).startsWith('..') || isAbsolute(exists ? rel : relLex)) continue; // 프로젝트 밖
+    out.push({ ...base, kind: 'file', path: exists ? real : abs, relPath: (exists ? rel : relLex).split(sep).join('/'), exists });
+  }
+  return out;
 }

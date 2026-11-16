@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname as _dirname, extname, join, relative, sep } from 'node:path';
+import { dirname as _dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ArtifactKind, OutputSpec } from '../../shared/types';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.next', 'DerivedData', '.gradle', '.idea', '.DS_Store', '.crewgenai']);
@@ -96,6 +96,18 @@ const ISO_SKIP = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__'
 const ISO_LINK = ['node_modules', '.venv', '.gradle']; // 의존성 폴더는 링크(읽기용, 저장소 시험 명령용). 변경 탐지 대상이 아니다.
 /** 여러 저장소 모드에서 연결 폴더 바로 아래의 숨김 도구 폴더(예: 공용 JDK·Node)는 복사하지 않고 링크한다(읽기용). */
 const rootToolDir = (name: string) => name.startsWith('.') && !['.git', '.claude', '.DS_Store'].includes(name);
+
+/** 앱이 실행 중에 만드는 임시 폴더(격리 복사본·참고 사본·Codex 작업 폴더) 안의 경로인가. 이런 경로는 참고 자료로 쓰지 않는다(지나면 사라지고, 격리 복사본 쓰기를 막게 됨). */
+export function isAppTempPath(p: string): boolean {
+  const real = (x: string) => { try { return realpathSync(x); } catch { return resolve(x); } };
+  const rp = real(p);
+  for (const b of new Set([real(tmpdir()), resolve(tmpdir())])) {
+    const rel = relative(b, rp);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+    if (/^crewgenai-(iso|refs|codex)$/.test(rel.split(/[\\/]/)[0])) return true;
+  }
+  return false;
+}
 
 export function isolatedDir(key: string): string {
   return join(tmpdir(), 'crewgenai-iso', createHash('sha256').update(key).digest('hex').slice(0, 16));

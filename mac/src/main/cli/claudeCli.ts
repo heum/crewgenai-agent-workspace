@@ -130,6 +130,12 @@ function realPathOf(p: string): string {
   return p;
 }
 
+/** a가 b 자신이거나 b를 포함하는가(받은 경로·실제 경로 모두로 비교) */
+function contains(a: string, b: string): boolean {
+  const pairs: [string, string][] = [[a, b], [realPathOf(a), realPathOf(b)]];
+  return pairs.some(([x, y]) => { const xx = x.replace(/\/+$/, ''); return y === xx || y.startsWith(xx + '/'); });
+}
+
 export function absRules(rule: string, cwd: string): string[] {
   const m = rule.match(/^(\w+)\(\.\/(.*)\)$/);
   if (!m || !cwd.startsWith('/')) return [rule];
@@ -141,6 +147,8 @@ export function absRules(rule: string, cwd: string): string[] {
 export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const writer = spec.tools.includes('Edit') || spec.tools.includes('Write');
   const tools = [...new Set(spec.tools)];
+  // 작업 폴더를 포함하는 상위 폴더는 참고 폴더로 열지 않는다(열면 쓰기 금지가 작업 폴더까지 막거나, 빼면 상위 전체가 쓰기 영역이 된다). 링크를 푼 실제 경로로도 비교한다.
+  const readDirs = spec.readDirs.filter((d) => !contains(d, spec.cwd));
   const allow: string[] = ['Read', 'Grep', 'Glob'];
   if (writer) allow.push(...spec.editScopes.map(scopeRule).flatMap((r) => absRules(r, spec.cwd)));
   if (tools.includes('Bash')) for (const c of spec.allowedCommands.map((x) => x.trim()).filter(Boolean)) allow.push(`Bash(${c})`, `Bash(${c} *)`);
@@ -157,7 +165,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
       // Claude 인증 정보는 CLI 자신만 쓰고, 격리된 명령(저장소 스크립트 등)에서는 지운다
       credentials: { envVars: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' as const })) },
       // 참고 자료 폴더(--add-dir)는 읽기 전용: Bash 하위 프로그램의 쓰기도 막는다
-      filesystem: { denyWrite: spec.readDirs.filter((d) => !(spec.cwd === d || spec.cwd.startsWith(d.replace(/\/+$/, '') + '/'))), // 프로젝트를 포함하는 상위 폴더는 제외
+      filesystem: { denyWrite: readDirs, // 읽기 전용 폴더(작업 폴더를 포함하는 상위 폴더는 아예 열지 않는다)
         ...(spec.writeDirs?.length ? { allowWrite: [...new Set(spec.writeDirs)] } : {}) } },
   };
   const args = [
@@ -170,7 +178,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
     '--settings', JSON.stringify(settings),
     '--append-system-prompt', spec.appendSystemPrompt,
   ];
-  for (const d of spec.readDirs) args.push('--add-dir', d);
+  for (const d of readDirs) args.push('--add-dir', d);
   if (tools.includes('Skill')) for (const d of spec.pluginDirs ?? []) args.push('--plugin-dir', d);
   if (spec.resumeSessionId) args.push('--resume', spec.resumeSessionId);
   else if (spec.sessionId) args.push('--session-id', spec.sessionId);
