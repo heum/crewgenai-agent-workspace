@@ -4,6 +4,8 @@ import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha, isAppTempPath } from './engine/fsutil';
+import { DemoManager, demoInfo, readManifest } from './demo';
+import { isCharacterId } from '../shared/characterIds';
 import type { Attention, AttentionItem, Learning, LearningFields, DocItem, MissionChoice, PendingDecision, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
 import { COMMAND_LEVELS, projectSkillDirs, type CommandLevel } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
@@ -65,8 +67,10 @@ export class Service {
   private codex: CodexStatus | null = null;
   private memSecret: string | null = null;
 
+  readonly demo: DemoManager;
   constructor(private d: ServiceDeps) {
     this.store = new Store(d.dbFile);
+    this.demo = new DemoManager(this.store.db, join(dirname(d.dbFile), 'demo-logs'));
     this.learnings = new LearningStore(this.store.db);
     const saver = new NodeSqliteSaver(this.store.db);
     // 실행 이벤트를 화면으로 보내면서 미션 루프 다이어그램의 현재 단계도 갱신한다
@@ -211,7 +215,8 @@ export class Service {
     if (!f.name.trim()) throw new Error('직원 이름을 입력하세요.');
     if (f.reviewerAgentId && f.reviewerAgentId === agentId) throw new Error('자기 자신을 독립 검토 담당으로 지정할 수 없습니다.');
     for (const w of f.workPaths ?? []) if (escapes(w)) throw new Error(`프로젝트 밖을 가리키는 작업 폴더는 쓸 수 없습니다: ${w}`);
-    return this.store.saveAgent(projectId, agentId, { ...f, timeoutSec: Math.max(10, Number(f.timeoutSec) || 1800), maxRetries: Math.max(0, Math.min(10, Number(f.maxRetries) || 0)) });
+    const character = isCharacterId(f.character) ? f.character : undefined; // 캐릭터 번호는 정해진 20종만
+    return this.store.saveAgent(projectId, agentId, { ...f, character, timeoutSec: Math.max(10, Number(f.timeoutSec) || 1800), maxRetries: Math.max(0, Math.min(10, Number(f.maxRetries) || 0)) });
   }
   duplicateAgent(agentId: string): Agent {
     const a = this.store.getAgent(agentId);
@@ -511,7 +516,28 @@ export class Service {
     return roots.filter(Boolean).some((r) => { const rr = real(r); return abs === rr || abs.startsWith(rr.endsWith(sep) ? rr : rr + sep); });
   }
 
-  close() { void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }
+  // ───── 시연 ─────
+  private demoService(projectId: string, serviceId: string) {
+    const plan = this.store.getProject(projectId).plan;
+    const man = readManifest(plan);
+    const s = man.services.find((x) => x.id === serviceId);
+    if (!s) throw new Error(`시연 목록에 없는 서비스입니다: ${serviceId}${man.errors.length ? ` (목록 오류: ${man.errors[0]})` : ''}`);
+    return { plan, man, s };
+  }
+  demoInfo(projectId: string) { return demoInfo(this.demo, projectId, this.store.getProject(projectId).plan); }
+  /** 사용자가 시연 명령 실행을 승인함(명령·폴더·환경값이 바뀌면 다시 승인) */
+  demoApprove(projectId: string, serviceId: string, shownHash: string) { const { s } = this.demoService(projectId, serviceId); this.demo.approve(projectId, s, String(shownHash ?? '')); return this.demoInfo(projectId); }
+  async demoStart(projectId: string, serviceId: string) { const { man, plan } = this.demoService(projectId, serviceId); await this.demo.start(projectId, man.services, serviceId, new Set(), () => readManifest(plan).services); return this.demoInfo(projectId); }
+  demoStop(projectId: string, serviceId: string) { this.demo.stop(projectId, serviceId); return this.demoInfo(projectId); }
+  demoLog(projectId: string, serviceId: string) { return this.demo.logTail(projectId, serviceId); }
+  demoRequest(projectId: string, serviceId: string, req: { method: string; path: string; headers: Record<string, string>; body: string; capture?: Record<string, string> }) {
+    const { s } = this.demoService(projectId, serviceId);
+    if (!this.demo.approved(projectId, s)) throw new Error(`'${s.name}' 실행 승인이 필요합니다.`);
+    return this.demo.request(projectId, s, req);
+  }
+  demoReset(projectId: string, serviceId: string) { this.demo.resetSession(projectId, serviceId); }
+
+  close() { this.demo.stopAll(); void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }
   /** 앱 종료용: 프로세스 종료를 기다린 뒤 DB를 닫는다. */
-  async closeGracefully() { await this.missions.shutdown(); await this.engine.shutdownAndWait(); await gitShutdown(); this.store.close(); }
+  async closeGracefully() { this.demo.stopAll(); await this.missions.shutdown(); await this.engine.shutdownAndWait(); await gitShutdown(); this.store.close(); }
 }

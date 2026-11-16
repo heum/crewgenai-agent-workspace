@@ -54,6 +54,7 @@ export interface AgentFields {
   timeoutSec: number;
   maxRetries: number;
   active: boolean;
+  character?: string; // 화면에 쓰는 캐릭터 번호(C01~C20). 없으면 직군 기본값. 역할·권한과 별개
 }
 
 export interface Agent extends AgentFields {
@@ -372,6 +373,13 @@ export interface WorkspaceApi {
   revealInFinder(path: string): Promise<void>;
   openPath(path: string): Promise<string>;
   openLocalUrl(url: string): Promise<void>; // 이 컴퓨터(localhost)의 화면 주소만 기본 브라우저로 연다
+  demoInfo(projectId: ID): Promise<DemoInfo>;
+  demoApprove(projectId: ID, serviceId: string, shownHash: string): Promise<DemoInfo>; // 승인 창에 보여 준 명령의 확인값
+  demoStart(projectId: ID, serviceId: string): Promise<DemoInfo>;
+  demoStop(projectId: ID, serviceId: string): Promise<DemoInfo>;
+  demoLog(projectId: ID, serviceId: string): Promise<string>;
+  demoRequest(projectId: ID, serviceId: string, req: { method: string; path: string; headers: Record<string, string>; body: string; capture?: Record<string, string> }): Promise<DemoResponse>;
+  demoReset(projectId: ID, serviceId: string): Promise<void>;
   previewFile(path: string): Promise<void>; // 격리 창 미리보기
   readTextFile(path: string): Promise<string>;
   // 직원
@@ -501,7 +509,21 @@ export interface MissionResult {
   exists: boolean;
   changed: string; // 무엇이 달라졌는지
   check: string; // 무엇을 확인하면 되는지
+  verified?: string; // 실제로 실행해 확인한 것과 결과, 또는 '미검증 — 이유'
+  remaining?: string; // 남은 사항
+  demo?: ResultDemo | null; // 실행 가능한 기능의 시연(없으면 문서·파일 보기)
 }
+/** 결과물의 시연: 시연 목록의 서비스 화면 경로 또는 API 항목으로 바로 연다 */
+export interface ResultDemo { service: string; path: string; api: string; steps: string; expected: string; data: DemoData }
+export type DemoData = 'api+db' | 'screen-only' | 'mock';
+export interface DemoService {
+  id: string; name: string; kind: 'web' | 'api' | 'admin' | 'app'; repo: string; cwd: string; start: string[]; port: number | null; health: string;
+  env: Record<string, string>; data: DemoData; needs: string[]; note: string; startupSec: number;
+}
+export interface DemoApi { service: string; id: string; group: string; title: string; method: string; path: string; headers: Record<string, string>; body: string; description: string; expect: string; capture: Record<string, string> }
+export interface DemoState { service: DemoService; hash: string; status: 'running' | 'starting' | 'stopped' | 'needs_approval'; approved: boolean; ours: boolean; url: string | null; exitCode: number | null; startedAt: string | null }
+export interface DemoInfo { manifestPath: string; relPath: string; exists: boolean; services: DemoState[]; apis: DemoApi[]; errors: string[] }
+export interface DemoResponse { status: number; ms: number; headers: Record<string, string>; body: string; cookies: string[]; vars: string[] }
 
 export interface Mission {
   id: ID;
@@ -531,6 +553,7 @@ export interface Mission {
   parkedSigs?: string[];
   results?: MissionResult[]; // 마지막 판단의 '열어 볼 결과물'(작업별)
   resultsCycle?: number;
+  resultsHistory?: { cycle: number; results: MissionResult[] }[]; // 최근 회차별 결과물(최신 먼저, 최대 6회차)
   idleCycles?: number; // 반영된 변경 없이 끝난 사이클이 연속 몇 번인가(상한에 넣지 않음, 이어지면 멈추고 물음)
   learnedSeq?: number; // 배운 것을 정리한 마지막 기록 번호
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */

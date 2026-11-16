@@ -1,4 +1,5 @@
 // 직원 기본 템플릿 — 사용자가 수정·복제·비활성화할 수 있는 시작점이다. 특정 저장소·업무 기능에 고정하지 않는다.
+import { defaultCharacter } from '../../shared/characterIds';
 // 두 세트를 제공한다: 소프트웨어 개발팀 표준(dev), 업무 무관 범용 소규모(general). 불러오기 때 고른다.
 import { randomUUID } from 'node:crypto';
 import type { Agent, AgentFields, GraphNode, PlanFields, WorkGraph } from '../../shared/types';
@@ -224,19 +225,22 @@ const GENERAL: AgentFields[] = [
   }, QA),
 ];
 
+/** 기본 템플릿 직원에 직군별 기본 캐릭터를 붙인다(사용자가 나중에 바꿀 수 있다) */
+const withCharacter = (list: AgentFields[]): AgentFields[] => list.map((a) => ({ ...a, character: a.character ?? defaultCharacter(a) }));
+
 export type TemplateSetId = 'dev' | 'general';
 export interface TemplateSet { id: TemplateSetId; label: string; description: string; agents: AgentFields[]; reviewers: Record<string, string> }
 
 export const TEMPLATE_SETS: Record<TemplateSetId, TemplateSet> = {
   dev: {
     id: 'dev', label: '소프트웨어 개발팀 표준', description: '총괄, 기획·요구 분석, 설계, 백엔드, 프런트엔드, 데이터·DB, 문서, 보안 검토, 코드 리뷰, 시험·품질, 통합 — 11명',
-    agents: DEV,
+    agents: withCharacter(DEV),
     // 독립 검토 담당 기본 배정(코드 기준) — 작성자와 다른 담당
     reviewers: { '00': '10', '01': '08', '02': '08', '03': '08', '04': '08', '05': '07', '06': '08', '07': '08', '08': '07', '09': '08', '10': '08' },
   },
   general: {
     id: 'general', label: '범용 소규모 팀', description: '총괄, 조사·분석, 기획·설계, 작성·구현, 검증·시험, 독립 검토, 통합 — 7명. 코드·문서·기획 어디에나',
-    agents: GENERAL,
+    agents: withCharacter(GENERAL),
     reviewers: { '00': '05', '01': '05', '02': '05', '03': '05', '04': '05', '05': '06', '06': '05' },
   },
 };

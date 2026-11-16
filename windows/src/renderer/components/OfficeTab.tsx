@@ -1,413 +1,47 @@
-// 사무실 — 직원들의 지금 상태(일하는 중·대기 중·쉬는 중·휴가)를 휴대용 게임기 느낌의 도트 그림으로 보여 준다.
-// 캐릭터·배경은 이 앱에서 새로 그린 도트 그림이다(기존 게임의 캐릭터·그림을 쓰지 않는다).
-import { useEffect, useMemo, useState, type JSX } from 'react';
-import type { Agent, LiveEvent, Mission, Project, WorkingItem } from '../../shared/types';
-import { useLoad, ws } from '../api';
-import { Banner, Loading } from './common';
+// 사무실 — 따뜻한 도트 그림 개발 스튜디오에서 직원들이 실제 미션 상태대로 일하는 모습을 보여 준다.
+// 원칙: 인물의 위치·자세·말풍선은 실제 실행 정보(작업 중·검토·리뷰 받음·대기·휴식·휴가)에서만 나온다. 임의의 진행률·완료 표시는 없다.
+// 시간대(아침·오후·저녁·밤)는 창밖·햇빛·조명 같은 분위기만 바꾸고 직원 상태는 바꾸지 않는다.
+// 글자(이름·상태·말풍선)는 그림 위에 HTML로 겹쳐 읽기 좋은 크기를 유지한다(그림만 창 크기에 맞춰 커지고 작아진다).
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Attempt, LiveEvent, Mission, Project, WorkingItem } from '../../shared/types';
+import { MISSION_STATUS_LABEL } from '../../shared/types';
+import { useAction, useLoad, ws } from '../api';
+import { characterOf, EXTERNAL, type CharDef } from '../characters';
+import { CharSprite } from './CharacterArt';
+import { Banner, Loading, Modal } from './common';
+import { useFileOpener } from './fileOpen';
+import { CELL_W, deskAt, DIV_X, layoutFor, placePeople, propOf, ROOM_X, Scene, W, WALL, type Person, type Pose, type State } from './officeScene';
+import ResultsPanel, { missionTitle } from './Results';
+import { moodFor, TIME_MODES, type TimeMode } from './officeTime';
 
-// ───── 도트 그림 ─────
-// 글자 하나가 한 칸. '.' 투명, k 외곽선, h 머리, s 피부, e 눈, r 입, t 윗옷, p 바지, b 신발, w 흰색
-const STAND = [
-  '...kkkkkk...',
-  '..khhhhhhk..',
-  '.khhhhhhhhk.',
-  '.khsssssshk.',
-  '.ksesssseks.',
-  '.kssssssssk.',
-  '..kssrrssk..',
-  '...kkkkkk...',
-  '..kttttttk..',
-  '.ksttttttsk.',
-  '.ksttttttsk.',
-  '..kppppppk..',
-  '..kppkkppk..',
-  '..kbbk.kbbk.',
-];
-// 앉은 윗몸(책상 뒤): 머리 + 어깨까지
-const SIT = STAND.slice(0, 10);
-const SLEEPY = SIT.map((r, i) => (i === 4 ? '.kskksskksk.' : r)); // 감은 눈
-
-type Palette = { h: string; s: string; t: string; p: string; acc?: Accessory };
-// 직군 소품: 기본 그림 위에 겹쳐 그리는 도트(글자 하나가 한 칸, '.'은 투명)
-type Accessory = { map: string[]; colors: Record<string, string>; shirt?: string };
-const ACC: Record<string, Accessory> = {
-  tie: { map: ['', '', '', '', '', '', '', '', '.....rr.....', '.....rr.....', '......r.....'], colors: { r: '#c0392b' } }, // 총괄: 넥타이
-  glasses: { map: ['', '', '', '', '..g.gggg.g..'], colors: { g: '#1b1b24' } }, // 분석: 안경
-  pencil: { map: ['', '', '..........y.', '..........y.', '..........k.'], colors: { y: '#f2c94c', k: '#1b1b24' } }, // 설계: 귀에 꽂은 연필
-  headphones: { map: ['..dddddddd..', '', '', '.c........c.', '.c........c.'], colors: { d: '#2b2b3a', c: '#e0533d' } }, // 개발: 헤드폰
-  beanie: { map: ['...pppppp...', '..pwpwpwpw..'], colors: { p: '#e75480', w: '#ffffff' } }, // 프런트엔드: 비니
-  visor: { map: ['', '', '.vvvvvvvvvv.'], colors: { v: '#2f9e62' } }, // 데이터: 녹색 차양
-  beret: { map: ['..rrrrrr....', '.rrrrrrrr...'], colors: { r: '#8e1b2a' } }, // 문서: 베레모
-  cap: { map: ['..nnnnnnnn..', '.nnnnynnnnn.', '.kkkkkkkkkk.'], colors: { n: '#1f2f5a', y: '#f2c94c', k: '#1b1b24' } }, // 보안: 경비 모자
-  reviewer: { map: ['', '', '', '', '..r.rrrr.r..', '', '', '', '', '........r...'], colors: { r: '#c0392b' } }, // 리뷰: 빨간 안경·빨간 펜
-  lab: { map: ['', '', '', '.oooooooooo.'], colors: { o: '#5bc0be' }, shirt: '#f4f4f4' }, // 시험: 고글·실험 가운
-  hardhat: { map: ['...yyyyyy...', '.yyyyyyyyyy.'], colors: { y: '#f2c94c' } }, // 통합: 안전모
-};
-/** 이름·역할로 직군 소품을 고른다(직접 만든 직원도 이름에 직군이 들어 있으면 같은 소품) */
-function accessoryFor(a: Agent): Accessory | undefined {
-  const rules: [RegExp, string][] = [
-    [/총괄|오퍼레이터|팀장/, 'tie'], [/보안|권한/, 'cap'], [/코드 리뷰|독립 검토|리뷰|검수/, 'reviewer'], [/시험|품질|검증|QA/i, 'lab'],
-    [/통합|결과물/, 'hardhat'], [/프런트|화면|UI/i, 'beanie'], [/백엔드|서버|작성·구현|구현|개발/, 'headphones'], [/데이터|DB/i, 'visor'],
-    [/문서|작성/, 'beret'], [/설계/, 'pencil'], [/기획|요구|조사|분석|연구/, 'glasses'],
-  ];
-  const hit = rules.find(([re]) => re.test(a.name)) ?? rules.find(([re]) => re.test(a.role)); // 이름이 우선, 없으면 역할
-  return hit ? ACC[hit[1]] : undefined;
-}
-const HAIR = ['#2b2b3a', '#6b3a1e', '#c0392b', '#2e7d32', '#1f4e9c', '#7b3fa0', '#d9a21b', '#9e9e9e'];
-const SHIRT = ['#e0533d', '#3a7bd5', '#2f9e62', '#f2a33a', '#8e5bd1', '#d64f8a', '#1fa3a3', '#556070'];
-const SKIN = ['#f5c9a0', '#e8b088', '#c98d60'];
-const PANTS = ['#2e3a59', '#3b3b3b', '#5a4632', '#24507a'];
-
-function hashOf(s: string) { let h = 7; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
-function paletteFor(a: Agent): Palette {
-  const n = hashOf(`${a.code}:${a.name}`);
-  const acc = accessoryFor(a);
-  return { h: HAIR[n % HAIR.length], t: acc?.shirt ?? SHIRT[(n >>> 3) % SHIRT.length], s: SKIN[(n >>> 6) % SKIN.length], p: PANTS[(n >>> 8) % PANTS.length], acc };
+function Portrait({ char, size = 28 }: { char: CharDef; size?: number }) {
+  return <span className="ofc-portrait" style={{ width: size, height: size }}><CharSprite def={char} size={size - 2} head /></span>;
 }
 
-function Pixels({ map, pal, x = 0, y = 0 }: { map: string[]; pal: Palette; x?: number; y?: number }) {
-  const color: Record<string, string> = { k: '#1b1b24', h: pal.h, s: pal.s, e: '#1b1b24', r: '#c0504d', t: pal.t, p: pal.p, b: '#3a2a1a', w: '#ffffff' };
-  const rects: JSX.Element[] = [];
-  map.forEach((row, yy) => [...row].forEach((ch, xx) => {
-    const c = color[ch];
-    if (c) rects.push(<rect key={`${xx}-${yy}`} x={x + xx} y={y + yy} width={1} height={1} fill={c} />);
-  }));
-  // 직군 소품: 그림 높이만큼만 겹친다(앉은 그림이면 아래쪽 소품은 책상에 가려 그리지 않음). 선글라스(휴가) 줄은 덮지 않는다
-  const sun = map[4] === '.kkkkskkkks.';
-  pal.acc?.map.slice(0, map.length).forEach((row, yy) => [...row].forEach((ch, xx) => {
-    const c = pal.acc!.colors[ch];
-    if (c && !(sun && yy === 4)) rects.push(<rect key={`a${xx}-${yy}`} x={x + xx} y={y + yy} width={1} height={1} fill={c} />);
-  }));
-  return <g>{rects}</g>;
-}
-
-type State = 'work' | 'reviewed' | 'wait' | 'rest' | 'off';
-type Pose = 'code' | 'doc' | 'review' | 'plan' | 'reviewed' | 'wait' | 'rest' | 'off';
-
-const INK = '#1b1b24';
-function Desk() {
-  return (
-    <g>
-      <rect x={2} y={12} width={21} height={2} fill="#8a5a2b" />
-      <rect x={2} y={14} width={2} height={4} fill="#6b4320" />
-      <rect x={21} y={14} width={2} height={4} fill="#6b4320" />
-    </g>
-  );
-}
-/** 두 장면을 번갈아 보여 움직임을 만든다(타자, 걸음, 펜 등) */
-function Frames({ a, b }: { a: JSX.Element; b: JSX.Element }) {
-  return (<g><g className="frame-a">{a}</g><g className="frame-b">{b}</g></g>);
-}
-const LEGS_A = ['..kppkkppk..', '..kbbk.kbbk.'];
-const LEGS_B = ['...kpkkpk...', '...kbbkbb...'];
-
-/** 장면 하나(24×18 칸): 상태·하는 일마다 다른 자세와 소품 */
-function Sprite({ pal, pose }: { pal: Palette; pose: Pose }) {
-  return (
-    <svg className={`sprite sprite-${pose}`} viewBox="0 0 24 18" shapeRendering="crispEdges" aria-hidden="true">
-      {pose === 'code' && (
-        <g>
-          <Pixels map={SIT} pal={pal} x={2} y={2} />
-          {/* 모니터: 코드 줄이 위로 흘러간다 */}
-          <rect x={11} y={4} width={11} height={8} fill={INK} />
-          <rect x={12} y={5} width={9} height={6} fill="#10202a" />
-          <clipPath id="scr"><rect x={12} y={5} width={9} height={6} /></clipPath>
-          <g clipPath="url(#scr)">
-            <g className="code-scroll">
-              {[[12, 3, '#7ee787'], [13, 5, '#79c0ff'], [12, 2, '#ffa657'], [14, 4, '#d2a8ff'], [13, 6, '#7ee787'], [12, 4, '#79c0ff'], [14, 3, '#ffa657'], [12, 5, '#d2a8ff'],
-                [12, 3, '#7ee787'], [13, 5, '#79c0ff'], [12, 2, '#ffa657'], [14, 4, '#d2a8ff']].map(([x, w, c], i) => (
-                <rect key={i} x={x as number} y={5.5 + i} width={w as number} height={0.6} fill={c as string} />
-              ))}
-            </g>
-          </g>
-          <Desk />
-          <rect x={3} y={11} width={7} height={1} fill="#d8d8d8" />
-          <Frames a={<><rect x={3} y={10} width={2} height={1} fill={pal.s} /><rect x={8} y={10} width={2} height={1} fill={pal.s} /></>}
-            b={<><rect x={4} y={10} width={2} height={1} fill={pal.s} /><rect x={7} y={10} width={2} height={1} fill={pal.s} /></>} />
-        </g>
-      )}
-      {pose === 'doc' && (
-        <g>
-          <Pixels map={SIT} pal={pal} x={4} y={2} />
-          <Desk />
-          {/* 종이에 한 줄씩 써 내려간다 */}
-          <rect x={12} y={7} width={8} height={5} fill="#ffffff" stroke={INK} strokeWidth={0.3} />
-          {[0, 1, 2, 3].map((i) => <rect key={i} className={`write-line write-line-${i}`} x={13} y={8 + i} width={6} height={0.5} fill="#5a5a6a" />)}
-          <g className="pencil"><rect x={13} y={6} width={1} height={3} fill="#f2c94c" /><rect x={13} y={9} width={1} height={0.7} fill={INK} /></g>
-          <rect x={9} y={10} width={3} height={1} fill={pal.s} />
-        </g>
-      )}
-      {pose === 'review' && (
-        <g>
-          <Pixels map={SIT} pal={pal} x={2} y={2} />
-          <Desk />
-          {/* 문서를 들고 돋보기로 훑으며 표시한다 */}
-          <rect x={10} y={3} width={10} height={9} fill="#ffffff" stroke={INK} strokeWidth={0.3} />
-          {[0, 1, 2, 3, 4, 5].map((i) => <rect key={i} x={11} y={4 + i * 1.3} width={i % 2 ? 6 : 8} height={0.5} fill="#8a8a9a" />)}
-          <g className="mark-1"><rect x={18} y={4} width={1} height={1} fill="#d33" /><rect x={17.5} y={4.5} width={0.6} height={0.6} fill="#d33" /></g>
-          <g className="mark-2"><rect x={18} y={7} width={1} height={1} fill="#2a9d4b" /><rect x={17.5} y={7.5} width={0.6} height={0.6} fill="#2a9d4b" /></g>
-          <g className="magnifier">
-            <circle cx={12} cy={6} r={1.6} fill="rgba(160,210,255,0.5)" stroke={INK} strokeWidth={0.5} />
-            <rect x={13} y={7.2} width={0.8} height={2} fill="#6b4320" transform="rotate(-40 13 7.2)" />
-          </g>
-          <rect x={8} y={8} width={2} height={1} fill={pal.s} />
-        </g>
-      )}
-      {pose === 'plan' && (
-        <g className="walk">
-          <g className="walk-flip">
-            <Pixels map={STAND.slice(0, 12)} pal={pal} x={6} y={2} />
-            <Frames a={<Pixels map={LEGS_A} pal={pal} x={6} y={14} />} b={<Pixels map={LEGS_B} pal={pal} x={6} y={14} />} />
-            {/* 클립보드 */}
-            <rect x={15} y={9} width={3} height={4} fill="#c9a26b" stroke={INK} strokeWidth={0.3} />
-            <rect x={15.5} y={10} width={2} height={0.4} fill={INK} /><rect x={15.5} y={11} width={2} height={0.4} fill={INK} />
-          </g>
-        </g>
-      )}
-      {pose === 'reviewed' && (
-        <g>
-          <Pixels map={STAND} pal={pal} x={1} y={3} />
-          <rect className="sweat" x={10} y={4} width={1} height={2} fill="#5bb4ff" />
-          {/* 내 결과물에 빨간 펜 표시가 하나씩 붙는다 */}
-          <rect x={13} y={2} width={10} height={12} fill="#ffffff" stroke={INK} strokeWidth={0.4} />
-          {[0, 1, 2, 3, 4, 5, 6].map((i) => <rect key={i} x={14} y={3.5 + i * 1.4} width={i % 3 ? 7 : 5} height={0.5} fill="#8a8a9a" />)}
-          <rect className="red-1" x={20} y={4.5} width={2} height={0.6} fill="#d33" />
-          <rect className="red-2" x={14} y={8.6} width={7} height={0.4} fill="#d33" />
-          <g className="red-3"><rect x={20} y={11} width={1} height={1} fill="#2a9d4b" /><rect x={19.4} y={11.5} width={0.7} height={0.7} fill="#2a9d4b" /></g>
-          <rect x={18} y={14} width={1} height={4} fill="#6b4320" />
-        </g>
-      )}
-      {pose === 'rest' && (
-        <g>
-          <Pixels map={SLEEPY} pal={pal} x={4} y={4} />
-          <rect x={3} y={14} width={12} height={2} fill="#6b4320" />
-          <rect x={4} y={16} width={2} height={2} fill="#6b4320" />
-          <rect x={12} y={16} width={2} height={2} fill="#6b4320" />
-          <rect x={17} y={11} width={3} height={3} fill="#ffffff" stroke={INK} strokeWidth={0.3} />
-          <rect x={20} y={12} width={1} height={1} fill={INK} />
-          <g className="steam"><rect x={18} y={8} width={0.6} height={2} fill="#bbb" /><rect x={19} y={7} width={0.6} height={2} fill="#bbb" /></g>
-          <g className="zzz"><text x={16} y={6} fontSize={4} fill={INK} fontFamily="monospace">z</text><text x={19} y={3.5} fontSize={3} fill={INK} fontFamily="monospace">z</text></g>
-        </g>
-      )}
-      {pose === 'wait' && (
-        <g className="bob">
-          <Pixels map={STAND} pal={pal} x={6} y={3} />
-          <g className="dots"><rect x={18} y={3} width={1} height={1} fill={INK} /><rect x={20} y={3} width={1} height={1} fill={INK} /><rect x={22} y={3} width={1} height={1} fill={INK} /></g>
-        </g>
-      )}
-      {pose === 'off' && (
-        <g>
-          {/* 휴가: 파라솔 아래 선글라스, 여행 가방 */}
-          <rect x={0} y={15} width={24} height={3} fill="#f3d98b" />
-          <rect x={3} y={1} width={10} height={1} fill="#e0533d" />
-          <rect x={2} y={2} width={12} height={1} fill="#ffffff" />
-          <rect x={1} y={3} width={14} height={1} fill="#e0533d" />
-          <rect x={8} y={4} width={1} height={11} fill="#6b4320" />
-          <Pixels map={STAND.map((r, i) => (i === 4 ? '.kkkkskkkks.' : r))} pal={pal} x={10} y={2} />
-          <rect x={20} y={11} width={4} height={4} fill="#2f9e62" />
-          <rect x={21} y={10} width={2} height={1} fill={INK} />
-        </g>
-      )}
-    </svg>
-  );
-}
-
-const STATE_LABEL: Record<State, string> = { work: '일하는 중', reviewed: '리뷰 받는 중', wait: '대기 중', rest: '쉬는 중', off: '휴가 중' };
-const KIND_LABEL: Record<WorkingItem['kind'], string> = { author: '작성', reviewer: '검토', codex: 'Codex 리뷰', check: '검사', operator: '계획·판단' };
-const RECEIVE_LABEL: Record<WorkingItem['kind'], string> = { author: '작성', reviewer: '검토를 받는 중', codex: 'Codex 리뷰를 받는 중', check: '자동 검사를 받는 중', operator: '' };
+const STATE_LABEL: Record<State, string> = { work: '작업 중', review: '리뷰', wait: '대기', rest: '휴식', off: '휴가' };
+const POSE_LABEL: Record<Pose, string> = { code: '코딩 중', doc: '문서 작성 중', plan: '계획·판단 중', review: '검토 중', reviewed: '리뷰 받는 중', wait: '대기 중', rest: '휴식 중', off: '휴가 중' };
+const BUBBLE: Partial<Record<Pose, string>> = { code: '코딩 시작', doc: '문서 작성 시작', plan: '계획 시작', review: '검토 시작', reviewed: '리뷰 받는 중' }; // 대기·휴식으로 바뀔 때는 띄우지 않는다
+const RECEIVE_LABEL: Record<WorkingItem['kind'], string> = { author: '작성', reviewer: '독립 검토를 받는 중', codex: 'Codex 리뷰를 받는 중', check: '자동 검사를 받는 중', operator: '' };
 const ACTIVE: Mission['status'][] = ['planning', 'running', 'evaluating'];
-const CODEX_PAL: Palette = { h: '#6e56cf', s: '#f5c9a0', t: '#2b2b3a', p: '#3b3b3b' };
 
-// ───── 사무실 지도(위에서 본 모습) ─────
-// 업무 공간(책상): 작성 중이면 자기 책상에 앉아 있고, 대기 중이면 책상 옆에 서 있다. 총괄은 계획·판단 중에 통로를 돌아다닌다.
-// 회의실: 검토하는 직원·리뷰 받는 직원·Codex(외부 검토자)가 둘러앉는다. 휴게실: 쉬는 직원. 아래 해변: 휴가 중인 직원.
-const SUN = (map: string[]) => map.map((r, i) => (i === 4 ? '.kkkkskkkks.' : r));
-const PS = 1.3; // 지도 속 인물 확대 배율
-const COLS = 4; const CELL_W = 48; const CELL_H = 46; const TOP = 26; const WORK_W = 198; const W = 330;
-
-function Bubble({ x, y, text, color = '#ffffff' }: { x: number; y: number; text: string; color?: string }) {
-  return (
-    <g className="bubble">
-      <rect x={x} y={y} width={text.length * 4 + 3} height={7} rx={1} fill={color} stroke={INK} strokeWidth={0.5} />
-      <text x={x + 1.6} y={y + 5.4} fontSize={5} fill={INK} fontFamily="monospace" fontWeight={700}>{text}</text>
-    </g>
-  );
-}
-function Plant({ x, y }: { x: number; y: number }) {
-  return (<g><rect x={x + 2} y={y + 7} width={6} height={5} fill="#b5651d" /><rect x={x} y={y} width={10} height={8} fill="#2f9e62" /><rect x={x + 2} y={y - 3} width={6} height={4} fill="#3fbf76" /></g>);
-}
-function Shelf({ x, y, w }: { x: number; y: number; w: number }) {
-  return (
-    <g>
-      <rect x={x} y={y} width={w} height={14} fill="#c89b5e" stroke={INK} strokeWidth={0.5} />
-      <rect x={x + 2} y={y + 2} width={w - 4} height={4} fill="#7a5530" />
-      <rect x={x + 2} y={y + 8} width={w - 4} height={4} fill="#7a5530" />
-      {Array.from({ length: Math.floor((w - 4) / 3) }, (_, i) => <rect key={i} x={x + 2.5 + i * 3} y={y + (i % 2 ? 2.5 : 8.5)} width={1.6} height={3} fill={['#d33', '#3a7bd5', '#2f9e62', '#f2a33a'][i % 4]} />)}
-    </g>
-  );
-}
-function NameTag({ x, y, code, name, dim }: { x: number; y: number; code: string; name: string; dim?: boolean }) {
-  const label = `${code} ${name}`.slice(0, 11);
-  return <text x={x} y={y} fontSize={4.6} textAnchor="middle" fill={dim ? '#666' : INK} fontFamily="monospace" fontWeight={700}>{label}</text>;
-}
-
-type MapRow = { key: string; code: string; name: string; title: string; pal: Palette; state: State; pose: Pose; note: string; desk: number | null };
-
-function Person({ r, x, y, sit, sleepy, sun, children }: { r: MapRow; x: number; y: number; sit?: boolean; sleepy?: boolean; sun?: boolean; children?: JSX.Element | null }) {
-  const map = sit ? (sleepy ? SLEEPY : SIT) : sun ? SUN(STAND) : STAND;
-  return (
-    <g className={`person person-${r.pose}`}>
-      <title>{`${r.title}\n${r.note}`}</title>
-      <g transform={`translate(${x} ${y}) scale(${PS})`}><Pixels map={map} pal={r.pal} /></g>
-      {children}
-    </g>
-  );
-}
-
-function OfficeMap({ rows }: { rows: MapRow[] }) {
-  const staff = rows.filter((r) => r.desk !== null);
-  const deskRows = Math.max(2, Math.ceil(staff.length / COLS));
-  const workH = TOP + deskRows * CELL_H;
-  const H = Math.max(workH, 206) + 40;
-  const beachY = H - 40;
-  const deskPos = (i: number) => ({ x: 10 + (i % COLS) * CELL_W, y: TOP + Math.floor(i / COLS) * CELL_H });
-  const meeting = rows.filter((r) => r.pose === 'review' || r.pose === 'reviewed');
-  const resting = rows.filter((r) => r.state === 'rest');
-  const vacation = rows.filter((r) => r.state === 'off');
-  // 회의실 자리: 탁자 왼쪽·오른쪽·위·아래
-  const MEET_Y = 104;
-  // 리뷰 받는 직원은 탁자 왼쪽, 검토하는 쪽(직원·Codex)은 오른쪽에 마주 앉는다
-  const leftSeats = [[218, MEET_Y + 16], [218, MEET_Y + 44], [218, MEET_Y + 72]];
-  const rightSeats = [[298, MEET_Y + 16], [298, MEET_Y + 44], [298, MEET_Y + 72]];
-  const lounge = [[258, 40], [276, 40], [294, 40], [208, 28], [226, 34], [244, 26], [310, 24], [208, 58], [226, 64], [244, 58], [312, 60], [292, 66]];
-  return (
-    <svg className="office-map" viewBox={`0 0 ${W} ${H}`} shapeRendering="crispEdges" role="img" aria-label="사무실 지도: 직원들의 현재 위치와 상태">
-      {/* 바닥 */}
-      <rect x={0} y={0} width={W} height={H} fill="#22284a" />
-      <rect x={0} y={18} width={WORK_W} height={beachY - 18} fill="#b07a45" />
-      {Array.from({ length: Math.ceil((beachY - 18) / 8) }, (_, i) => <rect key={`fl${i}`} x={0} y={18 + i * 8} width={WORK_W} height={0.5} fill="#9c6a3a" />)}
-      <rect x={WORK_W + 4} y={18} width={W - WORK_W - 4} height={70} fill="#ece6da" />
-      {Array.from({ length: 8 }, (_, i) => <rect key={`tl${i}`} x={WORK_W + 4 + i * 16} y={18} width={0.5} height={70} fill="#d6cfc0" />)}
-      <rect x={WORK_W + 4} y={92} width={W - WORK_W - 4} height={beachY - 92} fill="#3f6fb0" />
-      {/* 벽·가구 */}
-      <Shelf x={8} y={3} w={40} /><Shelf x={52} y={3} w={40} /><Shelf x={110} y={3} w={40} /><Shelf x={154} y={3} w={38} />
-      <text x={6} y={beachY - 4} fontSize={5} fill="#f8f0e0" fontFamily="monospace" fontWeight={700}>업무 공간</text>
-      {/* 휴게실: 자판기·정수기·소파·시계 */}
-      <rect x={206} y={4} width={16} height={24} fill="#dfe8f3" stroke={INK} strokeWidth={0.6} />
-      {[0, 1, 2].map((i) => <rect key={i} x={208} y={7 + i * 6} width={8} height={4} fill={['#d33', '#2f9e62', '#3a7bd5'][i]} />)}
-      <rect x={226} y={10} width={9} height={18} fill="#f4f4f4" stroke={INK} strokeWidth={0.6} /><rect x={227} y={4} width={7} height={7} fill="#9fd3ff" stroke={INK} strokeWidth={0.5} />
-      <circle cx={300} cy={8} r={4} fill="#fff" stroke={INK} strokeWidth={0.6} /><rect x={299.6} y={5} width={0.8} height={3.4} fill={INK} /><rect x={300} y={8} width={2.4} height={0.8} fill={INK} />
-      <rect x={256} y={56} width={54} height={12} fill="#c0504d" stroke={INK} strokeWidth={0.6} /><rect x={256} y={52} width={54} height={5} fill="#a33f3c" />
-      <text x={206} y={86} fontSize={5} fill={INK} fontFamily="monospace" fontWeight={700}>휴게실</text>
-      {/* 회의실: 액자·탁자 */}
-      <rect x={236} y={92} width={36} height={8} fill="#c89b5e" stroke={INK} strokeWidth={0.5} /><rect x={238} y={94} width={32} height={4} fill="#9fd3ff" /><rect x={240} y={96} width={10} height={2} fill="#2f9e62" /><circle cx={265} cy={95.5} r={1.4} fill="#f2c94c" />
-      <rect x={236} y={MEET_Y + 14} width={58} height={70} fill="#c89b5e" stroke={INK} strokeWidth={0.6} />
-      {[0, 1, 2].map((k) => (
-        <g key={k}>
-          <rect x={242} y={MEET_Y + 20 + k * 28} width={12} height={9} fill="#ffffff" stroke={INK} strokeWidth={0.4} />
-          {[0, 1, 2].map((i) => <rect key={i} x={243.5} y={MEET_Y + 22 + k * 28 + i * 2.2} width={8} height={0.6} fill="#888" />)}
-          {meeting.some((r) => r.pose === 'reviewed') && k === 0 && <rect className="redline" x={243.5} y={MEET_Y + 24.2} width={8} height={0.6} fill="#d33" />}
-        </g>
-      ))}
-      <rect x={272} y={MEET_Y + 24} width={12} height={8} fill="#cfd6e0" stroke={INK} strokeWidth={0.4} />
-      <Plant x={308} y={100} /><Plant x={206} y={100} />
-      <text x={206} y={beachY - 4} fontSize={5} fill="#f8f0e0" fontFamily="monospace" fontWeight={700}>회의실 · 리뷰</text>
-      {/* 해변(휴가) */}
-      <rect x={0} y={beachY} width={W} height={10} fill="#5bb4ff" />
-      <rect x={0} y={beachY + 10} width={W} height={30} fill="#f3d98b" />
-      <rect x={4} y={beachY + 12} width={30} height={2} fill="#e0533d" /><rect x={18} y={beachY + 14} width={1} height={18} fill="#6b4320" />
-      <text x={40} y={beachY + 7} fontSize={5} fill="#ffffff" fontFamily="monospace" fontWeight={700}>휴가</text>
-
-      {/* 책상과 직원 */}
-      {staff.map((r, i) => {
-        const { x, y } = deskPos(i);
-        const atDesk = r.pose === 'code' || r.pose === 'doc';
-        return (
-          <g key={r.key}>
-            <rect x={x + 8} y={y - 2} width={12} height={8} fill="#6b4320" />
-            {atDesk && (
-              <Person r={r} x={x + 6} y={y - 4}>
-                <>
-                  {r.pose === 'code' && <Bubble x={x + 22} y={y - 10} text="</>" color="#e8ffe8" />}
-                  {r.pose === 'doc' && <Bubble x={x + 22} y={y - 10} text="✎" color="#fff8d6" />}
-                </>
-              </Person>
-            )}
-            <rect x={x} y={y + 9} width={28} height={11} fill="#8a5a2b" stroke={INK} strokeWidth={0.5} />
-            <rect x={x + 1} y={y + 20} width={2} height={3} fill="#5a3a1a" /><rect x={x + 25} y={y + 20} width={2} height={3} fill="#5a3a1a" />
-            {/* 노트북·서류 */}
-            <rect x={x + 9} y={y + 11} width={10} height={6} fill={atDesk && r.pose === 'code' ? '#2b2b3a' : '#9aa3ad'} stroke={INK} strokeWidth={0.4} />
-            {atDesk && r.pose === 'code' && <rect className="led" x={x + 13.5} y={y + 13.5} width={1} height={1} fill="#7ee787" />}
-            {atDesk && r.pose === 'doc' && <g><rect x={x + 20} y={y + 10} width={6} height={8} fill="#fff" stroke={INK} strokeWidth={0.3} /><rect className="pen" x={x + 21} y={y + 12} width={1} height={3} fill="#f2c94c" /></g>}
-            {!atDesk && <rect x={x + 2} y={y + 11} width={5} height={5} fill="#fff" stroke={INK} strokeWidth={0.3} />}
-            {r.pose === 'wait' && (
-              <Person r={r} x={x + 30} y={y + 2}>
-                <Bubble x={x + 32} y={y - 6} text="..." />
-              </Person>
-            )}
-            <NameTag x={x + 14} y={y + 31} code={r.code} name={r.name} dim={!atDesk && r.pose !== 'wait'} />
-          </g>
-        );
-      })}
-      {/* 돌아다니는 총괄 */}
-      {rows.filter((r) => r.pose === 'plan').map((r, i) => (
-        <g key={r.key} className="walker" style={{ ['--walk-y' as string]: `${TOP + 30 + i * CELL_H}px` }}>
-          <g className="walker-flip">
-            <Person r={r} x={0} y={0}>
-              <><rect x={14} y={10} width={4} height={5} fill="#c9a26b" stroke={INK} strokeWidth={0.3} /><Bubble x={8} y={-8} text="계획" color="#e6f0ff" /></>
-            </Person>
-          </g>
-        </g>
-      ))}
-      {/* 회의실 */}
-      {[...meeting.filter((r) => r.pose === 'reviewed').slice(0, leftSeats.length).map((r, i) => ({ r, pos: leftSeats[i] })),
-        ...meeting.filter((r) => r.pose === 'review').slice(0, rightSeats.length).map((r, i) => ({ r, pos: rightSeats[i] }))].map(({ r, pos: [x, y] }) => (
-        <Person key={r.key} r={r} x={x} y={y} sit>
-          <>
-            {r.pose === 'review' && <Bubble x={x - 2} y={y - 8} text={r.code === 'CX' ? 'CX' : '검토'} color="#e6f0ff" />}
-            {r.pose === 'review' && <g className="magnify-small"><circle cx={x - 3} cy={y + 8} r={2} fill="rgba(160,210,255,0.6)" stroke={INK} strokeWidth={0.6} /></g>}
-            {r.pose === 'reviewed' && <><rect className="sweat" x={x + 14} y={y + 1} width={1} height={2} fill="#5bb4ff" /><Bubble x={x + 4} y={y - 8} text="!?" color="#ffe0e0" /></>}
-            <NameTag x={x + 8} y={y + 20} code={r.code} name={r.name} />
-          </>
-        </Person>
-      ))}
-      {/* 휴게실 */}
-      {resting.slice(0, lounge.length).map((r, i) => {
-        const [x, y] = lounge[i];
-        const onSofa = i < 3;
-        return (
-          <Person key={r.key} r={r} x={x} y={y} sit={onSofa} sleepy={onSofa}>
-            {onSofa ? <g className="zzz"><text x={x + 12} y={y - 1} fontSize={5} fill={INK} fontFamily="monospace">z</text></g>
-              : <><rect x={x + 15} y={y + 10} width={3} height={3} fill="#fff" stroke={INK} strokeWidth={0.3} /><rect className="steam" x={x + 16} y={y + 7} width={0.6} height={2} fill="#bbb" /></>}
-          </Person>
-        );
-      })}
-      {resting.length > lounge.length && <text x={206} y={78} fontSize={4.5} fill={INK} fontFamily="monospace">외 {resting.length - lounge.length}명</text>}
-      {/* 해변 */}
-      {vacation.map((r, i) => {
-        const x = 44 + i * 46;
-        if (x > W - 14) return null;
-        return (
-          <Person key={r.key} r={r} x={x} y={beachY + 11} sun>
-            <NameTag x={x + 8} y={beachY + 38} code={r.code} name={r.name} />
-          </Person>
-        );
-      })}
-    </svg>
-  );
-}
-
-function hhmm(iso: string) { try { return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } }
+// ───── 화면 ─────
+const store = { get(k: string) { try { return localStorage.getItem(k); } catch { return null; } }, set(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* 저장 못 함 */ } } };
+function hhmm(iso: string | Date) { try { return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch { return ''; } }
+const openDecisions = () => window.dispatchEvent(new CustomEvent('crewgenai:open-decisions'));
 
 export default function OfficeTab({ project }: { project: Project }) {
   const agents = useLoad(() => ws().listAgents(project.id), [project.id]);
   const [working, setWorking] = useState<WorkingItem[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
+  const [asks, setAsks] = useState(0);
+  const [ready, setReady] = useState(false); // 첫 실행 정보를 받기 전에는 상태 변화 말풍선을 띄우지 않는다
   useEffect(() => {
     let alive = true; let t: ReturnType<typeof setTimeout> | null = null;
+    setReady(false);
     const load = () => {
-      ws().workingNow(project.id).then((w) => { if (alive) setWorking(w); }).catch(() => {});
+      ws().workingNow(project.id).then((w) => { if (alive) { setWorking(w); setReady(true); } }).catch(() => {});
       ws().listMissions(project.id).then((m) => { if (alive) setMissions(m); }).catch(() => {});
+      ws().pendingDecisions().then((d) => { if (alive) setAsks(d.filter((x) => x.projectId === project.id).length); }).catch(() => {});
     };
     load();
     const off = ws().onLive((e: LiveEvent) => { if (['attempt', 'run', 'mission', 'node', 'missionEvent'].includes(e.type)) { if (t) clearTimeout(t); t = setTimeout(load, 300); } });
@@ -415,74 +49,319 @@ export default function OfficeTab({ project }: { project: Project }) {
     return () => { alive = false; off(); clearInterval(iv); if (t) clearTimeout(t); };
   }, [project.id]);
 
-  const live = missions.filter((m) => ACTIVE.includes(m.status));
+  // 시간대 분위기: 기본은 지금 시각. 사용자가 고정·끄기를 고를 수 있다(이 PC에만 기억).
+  const [timeMode, setTimeMode] = useState<TimeMode>(() => (TIME_MODES.some((m) => m.id === store.get('crewgenai.office.time')) ? store.get('crewgenai.office.time') as TimeMode : 'auto'));
+  const [still, setStill] = useState(() => store.get('crewgenai.office.still') === '1');
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => { const iv = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(iv); }, []);
+  const { mood } = moodFor(timeMode, now);
+
+  const current = useMemo(() => missions.find((m) => ACTIVE.includes(m.status)) ?? missions.find((m) => m.status === 'waiting_user') ?? missions[0] ?? null, [missions]);
   const limited = missions.find((m) => m.limitUntil && ['planning', 'running', 'evaluating', 'waiting_user'].includes(m.status));
-  type Row = MapRow;
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = (agents.data ?? []).map((a) => {
+  const liveCount = missions.filter((m) => ACTIVE.includes(m.status)).length;
+
+  const people = useMemo<Person[]>(() => {
+    const denials = current ? (current.denials ?? []) : [];
+    const blockers = current ? (current.blockers ?? []) : [];
+    const sorted = [...(agents.data ?? [])].sort((a, b) => a.code.localeCompare(b.code, 'ko', { numeric: true }));
+    const out: Person[] = sorted.map((a) => {
       const jobs = working.filter((w) => w.agentId === a.id);
       const received = working.filter((w) => w.reviewOf === a.id && w.agentId !== a.id);
-      let state: State; let pose: Pose; let note: string;
-      if (!a.active) { state = 'off'; pose = 'off'; note = '휴가 — 업무 배정 안 함'; }
-      else if (jobs.length) {
-        const j = jobs[0];
-        state = 'work';
-        pose = j.kind === 'operator' ? 'plan' : j.kind === 'reviewer' ? 'review' : j.mode === 'doc' ? 'doc' : 'code';
-        const what = j.kind === 'operator' ? '돌아다니며 계획·판단' : j.kind === 'reviewer' ? '결과물 검토' : j.mode === 'doc' ? '문서 작성' : '코딩';
-        note = `${what}: ${j.task}${jobs.length > 1 ? ` 외 ${jobs.length - 1}건` : ''}`;
-      } else if (received.length) { state = 'reviewed'; pose = 'reviewed'; note = `${RECEIVE_LABEL[received[0].kind]}: ${received[0].task}`; }
-      else if (limited) { state = 'rest'; pose = 'rest'; note = `사용 한도 휴식${limited.limitUntil ? ` · ${hhmm(limited.limitUntil)}에 다시 시작` : ''}`; }
-      else if (live.length) { state = 'wait'; pose = 'wait'; note = '진행 중인 미션에서 차례를 기다림'; }
-      else { state = 'rest'; pose = 'rest'; note = '진행 중인 미션 없음'; }
-      return { key: a.id, code: a.code, name: a.name, title: `${a.code} ${a.name} — ${a.role}`, pal: paletteFor(a), state, pose, note, desk: a.active ? 0 : null };
+      let state: State; let pose: Pose; let task: string; let since: string | null = null;
+      if (jobs.length) { // 실제 실행 중인 일이 있으면 휴가 설정보다 우선한다(실행 기록과 화면이 어긋나지 않게)
+        const j = jobs[0]; since = j.since;
+        if (j.kind === 'reviewer') { state = 'review'; pose = 'review'; } else { state = 'work'; pose = j.kind === 'operator' ? 'plan' : j.mode === 'doc' ? 'doc' : 'code'; }
+        task = `${j.task}${jobs.length > 1 ? ` 외 ${jobs.length - 1}건` : ''}`;
+      } else if (!a.active) { state = 'off'; pose = 'off'; task = '휴가 — 업무를 배정하지 않습니다'; }
+      else if (received.length) { state = 'review'; pose = 'reviewed'; since = received[0].since; task = `${RECEIVE_LABEL[received[0].kind]}: ${received[0].task}`; }
+      else if (limited) { state = 'rest'; pose = 'rest'; task = `사용 한도 휴식${limited.limitUntil ? ` · ${hhmm(limited.limitUntil)}에 다시 시작` : ''}`; }
+      else if (liveCount) { state = 'wait'; pose = 'wait'; task = '진행 중인 미션에서 차례를 기다리는 중'; }
+      else { state = 'rest'; pose = 'rest'; task = '진행 중인 미션이 없습니다'; }
+      const mine = denials.filter((d) => d.agentId === a.id);
+      const steps = blockers.filter((b) => b.step.includes(`(${a.code} `) || b.step.includes(`${a.code} ${a.name}`)).map((b) => `${b.step}: ${b.reason}`);
+      return { key: a.id, agent: a, code: a.code, name: a.name, role: a.role, char: characterOf(a), prop: propOf(a), state, pose, task, since, external: false, blocked: mine, blockedSteps: steps, asks: a.code === '00' && asks > 0 };
     });
-    // Codex는 직원이 아니라 외부 검토자로 잠깐 들른다
-    working.filter((w) => w.kind === 'codex').forEach((w, i) => out.push({ key: `codex-${i}`, code: 'CX', name: 'Codex', title: 'Codex CLI(외부 검토자)', pal: CODEX_PAL, state: 'work', pose: 'review', note: `외부 리뷰: ${w.task}`, desk: null }));
+    working.filter((w) => w.kind === 'codex').forEach((w, i) => out.push({
+      key: `codex-${i}`, agent: null, code: `CX${i + 1}`, name: `Codex 리뷰어 ${i + 1}`, role: '외부 검토자(Codex CLI) — 결과물을 읽기 전용으로 검토', char: EXTERNAL[i % EXTERNAL.length], prop: 'redpen',
+      state: 'review', pose: 'review', task: w.task, since: w.since, external: true, blocked: [], blockedSteps: [], asks: false,
+    }));
     return out;
-  }, [agents.data, working, live.length, limited]);
+  }, [agents.data, working, liveCount, limited, current, asks]);
 
-  const count = (s: State) => rows.filter((r) => r.state === s).length;
-  const order: State[] = ['work', 'reviewed', 'wait', 'rest', 'off'];
+  const staff = people.filter((p) => !p.external && p.state !== 'off');
+  const internal = people.filter((p) => !p.external);
+  const externals = people.filter((p) => p.external);
+  const layout = layoutFor(staff.length);
+  const { placed, overflow } = useMemo(() => placePeople(people, staff, layout), [people, staff, layout.loungeY]);
+  const count = (s: State) => internal.filter((p) => p.state === s).length;
+  const order: State[] = ['work', 'review', 'wait', 'rest', 'off'];
+
+  // 선택: 지도·목록 어느 쪽에서 골라도 같은 직원
+  const [sel, setSel] = useState<string | null>(null);
+  const [ping, setPing] = useState(0);
+  useEffect(() => { if (sel && !people.some((p) => p.key === sel)) setSel(null); }, [people, sel]);
+  const selected = people.find((p) => p.key === sel) ?? null;
+
+  // 상태가 바뀔 때만 잠깐 말풍선(첫 화면에서는 띄우지 않음)
+  const prev = useRef<Map<string, Pose> | null>(null);
+  const [bubbles, setBubbles] = useState<Record<string, string>>({});
+  const bubbleTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  useEffect(() => () => { for (const t of bubbleTimers.current.values()) clearTimeout(t); }, []);
+  useEffect(() => {
+    if (!ready || !agents.data) return;
+    const before = prev.current; const nowMap = new Map(people.map((p) => [p.key, p.pose]));
+    prev.current = nowMap;
+    if (!before) return;
+    const add: Record<string, string> = {};
+    for (const p of people) { const was = before.get(p.key); if (was && was !== p.pose && BUBBLE[p.pose]) add[p.key] = BUBBLE[p.pose]!; }
+    // 상태가 다시 바뀌면 그 직원의 말풍선은 지운다(지난 상태 말풍선이 남지 않게)
+    const changed = people.filter((p) => { const was = before.get(p.key); return was && was !== p.pose; }).map((p) => p.key);
+    if (!changed.length) return;
+    setBubbles((b) => { const n = { ...b }; for (const k of changed) delete n[k]; return { ...n, ...add }; });
+    for (const k of changed) { const old = bubbleTimers.current.get(k); if (old) clearTimeout(old); bubbleTimers.current.delete(k); }
+    for (const k of Object.keys(add)) bubbleTimers.current.set(k, setTimeout(() => { bubbleTimers.current.delete(k); setBubbles((b) => { const n = { ...b }; delete n[k]; return n; }); }, 6000));
+  }, [people, ready, agents.data]);
+
+  // 그림 크기: 창에 맞춰 그림만 키우고 줄인다(글자는 그대로)
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(2);
+  useLayoutEffect(() => {
+    const el = stageRef.current; if (!el) return;
+    const fit = () => { const r = el.getBoundingClientRect(); setScale(Math.max(1.2, Math.min((r.width - 4) / W, (r.height - ACTIVITY_MIN) / layout.H))); };
+    fit();
+    const ro = new ResizeObserver(fit); ro.observe(el);
+    return () => ro.disconnect();
+  }, [layout.H, agents.data]);
+
+  const [tab, setTab] = useState<'staff' | 'results'>('staff');
+  const reduce = still;
+  const timeLabel = timeMode === 'off' ? '시간 효과 꺼짐' : timeMode === 'auto' ? `${hhmm(now)} · ${mood.label}` : `${mood.label} 분위기(미리 보기)`;
 
   return (
-    <div className="office-wrap">
-      <div className="office">
-        <div className="office-panel office-head">
-          <div>
-            <div className="office-title">{project.plan.name}</div>
-            <div className="office-sub">직원 {(agents.data ?? []).length}명 · 진행 중인 미션 {live.length}개{limited ? ' · 사용 한도 휴식 중' : ''}</div>
+    <div className={`ofc${reduce ? ' ofc-still' : ''}`}>
+      <header className="ofc-top">
+        <div className="ofc-mission">
+          <span className="ofc-eyebrow">미션</span>
+          {current ? (
+            <>
+              <strong className="ofc-mission-title" title={current.prompt}>{missionTitle(current)}</strong>
+              <span className={`ofc-pill ofc-pill-${ACTIVE.includes(current.status) ? 'live' : current.status === 'waiting_user' ? 'ask' : 'idle'}`}>{MISSION_STATUS_LABEL[current.status]} · 사이클 {current.cycle}</span>
+            </>
+          ) : <span className="muted">진행 중인 미션 없음</span>}
+        </div>
+        <div className="ofc-head-row">
+          <span className="ofc-headcount">직원 {internal.length}명{externals.length ? ` · 외부 리뷰어 ${externals.length}명` : ''}</span>
+          <div className="ofc-counts" aria-label="직원 상태별 인원(외부 리뷰어 제외)">
+            {order.map((s) => <span key={s} className={`ofc-count ofc-count-${s}`}>{STATE_LABEL[s]} <b>{count(s)}</b></span>)}
           </div>
-          <div className="office-counts">
-            {order.map((s) => (
-              <span key={s} className={`office-count office-count-${s}`}>{STATE_LABEL[s]} {count(s)}</span>
-            ))}
+          {asks > 0 ? <button className="ofc-ask" onClick={openDecisions}>확인 필요 <b>{asks}</b></button> : <span className="ofc-ask-none">확인할 일 없음</span>}
+          <div className="ofc-time">
+            <span className="ofc-clock">{timeLabel}</span>
+            <select aria-label="시간대 분위기" value={timeMode} onChange={(e) => { const v = e.target.value as TimeMode; setTimeMode(v); store.set('crewgenai.office.time', v); }}>
+              {TIME_MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+            <label className="ofc-still-toggle"><input type="checkbox" checked={still} onChange={(e) => { setStill(e.target.checked); store.set('crewgenai.office.still', e.target.checked ? '1' : '0'); }} /> 움직임 줄이기</label>
           </div>
         </div>
-        {agents.loading && !agents.data && <Loading />}
-        {agents.error && <Banner>{agents.error}</Banner>}
-        {agents.data && rows.length === 0 && <div className="office-panel office-empty">아직 직원이 없습니다. 직원 탭에서 기본 템플릿을 불러오세요.</div>}
-        {rows.length > 0 && (
-          <div className="office-body">
-            <div className="office-panel office-map-panel">
-              <OfficeMap rows={rows} />
-            </div>
-            <section className="office-panel office-side">
-              <div className="office-ribbon">직원별 상태</div>
-              <div className="office-list">
-                {order.flatMap((st) => rows.filter((r) => r.state === st)).map((r) => (
-                  <div key={r.key} className={`office-row office-card-${r.state}`} title={`${r.title}\n${r.note}`}>
-                    <Sprite pal={r.pal} pose={r.pose} />
-                    <div className="office-row-main">
-                      <div className="office-row-head"><span className="office-code">{r.code}</span><strong className="office-row-name">{r.name}</strong><span className={`office-count office-count-${r.state}`}>{STATE_LABEL[r.state]}</span></div>
-                      <div className="office-row-note">{r.note}</div>
-                    </div>
-                  </div>
+      </header>
+      {agents.loading && !agents.data && <Loading />}
+      {agents.error && <Banner>{agents.error}</Banner>}
+      {agents.data && internal.length === 0 && <div className="ofc-empty">아직 직원이 없습니다. 직원 탭에서 기본 템플릿을 불러오세요.</div>}
+      {internal.length > 0 && (
+        <div className="ofc-body">
+          <div className="ofc-left" ref={stageRef}>
+          <div className="ofc-stage">
+            <div className="ofc-canvas" style={{ width: W * scale, height: layout.H * scale }}>
+              <Scene people={people} staff={staff} layout={layout} placed={placed} mood={mood} selected={sel} />
+              <div className="ofc-overlay">
+                <span className="ofc-zone" style={{ left: 4 * scale, top: (WALL - 2) * scale }}>업무 공간</span>
+                <span className="ofc-zone" style={{ left: (ROOM_X + 2) * scale, top: (WALL + 1) * scale }}>리뷰룸</span>
+                <span className="ofc-zone" style={{ left: 4 * scale, top: (layout.loungeY + 1) * scale }}>라운지</span>
+                {count('off') > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: 226 * scale, top: (layout.loungeY + 29) * scale }}>휴가 {count('off')}명</span>}
+                {staff.map((p, i) => {
+                  const d = deskAt(i); const at = placed.find((x) => x.p.key === p.key);
+                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 24) * scale} top={(d.y + 30) * scale} max={CELL_W * scale - 4} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
+                })}
+                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => {
+                  // 리뷰룸: 왼쪽 좌석은 왼쪽 끝, 오른쪽 좌석은 오른쪽 끝에 맞춰 탁자를 가리지 않는다. 라운지: 자리 아래 가운데
+                  const align = zone === 'review' ? (x < 250 ? 'start' : 'end') : 'center';
+                  const left = align === 'start' ? (DIV_X + 2) * scale : align === 'end' ? (W - 1) * scale : (x + w / 2) * scale;
+                  return <Tag key={`r${p.key}`} p={p} left={left} top={(y + (zone === 'review' ? 19 : h + 1)) * scale} max={(zone === 'review' ? 40 : 19) * scale} align={align} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />;
+                })}
+                {overflow.review > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: 256 * scale, top: (WALL + 1) * scale }}>리뷰 +{overflow.review}명</span>}
+                {overflow.lounge > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: 150 * scale, top: (layout.H - 8) * scale }}>휴식 +{overflow.lounge}명(목록 참고)</span>}
+                {placed.map(({ p, x, y, w, h }) => (
+                  <button key={`h${p.key}-${sel === p.key ? ping : 0}`} className={`ofc-hit${sel === p.key ? ' is-on' : ''}${sel === p.key && ping ? ' is-ping' : ''}`} style={{ left: x * scale, top: y * scale, width: w * scale, height: h * scale }}
+                    aria-label={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`} title={`${p.code} ${p.name}\n${POSE_LABEL[p.pose]}: ${p.task}`} onClick={() => { setSel(p.key); setTab('staff'); }} />
                 ))}
+                {placed.map(({ p, x, y, w, zone }) => {
+                  const flag = p.blocked.length || p.blockedSteps.length ? { cls: 'bad', text: '막힘' } : p.asks ? { cls: 'ask', text: '확인 필요' } : null;
+                  const bub = bubbles[p.key];
+                  if (!flag && !bub) return null;
+                  // 머리 옆(오른쪽 좌석은 왼쪽)에 붙여 위 줄 이름표를 가리지 않게 한다
+                  const leftSide = zone === 'review' && x > 250;
+                  return (
+                    <div key={`f${p.key}`} className={`ofc-flags${leftSide ? ' is-left' : ''}`} style={{ left: (leftSide ? x - 1 : x + w + 1) * scale, top: (y - 1) * scale }}>
+                      {flag && <span className={`ofc-flag ofc-flag-${flag.cls}`}>{flag.cls === 'bad' ? '⛔' : '🔔'} {flag.text}</span>}
+                      {!flag && bub && <span className="ofc-bubble">{bub}</span>}
+                    </div>
+                  );
+                })}
               </div>
-            </section>
+            </div>
           </div>
-        )}
-      </div>
+          <Activity people={people} working={working} sel={sel} mission={current} onPick={(k) => { setSel(k); setTab('staff'); }} onResults={() => setTab('results')} />
+          </div>
+          <aside className="ofc-side">
+            <div className="ofc-tabs" role="tablist">
+              <button role="tab" aria-selected={tab === 'staff'} className={tab === 'staff' ? 'is-on' : ''} onClick={() => setTab('staff')}>직원 현황</button>
+              <button role="tab" aria-selected={tab === 'results'} className={tab === 'results' ? 'is-on' : ''} onClick={() => setTab('results')}>결과물{current?.results?.length ? ` ${current.results.length}` : ''}</button>
+            </div>
+            {tab === 'staff' ? (
+              <>
+                <ul className="ofc-list" aria-label="직원 목록">
+                  {[...internal, ...externals].map((p) => (
+                    <li key={p.key}>
+                      <button className={`ofc-row${sel === p.key ? ' is-on' : ''}`} onClick={() => { setSel(p.key); setPing((n) => n + 1); }} aria-pressed={sel === p.key}>
+                        <Portrait char={p.char} />
+                        <span className="ofc-row-main">
+                          <span className="ofc-row-head"><span className="ofc-code">{p.code}</span><span className="ofc-row-name">{p.name}</span>{p.external && <span className="ofc-ext">외부</span>}</span>
+                          <span className="ofc-row-task">{p.blocked.length || p.blockedSteps.length ? '⛔ 막힘 · ' : ''}{p.task}</span>
+                        </span>
+                        <span className={`ofc-state ofc-state-${p.state}`}>{POSE_LABEL[p.pose]}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {selected ? <Detail p={selected} mission={current} folder={project.plan.folder} /> : <div className="ofc-detail ofc-detail-empty muted small">지도에서 인물을 누르거나 목록에서 직원을 고르면 현재 작업·막힌 이유·최근 결과물을 보여 줍니다.</div>}
+                {asks > 0 && <button className="ofc-ask-box" onClick={openDecisions}><span>🔔 확인 요청 <b>{asks}</b></span><span className="ofc-ask-cta">추천안 보기 ›</span></button>}
+              </>
+            ) : (
+              <div className="ofc-results">{current ? <ResultsPanel mission={current} showMission /> : <div className="muted small">진행한 미션이 없습니다.</div>}</div>
+            )}
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
+
+function Tag({ p, left, top, max, align = 'center', on, dim, small, onPick }: { p: Person; left: number; top: number; max: number; align?: 'start' | 'center' | 'end'; on: boolean; dim?: boolean; small?: boolean; onPick: () => void }) {
+  const tx = align === 'start' ? '0' : align === 'end' ? '-100%' : '-50%';
+  return (
+    <button className={`ofc-tag ofc-tag-${p.state}${on ? ' is-on' : ''}${dim ? ' is-dim' : ''}${small ? ' is-sm' : ''}`} style={{ left, top, maxWidth: max, transform: `translate(${tx}, 0)` }} onClick={onPick} title={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`}>
+      <span className="ofc-tag-dot" aria-hidden="true" />{small ? p.code : `${p.code} ${shortName(p.name)}`}
+    </button>
+  );
+}
+
+/** 지도 이름표용 짧은 이름: '기획·요구 분석' → '기획', '프런트엔드 개발' → '프런트엔드'(전체 이름은 목록·툴팁에) */
+function shortName(n: string) { return n.split(/[\s·/]+/).find(Boolean) ?? n; }
+const ACTIVITY_MIN = 150; // 지도 아래 '지금 진행 중' 칸의 최소 높이(px)
+const KIND_LABEL: Record<WorkingItem['kind'], string> = { author: '작성', reviewer: '독립 검토', codex: 'Codex 리뷰', check: '자동 검사', operator: '계획·판단' };
+/** 지도 아래: 지금 실제로 실행 중인 일(실행 기록 그대로). 누르면 그 직원을 고른다. */
+function Activity({ people, working, sel, mission, onPick, onResults }: { people: Person[]; working: WorkingItem[]; sel: string | null; mission: Mission | null; onPick: (key: string) => void; onResults: () => void }) {
+  const codexIdx = new Map<WorkingItem, number>(); working.filter((w) => w.kind === 'codex').forEach((w, i) => codexIdx.set(w, i));
+  const items = working.map((w) => {
+    const p = w.kind === 'codex' ? people.find((x) => x.key === `codex-${codexIdx.get(w)}`) : people.find((x) => x.agent?.id === w.agentId);
+    return { w, p };
+  });
+  if (items.length === 0) {
+    // 실행 중인 작업이 없으면 한 줄로: 미션 상태와 결과물·미션 화면으로 가는 버튼
+    return (
+      <section className="ofc-activity is-idle" aria-label="지금 진행 중인 작업">
+        <strong>지금 실행 중인 작업 없음</strong>
+        <span className="muted small">{mission ? `${MISSION_STATUS_LABEL[mission.status]} · 사이클 ${mission.cycle}` : '진행한 미션 없음'}</span>
+        <span className="ofc-activity-actions">
+          {mission && <button className="btn btn-sm" onClick={onResults}>최근 결과물 보기</button>}
+          {mission && <button className="btn btn-sm" onClick={() => window.dispatchEvent(new CustomEvent('crewgenai:goto-mission', { detail: { projectId: mission.projectId, missionId: mission.id } }))}>미션 화면</button>}
+        </span>
+      </section>
+    );
+  }
+  return (
+    <section className="ofc-activity" aria-label="지금 진행 중인 작업">
+      <div className="ofc-activity-head"><strong>지금 진행 중</strong><span className="muted small">실행 기록 기준 · {items.length}건</span></div>
+      {(
+        <ul className="ofc-activity-list">
+          {items.map(({ w, p }, i) => (
+            <li key={i}>
+              <button className={`ofc-act${p && sel === p.key ? ' is-on' : ''}`} disabled={!p} onClick={() => p && onPick(p.key)}>
+                {p && <Portrait char={p.char} size={24} />}
+                <span className="ofc-act-who">{p ? `${p.code} ${p.name}` : w.who}</span>
+                <span className={`ofc-act-kind ofc-act-${w.kind}`}>{KIND_LABEL[w.kind]}</span>
+                <span className="ofc-act-task" title={w.task}>{w.task}</span>
+                <span className="muted small">{hhmm(w.since)}부터</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** 선택한 직원 상세: 이름·역할·상태·현재 작업·막힌 이유·최근 결과물(직전 실행에서 이 직원이 바꾼 파일) */
+function Detail({ p, mission, folder }: { p: Person; mission: Mission | null; folder: string }) {
+  const [files, setFiles] = useState<{ rel: string; at: string | null }[] | null>(null);
+  const [more, setMore] = useState(false);
+  const act = useAction();
+  const opener = useFileOpener();
+  useEffect(() => {
+    let alive = true; setFiles(null);
+    if (!mission || !p.agent) { setFiles([]); return; }
+    (async () => {
+      const d = await ws().missionDetail(mission.id);
+      const out: { rel: string; at: string | null }[] = [];
+      for (const c of [...d.cycles].reverse().slice(0, 3)) {
+        const r = await ws().runDetail(c.runId);
+        const mine = r.attempts.filter((a: Attempt) => a.agentId === p.agent!.id && a.role === 'author' && a.changedFiles.length).reverse();
+        for (const a of mine) for (const f of a.changedFiles) if (!out.some((x) => x.rel === f)) out.push({ rel: f, at: a.finishedAt });
+        if (out.length >= 5) break;
+      }
+      if (alive) setFiles(out.slice(0, 5));
+    })().catch(() => { if (alive) setFiles([]); });
+    return () => { alive = false; };
+  }, [p.key, p.agent, mission?.id, mission?.cycle, mission?.updatedAt]);
+  const blocked = [...p.blocked.map((d) => `${d.tool} 거부: ${d.target}`), ...p.blockedSteps];
+  return (
+    <section className="ofc-detail" aria-label={`${p.code} ${p.name} 상세`}>
+      <div className="ofc-detail-head">
+        <Portrait char={p.char} size={44} />
+        <div className="ofc-detail-id">
+          <div><span className="ofc-code">{p.code}</span> <strong>{p.name}</strong>{p.external && <span className="ofc-ext">외부</span>}</div>
+          <div className="muted small ofc-clamp" title={p.role}>{p.role}</div>
+        </div>
+        <span className={`ofc-state ofc-state-${p.state}`}>{POSE_LABEL[p.pose]}</span>
+      </div>
+      <dl className="ofc-dl">
+        <dt>현재 작업</dt><dd>{p.task}{p.since ? <span className="muted small"> · {hhmm(p.since)}부터</span> : null}</dd>
+        {blocked.length > 0 && <><dt className="bad">막힌 이유</dt><dd><ul className="ofc-blocked">{blocked.slice(0, 3).map((b, i) => <li key={i}>{b}</li>)}</ul>{blocked.length > 3 && <span className="muted small">외 {blocked.length - 3}건</span>}</dd></>}
+        <dt>최근 결과물</dt>
+        <dd>
+          {files === null ? <span className="muted small">불러오는 중…</span> : files.length === 0 ? <span className="muted small">{p.external ? '외부 리뷰어의 보고서는 결과물 탭에서 확인합니다.' : '최근 실행에서 바꾼 파일이 없습니다.'}</span> : (
+            <ul className="ofc-files">{files.map((f) => (
+              <li key={f.rel}><button className="btn btn-sm" disabled={act.busy} onClick={() => void act.run(() => opener.open(`${folder}/${f.rel}`, 'file', f.rel.split('/').pop()))}>열기</button><span className="mono small ofc-file" title={f.rel}>{f.rel}</span>{f.at && <span className="muted small">{hhmm(f.at)}</span>}</li>
+            ))}</ul>
+          )}
+        </dd>
+      </dl>
+      {p.agent && <button className="btn-link small" onClick={() => setMore(true)}>상세 보기</button>}
+      {act.error && <Banner>{act.error}</Banner>}
+      {opener.viewer}
+      {more && p.agent && (
+        <Modal title={`${p.code} ${p.name}`} onClose={() => setMore(false)}>
+          <div className="modal-body ofc-more">
+            <p><span className="muted small">역할</span><br />{p.role}</p>
+            <p><span className="muted small">상태</span><br />{POSE_LABEL[p.pose]} — {p.task}</p>
+            {blocked.length > 0 && <div><span className="muted small">막힌 이유</span><ul>{blocked.map((b, i) => <li key={i}>{b}</li>)}</ul></div>}
+            <p><span className="muted small">업무 지시</span></p>
+            <pre className="pre small">{p.agent.instructions}</pre>
+            <p className="muted small">모델 {p.agent.model || '기본'} · 도구 {p.agent.tools.join(', ')}</p>
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}
+

@@ -25,7 +25,10 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     };
     load();
     const off = ws().onLive((e: LiveEvent) => { if (e.type === 'mission') { if (t) clearTimeout(t); t = setTimeout(load, 400); } });
-    return () => { off(); if (t) clearTimeout(t); };
+    // 다른 화면(사무실의 '확인 필요' 등)에서 결정 팝업을 연다
+    const openNow = () => { ws().pendingDecisions().then((list) => { for (const d of list) seen.current.add(d.key); setItems(list); setIdx(0); setDone(null); setOpen(true); }).catch(() => {}); };
+    window.addEventListener('crewgenai:open-decisions', openNow);
+    return () => { off(); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); };
   }, []);
 
   const cur = items[Math.min(idx, items.length - 1)] ?? null;
@@ -63,13 +66,14 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
               <h2>결정이 필요합니다{items.length > 1 ? ` (${Math.min(idx, items.length - 1) + 1}/${items.length})` : ''}</h2>
               <button className="btn" onClick={() => setOpen(false)}>나중에</button>
             </div>
-            {done && <div className="decision-done">{done}</div>}
             {cur ? (
+              <>
               <div className="decision-body">
+                {done && <div className="decision-done">{done}</div>}
                 <div className="decision-where">
                   <div><span className="muted small">미션</span> <strong>{cur.projectName}</strong> · {cur.missionTitle}</div>
                   <div><span className="muted small">작업</span> {cur.task}</div>
-                  {cur.waiting && <div className="muted small">미션이 이 결정을 기다리며 멈춰 있습니다. 고르기 전에는 진행하지 않습니다.</div>}
+                  {cur.waiting && <div className="muted small decision-wait">미션이 이 결정을 기다리며 멈춰 있습니다. 고르기 전에는 진행하지 않습니다.</div>}
                 </div>
                 <div className="decision-q">{cur.question}</div>
                 {cur.explain && <div className="decision-explain small">{cur.explain}</div>}
@@ -89,14 +93,17 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                   <button className="btn" disabled={act.busy || !own.trim()} onClick={() => void choose(own)}>이 답으로 정하기</button>
                 </div>
                 {act.error && <Banner>{act.error}</Banner>}
-                <div className="row gap decision-nav">
+              </div>
+              <div className="decision-foot">
+                <button className="btn-link small" onClick={() => { onOpenMission(cur.projectId, cur.missionId); setOpen(false); }}>미션 화면에서 자세히</button>
+                <div className="decision-foot-nav">
                   {items.length > 1 && <button className="btn" onClick={() => setIdx((i) => (i - 1 + items.length) % items.length)}>이전</button>}
                   {items.length > 1 && <button className="btn" onClick={() => setIdx((i) => (i + 1) % items.length)}>다음 결정</button>}
-                  <button className="btn-link small" onClick={() => { onOpenMission(cur.projectId, cur.missionId); setOpen(false); }}>미션 화면에서 자세히</button>
                 </div>
               </div>
+              </>
             ) : (
-              <div className="muted pad">남은 결정이 없습니다.</div>
+              <div className="decision-body">{done && <div className="decision-done">{done}</div>}<div className="muted">남은 결정이 없습니다.</div></div>
             )}
           </div>
         </div>

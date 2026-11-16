@@ -47,6 +47,12 @@ export default function App() {
     const off = ws().onLive((e: LiveEvent) => { if (e.type === 'mission' || e.type === 'run' || e.type === 'learning') { if (t) clearTimeout(t); t = setTimeout(load, 400); } });
     return () => { off(); if (t) clearTimeout(t); };
   }, []);
+  // 다른 화면(사무실 등)에서 미션 화면으로 이동
+  useEffect(() => {
+    const go = (e: Event) => { const d = (e as CustomEvent<{ projectId: string; missionId: string }>).detail; if (!d) return; setSelectedId(d.projectId); setTab('mission'); setFocusMission({ id: d.missionId, n: Date.now() }); };
+    window.addEventListener('crewgenai:goto-mission', go);
+    return () => window.removeEventListener('crewgenai:goto-mission', go);
+  }, []);
   const openAttention = (it: AttentionItem) => {
     setSelectedId(it.projectId);
     if (it.missionId) { setTab('mission'); setFocusMission({ id: it.missionId, n: Date.now() }); }

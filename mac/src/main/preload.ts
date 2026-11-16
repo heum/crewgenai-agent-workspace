@@ -4,7 +4,7 @@ import type { LiveEvent, WorkspaceApi } from '../shared/types';
 
 const methods = [
   'listProjects', 'createProject', 'updatePlan', 'planHistory', 'pickFolder', 'pickFiles', 'pickSubfolder',
-  'revealInFinder', 'openPath', 'openLocalUrl', 'previewFile', 'readTextFile',
+  'revealInFinder', 'openPath', 'openLocalUrl', 'demoInfo', 'demoApprove', 'demoStart', 'demoStop', 'demoLog', 'demoRequest', 'demoReset', 'previewFile', 'readTextFile',
   'listAgents', 'saveAgent', 'duplicateAgent', 'setAgentActive', 'loadAgentTemplates', 'agentTemplateSets', 'fireAgent',
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',
   'startRun', 'rerunFrom', 'pauseRun', 'resumeRun', 'cancelRun', 'resolveInterrupted', 'listRuns', 'runDetail', 'attemptEvents',

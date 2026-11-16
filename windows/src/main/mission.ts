@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
@@ -16,6 +16,7 @@ import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
+import { DEMO_FILE, readManifest } from './demo';
 
 /** 사용자가 고를 선택지: 고르면 무엇이 달라지는지(effect), 추천 여부와 이유. 추천은 안내일 뿐 자동으로 고르지 않는다. */
 const CHOICE_ITEMS = { type: 'array', items: { type: 'object', required: ['label', 'effect', 'recommended', 'why'], properties: {
@@ -34,7 +35,17 @@ const RESULT_RULE = [
   '- 결과물이 사용자가 볼 수 없는 준비 작업(대조·검증 기록 정리)만으로 사이클을 채우지 않는다.',
 ].join('\n');
 /** 판단: 작업별 결과물 목록 */
-const RESULTS_RULE = '- results: 이번 사이클 작업마다 사용자가 열어 볼 결과물을 넣는다. path는 프로젝트 폴더 기준 상대 경로(실제로 있는 파일만) 또는 이 컴퓨터에서 실행 중인 화면 주소(http://localhost:포트/…, 실제로 띄운 경우만). changed에는 무엇이 달라졌는지 한 문장, check에는 사용자가 열어서 확인할 것(어디를 보고 무엇이 맞으면 되는지) 한 문장을 쓴다. 실패한 작업도 확인할 결과물이 있으면 넣고 changed에 실패를 밝힌다. 진행 보고(summary)에는 결과물 목록을 다시 쓰지 않는다.';
+const RESULTS_RULE = '- results: 이번 사이클 작업마다 사용자가 열어 볼 결과물을 넣는다. path는 프로젝트 폴더 기준 상대 경로(실제로 있는 파일만) 또는 이 컴퓨터에서 실행 중인 화면 주소(http://localhost:포트/…, 실제로 띄운 경우만). changed에는 무엇이 달라졌는지 한 문장, check에는 사용자가 열어서 확인할 것(어디를 보고 무엇이 맞으면 되는지) 한 문장, verified에는 실제로 실행해 확인한 것과 결과(예: \'시험 139건 실행, 1건 실패\') 또는 \'미검증 — 이유\', remaining에는 남은 사항(없으면 빈 문자열)을 쓴다. 실패한 작업도 확인할 결과물이 있으면 넣고 changed에 실패를 밝힌다. 진행 보고(summary)에는 결과물 목록을 다시 쓰지 않는다.';
+/** 시연: 작업 완료 기준은 사용자가 로컬에서 실제 기능을 실행해 확인할 수 있는 상태 */
+function demoRule(plan: PlanFields): string {
+  const file = `${plan.outputDir || 'crewgenai-output'}/${DEMO_FILE}`;
+  return [
+    `- 완료 기준은 사용자가 로컬에서 실제 기능을 실행해 볼 수 있는 상태다. 실행 가능한 기능(웹 화면·API·DB/관리 화면·앱)을 만든 작업은 시연을 마련한다. MD·소스·시험 기록은 보조 자료다. 문서만 만드는 작업은 문서가 결과물이다.`,
+    `- 시연 목록 파일: ${file}. 앱이 이 파일을 읽어 사용자가 버튼으로 서비스를 켜고 끈다(사용자는 터미널을 쓰지 않는다). 형식: {"services":[{"id":"api-server","name":"API 서버","kind":"api|web|admin|app","repo":"저장소 폴더","start":["./scripts/run.sh","인자"] 또는 ["npm","run","dev"],"port":8081,"health":"/actuator/health","env":{"SPRING_PROFILES_ACTIVE":"demo"},"needs":["먼저 켤 서비스 id"],"data":"api+db|screen-only|mock","note":"시연용 데이터 설명","startupSec":180}],"apis":[{"service":"api-server","id":"list-items","group":"항목 관리","title":"항목 목록","method":"GET","path":"/api/...","headers":{"Authorization":"Bearer {{token}}"},"body":{},"description":"무엇을 하는지","expect":"정상 200·오류 401 예","capture":{"token":"응답 JSON 경로"}}]}`,
+    `- 시연 원칙: 기존 데이터에 영향이 없는 시연용 데이터(별도 시연 프로필·별도 로컬 DB·예시 계정)를 쓴다. 비밀값은 목록 env에 넣지 않는다(시연 프로필 설정 파일에). 연결된 작업은 같은 시연 환경을 함께 쓰고, 작은 수정마다 새 환경을 만들지 않는다. API는 apis 항목(앱의 API 시연 화면에서 직접 호출)에 로그인·정상·오류 예시를 넣는다. DB·ERP 변경은 조회·등록·수정이 되는 관리 화면(기존 관리 화면을 우선 활용)과 다시 조회해 저장값을 확인하는 흐름으로 보여 준다. 화면만 있고 API·DB가 연결되지 않았거나 예시·대체 응답을 쓰면 data를 screen-only·mock으로 표시한다.`,
+    `- 시연을 마련한 직원은 직접 서비스를 띄워(허용된 명령으로) 상태 확인 경로와 주요 동작을 확인하고 그 결과를 보고한다. 띄워 보지 못했으면 미검증으로 쓴다.`,
+  ].join('\n');
+}
 /** 진전 없는 사이클이 이만큼 이어지면 멈추고 묻는다 */
 const IDLE_LIMIT = 2;
 const NO_MANUAL_RULE = '- 사용자에게 수작업을 맡기지 않는다: 앱에서 직원을 대신 실행하기, 터미널 명령 실행, 결과·원문 붙여넣기, 파일 직접 저장을 요청하거나 질문 선택지로 내지 않는다. 직원 권한·도구로 할 수 없는 일은 막힘(이유)으로 진행 보고에 남기고, 그 일 없이 할 수 있는 다음 개발 작업으로 넘어간다. 같은 막힘 때문에 같은 질문을 되풀이하지 않는다. 예외는 사용자만 할 수 있는 일(본인 계정 로그인, 비밀값 입력, 실제 메일·결제 같은 외부 발송 승인)뿐이며, 이때는 무엇을 왜 하는지 한 줄로 요청한다. 리뷰의 후속 항목([후속])은 다음 작업 목록에 기록만 하고 이번 작업을 다시 하지 않는다.';
@@ -66,12 +77,13 @@ const PLAN_SCHEMA = {
 const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
   properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
-    results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' } } } } },
+    results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' },
+      demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } } },
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
 interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
-interface RawResult { task?: string; title?: string; path?: string; changed?: string; check?: string }
+interface RawResult { task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface Judge { results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터가 낸 선택지 정리: 빈 값·중복을 빼고 최대 4개, 각 200자 */
@@ -857,7 +869,9 @@ export class MissionRunner {
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_judge', `판단: ${judge.decision === 'continue' ? '계속' : judge.decision === 'done' ? '완료' : '사용자 확인'} — ${judge.summary}`, judge);
         this.collectStaff(id, judge.staffProposals, this.d.ensureAgents(m.projectId).filter((a) => a.active));
-        m = this.set(id, { results: resolveResults(project.plan.folder, judge.results), resultsCycle: m.cycle });
+        { const results = resolveResults(project.plan.folder, judge.results);
+          const hist = [{ cycle: m.cycle, results }, ...(this.get(id).resultsHistory ?? []).filter((h) => h.cycle !== m.cycle)].slice(0, 6);
+          m = this.set(id, { results, resultsCycle: m.cycle, resultsHistory: hist }); }
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
           this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}${open ? `\n(보류한 업무 ${open}건은 확인이 필요합니다)` : ''}` });
@@ -1033,7 +1047,7 @@ export class MissionRunner {
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 유지·되돌림, 범위·우선순위 등)이면 choices에 2~4개의 선택지를 쓴다: label(예: 'HTML 기준 유지'), effect(고르면 무엇이 달라지는지 쉬운 한 문장, 예: '제품 화면을 HTML에 맞춰 고친다'), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장). 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 선택지로 내지 않는다. '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
-      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULT_RULE,
+      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULT_RULE, demoRule(plan), ...this.demoSection(plan),
       '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
@@ -1144,12 +1158,22 @@ export class MissionRunner {
       '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
-      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULTS_RULE,
+      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULTS_RULE, demoRule(plan), '- results의 demo: 실행 가능한 기능의 결과물이면 시연 목록의 service id와, 화면이면 path(예: /operator/companies), API면 api(apis 항목 id), steps(사용자가 눌러 볼 순서), expected(예상 결과), data(api+db·screen-only·mock)를 쓴다. 시연 목록에 없는 서비스는 쓰지 않는다. 문서만 만든 작업은 demo를 비운다.', ...this.demoSection(plan),
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
       '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',
       ...this.parkedSection(m),
     ].join('\n');
+  }
+
+  /** 계획·판단에 알려 줄 지금 시연 목록(서비스·API·목록 오류) */
+  private demoSection(plan: PlanFields): string[] {
+    const man = readManifest(plan);
+    if (!man.exists) return ['- 지금 시연 목록 파일은 아직 없다. 실행 가능한 기능을 만드는 작업에서 직원이 만든다.'];
+    return [
+      `- 지금 시연 목록: 서비스 ${man.services.map((x) => `${x.id}(${x.kind}${x.port ? `, 포트 ${x.port}` : ''}, ${x.data})`).join(', ') || '없음'} / API ${man.apis.length}개${man.apis.length ? ` (${man.apis.slice(0, 12).map((a) => `${a.service}:${a.id}`).join(', ')})` : ''}`,
+      ...(man.errors.length ? [`- 시연 목록 오류(고칠 것): ${man.errors.slice(0, 5).join(' / ')}`] : []),
+    ];
   }
 
   /** 오퍼레이터 호출: Claude CLI(읽기 전용 도구, 구조화 출력). 모의 실행이면 모의 CLI를 쓴다. */
@@ -1188,6 +1212,18 @@ export class MissionRunner {
   }
 }
 
+/** 결과물의 시연 연결: 서비스 id와 화면 경로(/로 시작) 또는 API 항목 id. 서비스가 없으면 시연 없음. */
+function cleanDemo(d: RawResult['demo']): ResultDemo | null {
+  if (!d || typeof d !== 'object') return null;
+  const service = String(d.service ?? '').trim().slice(0, 40);
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(service)) return null;
+  const path = String(d.path ?? '').trim().slice(0, 400);
+  const api = String(d.api ?? '').trim().slice(0, 60);
+  if (path && (!path.startsWith('/') || path.startsWith('//'))) return null;
+  const data = (['api+db', 'screen-only', 'mock'] as const).find((x) => x === d.data) ?? 'screen-only';
+  return { service, path: path || (api ? '' : '/'), api, steps: redact(String(d.steps ?? '')).slice(0, 800), expected: redact(String(d.expected ?? '')).slice(0, 400), data };
+}
+
 const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i;
 
 /** 판단이 적은 결과물을 확인한다: 화면 주소는 이 컴퓨터(localhost)만, 파일은 프로젝트 폴더 안(링크를 푼 실제 경로 기준)만. */
@@ -1197,7 +1233,7 @@ export function resolveResults(folder: string, raw: unknown): MissionResult[] {
   for (const r of (Array.isArray(raw) ? raw : []).slice(0, 20) as RawResult[]) {
     const p = String(r?.path ?? '').trim();
     if (!p) continue;
-    const base = { task: String(r.task ?? '').slice(0, 200), title: String(r.title ?? '').slice(0, 200) || p.slice(0, 200), changed: redact(String(r.changed ?? '')).slice(0, 600), check: redact(String(r.check ?? '')).slice(0, 600) };
+    const base = { task: String(r.task ?? '').slice(0, 200), title: String(r.title ?? '').slice(0, 200) || p.slice(0, 200), changed: redact(String(r.changed ?? '')).slice(0, 600), check: redact(String(r.check ?? '')).slice(0, 600), verified: redact(String(r.verified ?? '')).slice(0, 400), remaining: redact(String(r.remaining ?? '')).slice(0, 400), demo: cleanDemo(r.demo) };
     if (/^[a-z]+:\/\//i.test(p)) {
       if (LOCAL_URL.test(p)) out.push({ ...base, kind: 'url', path: p, relPath: p, exists: true });
       continue; // 외부 주소는 넣지 않는다

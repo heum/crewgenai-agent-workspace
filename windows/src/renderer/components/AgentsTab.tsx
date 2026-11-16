@@ -1,3 +1,5 @@
+import { CharSprite, CharacterPicker } from './CharacterArt';
+import { characterOf } from '../characters';
 import { useEffect, useState } from 'react';
 import type { Agent, AgentFields, AgentTemplateSetId, LiveEvent, Project, ToolName, WorkingItem } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
@@ -95,6 +97,7 @@ export default function AgentsTab({ project }: { project: Project }) {
         <div className="agent-list">
           {visible.map((a) => (
             <button key={a.id} className={`agent-item ${selected === a.id ? 'active' : ''} ${a.active ? '' : 'inactive'}`} onClick={() => setSelected(a.id)}>
+              <span className="agent-face"><CharSprite def={characterOf(a)} size={30} head /></span>
               <span className="agent-code">{a.code || '··'}</span>
               <span className="grow">
                 <span className="agent-item-head">
@@ -205,6 +208,11 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
   const [f, setF] = useState<AgentFields>(agent ? toFields(agent) : { ...BLANK });
   const act = useAction();
   const [msg, setMsg] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  // 캐릭터: 저장된 값(없으면 직군 기본) ↔ 지금 고른 값(저장 전)
+  const savedChar = agent ? characterOf(agent).id : '';
+  const curChar = characterOf({ code: f.code, name: f.name, role: f.role, character: f.character });
+  const charDirty = !!agent && curChar.id !== savedChar;
   const set = <K extends keyof AgentFields>(k: K, v: AgentFields[K]) => {
     setF((x) => ({ ...x, [k]: v }));
     setMsg(null);
@@ -227,6 +235,17 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
       {readOnlyWarn && <Banner kind="warn">수정 도구를 허용했지만 작업 폴더와 기획의 자동 수정 허용 경로가 모두 비어 있어 실제로는 파일을 수정할 수 없습니다.</Banner>}
       <div className="agent-form-cols">
       <div className="agent-form-left">
+      <div className="agent-char">
+        <span className="agent-char-pic"><CharSprite def={curChar} size={64} /></span>
+        <span className="agent-char-info">
+          <span className="muted small">캐릭터</span>
+          <b>{curChar.id} {curChar.name}</b>
+          {!f.character && <span className="muted small">직군 기본값</span>}
+          {charDirty && <span className="agent-char-dirty">저장 전 — 저장하면 적용됩니다</span>}
+        </span>
+        <button className="btn" onClick={() => setPicking(true)}>캐릭터 변경</button>
+      </div>
+      {picking && <CharacterPicker value={curChar.id} who={`${f.code} ${f.name || '새 직원'}`} onClose={() => setPicking(false)} onApply={(id) => { set('character', id); setPicking(false); }} />}
       <div className="form-grid two">
         <Field label="번호">
           <input className="input" value={f.code} onChange={(e) => set('code', e.target.value)} placeholder="예: 06" />

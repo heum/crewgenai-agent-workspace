@@ -103,3 +103,23 @@ describe('결정 팝업 선택지', () => {
     expect(cleanChoices('x')).toEqual([]);
   });
 });
+
+describe('직원 캐릭터', () => {
+  it('기본 템플릿 직원은 직군별 기본 캐릭터를 받고(시안 배정표), 캐릭터 번호는 20종만 저장된다', async () => {
+    const { TEMPLATE_SETS } = await import('../src/main/engine/templates');
+    const want: Record<string, string> = { '00': 'C01', '01': 'C04', '02': 'C06', '03': 'C03', '04': 'C07', '05': 'C08', '06': 'C12', '07': 'C17', '08': 'C15', '09': 'C20', '10': 'C09' };
+    for (const a of TEMPLATE_SETS.dev.agents) expect([a.code, a.character]).toEqual([a.code, want[a.code]]);
+    expect(TEMPLATE_SETS.general.agents.every((a) => /^C(0[1-9]|1\d|20)$/.test(a.character ?? ''))).toBe(true);
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir));
+    const list = svc.loadAgentTemplates(p.id);
+    const be = list.find((a) => a.code === '03')!;
+    const { id, projectId, version: _v, updatedAt: _u, ...f } = be;
+    expect(svc.saveAgent(projectId, id, { ...f, character: 'C05' }).character).toBe('C05');
+    expect(svc.saveAgent(projectId, id, { ...f, character: 'C99' }).character).toBeUndefined(); // 없는 번호는 저장하지 않음
+    svc.saveAgent(projectId, id, { ...f, character: 'C05' });
+    svc.loadAgentTemplates(p.id); // 템플릿을 다시 불러와도 고른 캐릭터 유지
+    expect(svc.store.listAgents(p.id).find((a) => a.code === '03')!.character).toBe('C05');
+    svc.close();
+  });
+});

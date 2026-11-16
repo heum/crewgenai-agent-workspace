@@ -1035,7 +1035,10 @@ export class Engine {
         const repos = tops && !tools.includes('Bash') ? new Set(repoDirs(plan.folder).map((r) => r.rel).filter(Boolean)) : null;
         const foreign = repos && tops ? outside.filter((f) => { const t = f.split(/[\\/]/)[0]; return repos.has(t) && !tops.has(t); }) : [];
         if (foreign.length) addEv('system', `맡은 저장소 밖에서 다른 프로그램이 바꾼 파일 ${foreign.length}개는 범위 검사에서 제외했습니다: ${foreign.slice(0, 5).join(', ')}`, '');
-        attempt.outOfScopeChanges = outside.filter((f) => !foreign.includes(f));
+        // 검토 담당(읽기 전용 도구만)은 파일을 바꿀 수 없다: 검토 중에 생긴 변경은 다른 프로그램이 한 것이므로 실패로 치지 않고 기록만 남긴다
+        const readOnly = !tools.some((t) => t === 'Edit' || t === 'Write' || t === 'Bash');
+        if (readOnly && outside.length) addEv('system', `검토 중에 다른 프로그램이 바꾼 파일 ${outside.length}개는 범위 검사에서 제외했습니다(검토 담당은 파일을 바꿀 수 없음): ${outside.slice(0, 5).join(', ')}`, '');
+        attempt.outOfScopeChanges = readOnly ? [] : outside.filter((f) => !foreign.includes(f));
       }
       attempt.exitCode = done.code; attempt.sessionId = sink.result?.sessionId ?? sink.sessionId ?? attempt.sessionId;
       const r = sink.result;

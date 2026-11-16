@@ -9,6 +9,7 @@ import { MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS
 import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Collapsible, Empty, Loading, Modal } from './common';
 import { Markdown } from '../markdown';
+import ResultsPanel from './Results';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './flowShared';
 import { runTone } from './RunTab';
 
@@ -341,7 +342,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           )}
         </div>
       </div>
-      {m.results && <ResultsCard mission={m} />}
+      {(m.results || m.resultsHistory?.length) && <ResultsCard mission={m} />}
       {m.summary && (
         <div className="card report-card">
           <div className="report-head"><strong>진행 보고</strong><span className="muted small">사이클 {m.resultsCycle ?? m.cycle} · 오퍼레이터 판단</span></div>
@@ -393,68 +394,13 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
  */
 /** 작업별로 바로 열어 볼 결과물 + 그 결과물에 대한 피드백(다음 사이클에 반영) */
 function ResultsCard({ mission: m }: { mission: Mission }) {
-  const act = useAction();
-  const [fb, setFb] = useState('');
-  const [sent, setSent] = useState<string | null>(null);
-  const [view, setView] = useState<{ title: string; path: string; text: string; md: boolean } | null>(null);
-  const rs = m.results ?? [];
-  // 열기: 화면 주소는 기본 브라우저, 이미지·HTML·PDF는 격리 미리보기 창, 문서·코드는 앱 안에서 바로 보여 준다(기본 앱이 없는 확장자도 열리게)
-  const open = (r: MissionResult) => act.run(async () => {
-    if (r.kind === 'url') { await ws().openLocalUrl(r.path); return; }
-    if (PREVIEW_EXT.test(r.path)) { await ws().previewFile(r.path); return; }
-    if (!TEXT_EXT.test(r.path)) { await openDefaultNow(r.path); return; } // 문서·표(docx·xlsx 등)는 기본 앱으로
-    const text = await ws().readTextFile(r.path);
-    setView({ title: r.title, path: r.path, text, md: /\.(md|markdown)$/i.test(r.path) });
-  });
-  const openDefaultNow = async (path: string) => { const err = await ws().openPath(path); if (err) throw new Error(`기본 앱으로 열지 못했습니다(이 형식에 연결된 앱이 없음): ${err}`); };
-  const openDefault = (path: string) => act.run(() => openDefaultNow(path));
-  const send = () => act.run(async () => {
-    const t = fb.trim(); if (!t) throw new Error('피드백을 입력하세요.');
-    const text = `[사이클 ${m.resultsCycle ?? m.cycle} 결과물 피드백] ${t}`;
-    if (ACTIVE.includes(m.status)) await ws().addDirective(m.id, text, 'next');
-    else if (m.status === 'failed') throw new Error('실패한 미션입니다. 아래 입력창에서 새로 지시하세요.');
-    else await ws().answerMission(m.id, text, 'continue', true);
-    setFb(''); setSent(ACTIVE.includes(m.status) ? '다음 사이클 계획에 반영합니다.' : '피드백을 반영해 이어서 진행합니다.');
-  });
   return (
     <div className="card results-card">
-      <div className="report-head"><strong>열어 볼 결과물</strong><span className="muted small">사이클 {m.resultsCycle ?? m.cycle} · 작업 {new Set(rs.map((r) => r.task)).size}개</span></div>
-      {!rs.length && <div className="muted small">이번 사이클에는 열어 볼 결과물이 없었습니다. 진행 보고에서 이유를 확인하세요.</div>}
-      <ul className="results-list">
-        {rs.map((r, i) => (
-          <li key={i}>
-            <div className="row gap wrap">
-              <button className="btn" disabled={!r.exists || act.busy} title={r.exists ? r.path : '파일이 없습니다'} onClick={() => void open(r)}>{r.kind === 'url' ? '화면 열기' : '열기'}</button>
-              <strong>{r.title}</strong>
-              {r.task && <span className="muted small">{r.task}</span>}
-              {!r.exists && <Badge tone="bad">파일 없음</Badge>}
-              {r.kind === 'file' && r.exists && <button className="btn-link small" disabled={act.busy} onClick={() => void openDefault(r.path)}>기본 앱</button>}
-            </div>
-            <div className="small muted mono">{r.relPath}</div>
-            {r.changed && <div className="small"><span className="muted">달라진 점 </span>{r.changed}</div>}
-            {r.check && <div className="small"><span className="muted">확인할 것 </span>{r.check}</div>}
-          </li>
-        ))}
-      </ul>
-      <div className="row gap results-fb">
-        <textarea className="input" rows={2} value={fb} placeholder="결과물을 보고 바꿀 점을 적어 주세요. 예: 추천 목록을 맨 위로, 이 문구는 숨겨 주세요" onChange={(e) => setFb(e.target.value)} />
-        <button className="btn btn-primary" disabled={act.busy || !fb.trim()} onClick={() => void send()}>피드백 보내기</button>
-      </div>
-      {sent && <div className="muted small">{sent}</div>}
-      {act.error && <Banner>{act.error}</Banner>}
-      {view && (
-        <Modal title={view.title} wide onClose={() => setView(null)}>
-          <div className="row gap"><span className="muted small mono">{view.path}</span><button className="btn-link small" onClick={() => void openDefault(view.path)}>기본 앱으로 열기</button></div>
-          <div className="result-view">{view.md ? <Markdown text={view.text} /> : <pre className="pre small">{view.text}</pre>}</div>
-        </Modal>
-      )}
+      <div className="report-head"><strong>열어 볼 결과물</strong></div>
+      <ResultsPanel mission={m} />
     </div>
   );
 }
-
-const PREVIEW_EXT = /\.(png|jpe?g|gif|webp|svg|html?|pdf)$/i;
-// 앱 안에서 글로 보여 줄 형식(문서·코드·설정·기록). 그 밖은 기본 앱으로 연다.
-const TEXT_EXT = /\.(md|markdown|txt|log|csv|tsv|json|jsonc|ya?ml|toml|ini|properties|xml|gradle|kts?|java|scala|groovy|py|rb|go|rs|swift|c|h|cc|cpp|hpp|cs|php|sql|sh|bash|zsh|ts|tsx|js|jsx|mjs|cjs|css|scss|less|vue|svelte|graphql|proto|dockerfile)$/i;
 
 function Fold({ id, title, count, summary, extra, className = 'card', children }: { id: string; title: string; count?: number; summary?: string; extra?: ReactNode; className?: string; children: ReactNode }) {
   const key = `crewgenai.fold.${id}`;

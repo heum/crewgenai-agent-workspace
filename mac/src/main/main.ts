@@ -109,6 +109,13 @@ function register() {
   h('revealInFinder', (p: string) => { guard(p); shell.showItemInFolder(p); });
   h('openPath', (p: string) => { guard(p); return shell.openPath(p); });
   h('openLocalUrl', (u: string) => { if (typeof u !== 'string' || !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i.test(u)) throw new Error('이 컴퓨터(localhost)의 화면 주소만 열 수 있습니다.'); return shell.openExternal(u); });
+  h('demoInfo', (id: string) => s().demoInfo(id));
+  h('demoApprove', (id: string, sid: string, hash: string) => s().demoApprove(id, sid, hash));
+  h('demoStart', (id: string, sid: string) => s().demoStart(id, sid));
+  h('demoStop', (id: string, sid: string) => s().demoStop(id, sid));
+  h('demoLog', (id: string, sid: string) => s().demoLog(id, sid));
+  h('demoRequest', (id: string, sid: string, req: { method: string; path: string; headers: Record<string, string>; body: string; capture?: Record<string, string> }) => s().demoRequest(id, sid, req));
+  h('demoReset', (id: string, sid: string) => s().demoReset(id, sid));
   h('previewFile', (p: string) => previewWindow(p));
   h('readTextFile', (p: string) => { guard(p); if (statSync(p).size > 2_000_000) throw new Error('파일이 너무 커서 미리 볼 수 없습니다.'); return readFileSync(p, 'utf8'); });
   h('listAgents', (id, includeFired) => s().store.listAgents(id, !!includeFired));
