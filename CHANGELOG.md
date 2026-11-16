@@ -4,6 +4,8 @@
 
 ## 미배포
 
+## 2026-11-16 — main 반영(9)
+
 - 자동 처리(설정, 기본 켬) 추가 — 사람이 손댈 곳을 PR 병합과 방향 결정으로 줄임.
   - 작업 브랜치: 보호 브랜치(dev·main·master·develop)에서는 `feat/crewgenai-<미션>`을 만들어 커밋(병합 안 된 같은 이름이 있으면 `-2`…). 오퍼레이터에게도 알려 dev라는 이유로 보류·확인 필요를 만들지 않게 함.
   - 시험 명령: 저장소의 `scripts/gradle.sh`·`scripts/check.sh`·npm `check`를 Bash 직원에게 자동 허용(링크 스크립트 제외), 실행 전 권한 점검에도 반영. 격리 복사본에 `.gradle`·`.venv`·상위 숨김 도구 폴더 링크, npm 저장소는 `node_modules` APFS 복제. 실행별 임시 폴더(TMPDIR·java.io.tmpdir)와 Gradle 캐시만 쓰기 허용, 로컬 소켓 허용(외부 네트워크는 차단 유지). git이 무시하는 산출물은 변경으로 보지 않음.
