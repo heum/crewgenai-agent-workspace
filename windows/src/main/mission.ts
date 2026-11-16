@@ -1108,7 +1108,7 @@ export class MissionRunner {
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. ${op?.instructions ?? ''}`.slice(0, 4000), cwd: plan.folder,
       tools: ['Read', 'Grep', 'Glob'], editScopes: [], allowedCommands: [], readDirs: [], sessionId: randomUUID(), resumeSessionId: null,
-      jsonSchema: schema, model: op?.model ?? '', maxBudgetUsd: op?.maxBudgetUsd ?? null,
+      jsonSchema: schema, model: op?.model ?? '', effort: op?.effort, maxBudgetUsd: op?.maxBudgetUsd ?? null,
     });
     const file = ex.executor === 'mock' ? process.execPath : ex.cliPath;
     if (!file) throw new Error('Claude CLI가 준비되지 않았습니다.');

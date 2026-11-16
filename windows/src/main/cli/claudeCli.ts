@@ -151,10 +151,14 @@ export interface ClaudeRunSpec {
   jsonSchema: object | null;
   model: string;
   maxBudgetUsd: number | null;
+  effort?: string; // 추론 강도. 허용 값만 --effort로 넘긴다
   pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
   writeDirs?: string[]; // 작업 폴더 밖에서 Bash 하위 프로그램이 쓸 수 있는 폴더(실행별 임시 폴더, 시험 명령의 의존성 캐시)
   localBinding?: boolean; // 로컬 소켓 열기 허용(Gradle 잠금·내장 서버 시험용). 외부 네트워크는 그대로 막는다
 }
+
+/** Claude CLI 추론 강도(--effort) 허용 값 */
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export function scopeRule(scope: string): string {
   const s = scope.trim().replace(/^\.\/+/, '').replace(/\/+$/, '');
@@ -187,6 +191,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   else if (spec.sessionId) args.push('--session-id', spec.sessionId);
   if (spec.jsonSchema) args.push('--json-schema', JSON.stringify(spec.jsonSchema));
   if (spec.model.trim()) args.push('--model', spec.model.trim());
+  if (spec.effort && EFFORTS.includes(spec.effort)) args.push('--effort', spec.effort);
   if (spec.maxBudgetUsd && spec.maxBudgetUsd > 0) args.push('--max-budget-usd', String(spec.maxBudgetUsd));
   // 프롬프트는 표준 입력으로 전달한다(가변 인자 옵션이 프롬프트를 삼키지 않게).
   return args;

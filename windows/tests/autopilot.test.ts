@@ -136,6 +136,15 @@ describe('자동 처리: 저장소 시험 명령·스킬·문서 저장소', () 
     expect(lstatSync(join(iso, 'b', 'node_modules')).isSymbolicLink()).toBe(true);
   });
 
+  it('CLI 인자: 추론 강도는 허용 값만 --effort로 넘긴다', () => {
+    const base = { prompt: 'p', appendSystemPrompt: 's', cwd: '/w', editScopes: [], allowedCommands: [], readDirs: [], sessionId: null, resumeSessionId: null, jsonSchema: null, model: 'claude-opus-5-5', maxBudgetUsd: null, tools: ['Read'] as 'Read'[] };
+    const on = buildClaudeArgs({ ...base, effort: 'medium' });
+    expect(on[on.indexOf('--effort') + 1]).toBe('medium');
+    expect(on[on.indexOf('--model') + 1]).toBe('claude-opus-5-5');
+    expect(buildClaudeArgs({ ...base, effort: 'medium; rm -rf' })).not.toContain('--effort');
+    expect(buildClaudeArgs(base)).not.toContain('--effort');
+  });
+
   it('git이 무시하는 파일(빌드 산출물)을 찾는다', async () => {
     const root = tmpProject();
     const d = repo(root, 'r'); writeFileSync(join(d, '.gitignore'), 'build/\n');

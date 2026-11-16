@@ -255,7 +255,7 @@ export class Service {
     const tools = (base?.tools ?? ['Read', 'Grep', 'Glob', 'Edit', 'Write']).filter((t) => t !== 'Bash' && t !== 'WebFetch' && t !== 'Skill');
     const a = this.saveAgent(m.projectId, null, {
       code, name, role, instructions, references: [], workPaths: p.workPaths, tools, allowedCommands: [],
-      expectedOutput: base?.expectedOutput ?? '', doneCriteria: base?.doneCriteria ?? '', reviewerAgentId: base?.reviewerAgentId ?? null, model: base?.model ?? '',
+      expectedOutput: base?.expectedOutput ?? '', doneCriteria: base?.doneCriteria ?? '', reviewerAgentId: base?.reviewerAgentId ?? null, model: base?.model ?? '', effort: base?.effort,
       maxBudgetUsd: base?.maxBudgetUsd ?? null, timeoutSec: base?.timeoutSec ?? 1800, maxRetries: base?.maxRetries ?? 1, active: true,
     });
     return this.missions.markStaffProposal(missionId, proposalId, 'applied', `새 직원 ${a.code} ${a.name} 추가`);

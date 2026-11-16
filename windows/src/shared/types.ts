@@ -49,6 +49,7 @@ export interface AgentFields {
   doneCriteria: string;
   reviewerAgentId: ID | null; // 독립 검토 담당
   model: string; // 빈 값이면 CLI 기본
+  effort?: string; // 추론 강도(low·medium·high·xhigh·max). 빈 값이면 CLI 기본
   maxBudgetUsd: number | null; // CLI --max-budget-usd
   timeoutSec: number;
   maxRetries: number;

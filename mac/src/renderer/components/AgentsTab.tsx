@@ -26,7 +26,8 @@ const BLANK: AgentFields = {
   expectedOutput: '',
   doneCriteria: '',
   reviewerAgentId: null,
-  model: '',
+  model: 'claude-opus-5-5',
+  effort: 'medium',
   maxBudgetUsd: null,
   timeoutSec: 900,
   maxRetries: 1,
@@ -35,7 +36,7 @@ const BLANK: AgentFields = {
 
 function toFields(a: Agent): AgentFields {
   const { id: _id, projectId: _p, version: _v, updatedAt: _u, ...rest } = a;
-  return { ...BLANK, ...rest };
+  return { ...BLANK, ...rest, model: rest.model ?? '', effort: rest.effort ?? '' }; // 기존 직원: 저장 안 된 모델·강도는 CLI 기본 그대로(새 직원 기본값을 덮어씌우지 않음)
 }
 
 export default function AgentsTab({ project }: { project: Project }) {
@@ -293,7 +294,17 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
       </Field>
       <div className="form-grid four">
         <Field label="모델" hint="비우면 CLI 기본">
-          <input className="input mono" value={f.model} onChange={(e) => set('model', e.target.value)} placeholder="예: sonnet" />
+          <input className="input mono" value={f.model} onChange={(e) => set('model', e.target.value)} placeholder="예: claude-opus-5-5" />
+        </Field>
+        <Field label="추론 강도" hint="비우면 CLI 기본">
+          <select className="input" value={f.effort ?? ''} onChange={(e) => set('effort', e.target.value)}>
+            <option value="">CLI 기본</option>
+            <option value="low">낮음 (low)</option>
+            <option value="medium">중간 (medium)</option>
+            <option value="high">높음 (high)</option>
+            <option value="xhigh">매우 높음 (xhigh)</option>
+            <option value="max">최대 (max)</option>
+          </select>
         </Field>
         <Field label="비용 한도(USD)" hint="비우면 제한 없음">
           <NumberInput value={f.maxBudgetUsd} allowNull step={0.5} onChange={(v) => set('maxBudgetUsd', v)} />

@@ -928,7 +928,7 @@ export class Engine {
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000),
       cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : [...agent.allowedCommands, ...cmds.map((c) => c.prefix)],
-      readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs,
+      readDirs, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, effort: agent.effort, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs,
       writeDirs: [...(procTmp ? [procTmp] : []), ...cmds.flatMap((c) => c.writeDirs)], localBinding: sockets && cmds.some((c) => c.localSockets),
     });
     const file = run.executor === 'mock' ? process.execPath : ex.cliPath;

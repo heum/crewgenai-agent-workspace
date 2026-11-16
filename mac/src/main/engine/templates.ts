@@ -3,8 +3,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Agent, AgentFields, GraphNode, PlanFields, WorkGraph } from '../../shared/types';
 
-const W: AgentFields['tools'] = ['Read', 'Grep', 'Glob', 'Edit', 'Write'];
-const QA: AgentFields['tools'] = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'];
+const W: AgentFields['tools'] = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Skill'];
+const QA: AgentFields['tools'] = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'];
 
 // 모든 직원에게 공통으로 붙는 규칙(각 직원의 업무지시 끝에 붙는다)
 const COMMON = [
@@ -29,10 +29,14 @@ const base = (code: string, name: string, role: string, spec: Spec, tools = W, e
   code, name, role, instructions: brief(spec), references: [], workPaths: [], tools, allowedCommands: tools.includes('Bash') ? ['npm test', 'git status', 'git diff'] : [],
   expectedOutput: spec.output ?? '담당 범위의 산출물과 변경 요약(수행 내용, 변경 파일, 검증, 남은 문제, 결정 필요 사항)',
   doneCriteria: spec.done ?? '지정 산출물이 존재하고 형식을 지키며 관련 검사를 통과한다. 실행하지 않은 검사를 통과로 쓰지 않는다.',
-  reviewerAgentId: null, model: '', maxBudgetUsd: null, timeoutSec: 1800, maxRetries: 1, active: true, ...extra,
+  reviewerAgentId: null, model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, maxBudgetUsd: null, timeoutSec: 1800, maxRetries: 1, active: true, ...extra,
 });
 
-const RO: AgentFields['tools'] = ['Read', 'Grep', 'Glob'];
+/** 기본 템플릿 직원의 모델·추론 강도(직원 설정에서 바꿀 수 있다) */
+export const DEFAULT_MODEL = 'claude-opus-5-5';
+export const DEFAULT_EFFORT = 'medium';
+
+const RO: AgentFields['tools'] = ['Read', 'Grep', 'Glob', 'Skill'];
 
 const LEAD = (team: string) => base('00', '총괄', '지시를 작업으로 나눠 배정하고 결과를 하나로 통합·판단', {
   mission: `팀장의 지시를 받아 작업을 나누고 ${team}에서 알맞은 직원에게 배정하며, 담당별 결과를 하나의 결과물로 통합해 완료 여부를 판단하는 오퍼레이터다.`,

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkService, plan, tmpProject } from './helpers';
 
-const RO = ['Read', 'Grep', 'Glob'];
+const RO = ['Read', 'Grep', 'Glob', 'Skill']; // 읽기 전용(수정·명령 없음), 스킬은 사용
 
 describe('직원 기본 템플릿', () => {
   it('세트 목록은 개발팀 표준(11명)과 범용 소규모(7명)이고, 특정 업무(조달 등)에 묶인 직원이 없다', () => {
@@ -27,6 +27,8 @@ describe('직원 기본 템플릿', () => {
         expect(a.reviewerAgentId).not.toBe(a.id);
       }
       for (const c of ro) expect(agents.find((a) => a.code === c)!.tools).toEqual(RO);
+      // 기본 모델 Opus 5.5·추론 강도 중간, 모든 직원이 스킬 사용
+      for (const a of agents) { expect(a.model).toBe('claude-opus-5-5'); expect(a.effort).toBe('medium'); expect(a.tools).toContain('Skill'); }
       expect(agents.find((a) => a.code === '00')!.instructions).toContain('작업을 배정하지 않고');
       // 기본 흐름이 이 세트로도 오류 없이 만들어진다
       const saved = svc.saveGraph(p.id, svc.defaultGraph(p.id), '기본');
