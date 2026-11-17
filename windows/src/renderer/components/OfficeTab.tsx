@@ -7,15 +7,18 @@ import type { Attempt, LiveEvent, Mission, Project, WorkingItem } from '../../sh
 import { MISSION_STATUS_LABEL } from '../../shared/types';
 import { useAction, useLoad, ws } from '../api';
 import { characterOf, EXTERNAL, type CharDef } from '../characters';
+import { HEAD_H, HEAD_W } from '../art';
 import { CharSprite } from './CharacterArt';
 import { Banner, Loading, Modal } from './common';
 import { useFileOpener } from './fileOpen';
-import { CELL_W, deskAt, DIV_X, layoutFor, placePeople, propOf, ROOM_X, Scene, W, WALL, type Person, type Pose, type State } from './officeScene';
+import { layoutFor, MIN_W, pickScale, placePeople, propOf, Scene, WALL, type Person, type Pose, type State } from './officeScene';
 import ResultsPanel, { missionTitle } from './Results';
 import { moodFor, TIME_MODES, type TimeMode } from './officeTime';
 
+/** 얼굴 사진(정수 배율): size는 대략의 높이(px) */
 function Portrait({ char, size = 28 }: { char: CharDef; size?: number }) {
-  return <span className="ofc-portrait" style={{ width: size, height: size }}><CharSprite def={char} size={size - 2} head /></span>;
+  const k = Math.max(1, Math.floor(size / HEAD_H));
+  return <span className="ofc-portrait" style={{ width: HEAD_W * k + 4, height: HEAD_H * k + 4 }}><CharSprite def={char} size={HEAD_H * k} head /></span>;
 }
 
 const STATE_LABEL: Record<State, string> = { work: '작업 중', review: '리뷰', wait: '대기', rest: '휴식', off: '휴가' };
@@ -91,8 +94,21 @@ export default function OfficeTab({ project }: { project: Project }) {
   const staff = people.filter((p) => !p.external && p.state !== 'off');
   const internal = people.filter((p) => !p.external);
   const externals = people.filter((p) => p.external);
-  const layout = layoutFor(staff.length);
-  const { placed, overflow } = useMemo(() => placePeople(people, staff, layout), [people, staff, layout.loungeY]);
+  // 그림 배율: 그림 한 칸이 실제 화면 화소 정수 개가 되는 값 중(예: 보통 화면 2배, 레티나 1.5·2배) 장면 전체가 들어가는 가장 큰 값.
+  // 장면의 칸 수는 무대 크기에서 계산하므로 옆·아래에 빈 여백이 남지 않는다(고정 그림을 늘리지 않음).
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stage, setStage] = useState<{ w: number; h: number; dpr: number }>({ w: 0, h: 0, dpr: 1 });
+  useLayoutEffect(() => {
+    const el = stageRef.current; if (!el) return;
+    const fit = () => { const r = el.getBoundingClientRect(); setStage((o) => (o.w === Math.floor(r.width) && o.h === Math.floor(r.height) && o.dpr === (window.devicePixelRatio || 1) ? o : { w: Math.floor(r.width), h: Math.floor(r.height), dpr: window.devicePixelRatio || 1 })); };
+    fit();
+    const ro = new ResizeObserver(fit); ro.observe(el);
+    const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`); mq.addEventListener('change', fit);
+    return () => { ro.disconnect(); mq.removeEventListener('change', fit); };
+  }, [agents.data]);
+  const offCount = internal.filter((p) => p.state === 'off').length;
+  const { scale, layout } = useMemo(() => (stage.w ? pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount) : { scale: 1, layout: layoutFor(staff.length, MIN_W, 300, offCount) }), [stage, staff.length, offCount]);
+  const { placed, overflow } = useMemo(() => placePeople(people, staff, layout), [people, staff, layout]);
   const count = (s: State) => internal.filter((p) => p.state === s).length;
   const order: State[] = ['work', 'review', 'wait', 'rest', 'off'];
 
@@ -122,16 +138,6 @@ export default function OfficeTab({ project }: { project: Project }) {
     for (const k of Object.keys(add)) bubbleTimers.current.set(k, setTimeout(() => { bubbleTimers.current.delete(k); setBubbles((b) => { const n = { ...b }; delete n[k]; return n; }); }, 6000));
   }, [people, ready, agents.data]);
 
-  // 그림 크기: 창에 맞춰 그림만 키우고 줄인다(글자는 그대로)
-  const stageRef = useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState(2);
-  useLayoutEffect(() => {
-    const el = stageRef.current; if (!el) return;
-    const fit = () => { const r = el.getBoundingClientRect(); setScale(Math.max(1.2, Math.min((r.width - 4) / W, (r.height - ACTIVITY_MIN) / layout.H))); };
-    fit();
-    const ro = new ResizeObserver(fit); ro.observe(el);
-    return () => ro.disconnect();
-  }, [layout.H, agents.data]);
 
   const [tab, setTab] = useState<'staff' | 'results'>('staff');
   const reduce = still;
@@ -169,27 +175,24 @@ export default function OfficeTab({ project }: { project: Project }) {
       {agents.data && internal.length === 0 && <div className="ofc-empty">아직 직원이 없습니다. 직원 탭에서 기본 템플릿을 불러오세요.</div>}
       {internal.length > 0 && (
         <div className="ofc-body">
-          <div className="ofc-left" ref={stageRef}>
-          <div className="ofc-stage">
-            <div className="ofc-canvas" style={{ width: W * scale, height: layout.H * scale }}>
+          <div className="ofc-left">
+          <div className="ofc-stage" ref={stageRef}>
+            <div className="ofc-canvas" style={{ width: layout.W * scale, height: layout.H * scale }} data-scale={scale}>
               <Scene people={people} staff={staff} layout={layout} placed={placed} mood={mood} selected={sel} />
               <div className="ofc-overlay">
-                <span className="ofc-zone" style={{ left: 4 * scale, top: (WALL - 2) * scale }}>업무 공간</span>
-                <span className="ofc-zone" style={{ left: (ROOM_X + 2) * scale, top: (WALL + 1) * scale }}>리뷰룸</span>
-                <span className="ofc-zone" style={{ left: 4 * scale, top: (layout.loungeY + 1) * scale }}>라운지</span>
-                {count('off') > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: 226 * scale, top: (layout.loungeY + 29) * scale }}>휴가 {count('off')}명</span>}
+                <span className="ofc-zone" style={{ left: 6 * scale, top: (WALL + 2) * scale }}>업무 공간</span>
+                <span className="ofc-zone" style={{ left: (layout.review.x + 4) * scale, top: (layout.review.y + 4) * scale }}>리뷰룸</span>
+                <span className="ofc-zone" style={{ left: (layout.lounge.x + 22) * scale, top: (layout.lounge.y + 4) * scale }}>라운지</span>
+                {count('off') > 0 && (() => { const c = layout.wall.find((w) => w.kind === 'cork'); return c ? <span className="ofc-zone ofc-zone-sm" style={{ left: (c.x + c.w / 2) * scale, top: 40 * scale, transform: 'translateX(-50%)' }}>휴가 {count('off')}명</span> : null; })()}
                 {staff.map((p, i) => {
-                  const d = deskAt(i); const at = placed.find((x) => x.p.key === p.key);
-                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 24) * scale} top={(d.y + 30) * scale} max={CELL_W * scale - 4} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
+                  const d = layout.desks[i]; const at = placed.find((x) => x.p.key === p.key);
+                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 64) * scale} top={(d.y + 43) * scale} max={60 * scale} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
                 })}
-                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => {
-                  // 리뷰룸: 왼쪽 좌석은 왼쪽 끝, 오른쪽 좌석은 오른쪽 끝에 맞춰 탁자를 가리지 않는다. 라운지: 자리 아래 가운데
-                  const align = zone === 'review' ? (x < 250 ? 'start' : 'end') : 'center';
-                  const left = align === 'start' ? (DIV_X + 2) * scale : align === 'end' ? (W - 1) * scale : (x + w / 2) * scale;
-                  return <Tag key={`r${p.key}`} p={p} left={left} top={(y + (zone === 'review' ? 19 : h + 1)) * scale} max={(zone === 'review' ? 40 : 19) * scale} align={align} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />;
-                })}
-                {overflow.review > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: 256 * scale, top: (WALL + 1) * scale }}>리뷰 +{overflow.review}명</span>}
-                {overflow.lounge > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: 150 * scale, top: (layout.H - 8) * scale }}>휴식 +{overflow.lounge}명(목록 참고)</span>}
+                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => (
+                  <Tag key={`r${p.key}`} p={p} left={(x + w / 2) * scale} top={(zone === 'review' ? layout.tableY + 11 : y + Math.min(h, 40) + 2) * scale} max={40 * scale} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />
+                ))}
+                {overflow.review > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: (layout.review.x + 50) * scale, top: (layout.review.y + 4) * scale }}>리뷰 +{overflow.review}명</span>}
+                {overflow.lounge > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: (layout.lounge.x + 70) * scale, top: (layout.lounge.y + 4) * scale }}>휴식 +{overflow.lounge}명(목록 참고)</span>}
                 {placed.map(({ p, x, y, w, h }) => (
                   <button key={`h${p.key}-${sel === p.key ? ping : 0}`} className={`ofc-hit${sel === p.key ? ' is-on' : ''}${sel === p.key && ping ? ' is-ping' : ''}`} style={{ left: x * scale, top: y * scale, width: w * scale, height: h * scale }}
                     aria-label={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`} title={`${p.code} ${p.name}\n${POSE_LABEL[p.pose]}: ${p.task}`} onClick={() => { setSel(p.key); setTab('staff'); }} />
@@ -199,7 +202,7 @@ export default function OfficeTab({ project }: { project: Project }) {
                   const bub = bubbles[p.key];
                   if (!flag && !bub) return null;
                   // 머리 옆(오른쪽 좌석은 왼쪽)에 붙여 위 줄 이름표를 가리지 않게 한다
-                  const leftSide = zone === 'review' && x > 250;
+                  const leftSide = zone === 'review' && x > layout.review.x + layout.review.w / 2;
                   return (
                     <div key={`f${p.key}`} className={`ofc-flags${leftSide ? ' is-left' : ''}`} style={{ left: (leftSide ? x - 1 : x + w + 1) * scale, top: (y - 1) * scale }}>
                       {flag && <span className={`ofc-flag ofc-flag-${flag.cls}`}>{flag.cls === 'bad' ? '⛔' : '🔔'} {flag.text}</span>}
@@ -257,7 +260,6 @@ function Tag({ p, left, top, max, align = 'center', on, dim, small, onPick }: { 
 
 /** 지도 이름표용 짧은 이름: '기획·요구 분석' → '기획', '프런트엔드 개발' → '프런트엔드'(전체 이름은 목록·툴팁에) */
 function shortName(n: string) { return n.split(/[\s·/]+/).find(Boolean) ?? n; }
-const ACTIVITY_MIN = 150; // 지도 아래 '지금 진행 중' 칸의 최소 높이(px)
 const KIND_LABEL: Record<WorkingItem['kind'], string> = { author: '작성', reviewer: '독립 검토', codex: 'Codex 리뷰', check: '자동 검사', operator: '계획·판단' };
 /** 지도 아래: 지금 실제로 실행 중인 일(실행 기록 그대로). 누르면 그 직원을 고른다. */
 function Activity({ people, working, sel, mission, onPick, onResults }: { people: Person[]; working: WorkingItem[]; sel: string | null; mission: Mission | null; onPick: (key: string) => void; onResults: () => void }) {
@@ -327,7 +329,7 @@ function Detail({ p, mission, folder }: { p: Person; mission: Mission | null; fo
   return (
     <section className="ofc-detail" aria-label={`${p.code} ${p.name} 상세`}>
       <div className="ofc-detail-head">
-        <Portrait char={p.char} size={44} />
+        <Portrait char={p.char} size={46} />
         <div className="ofc-detail-id">
           <div><span className="ofc-code">{p.code}</span> <strong>{p.name}</strong>{p.external && <span className="ofc-ext">외부</span>}</div>
           <div className="muted small ofc-clamp" title={p.role}>{p.role}</div>

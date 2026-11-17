@@ -143,7 +143,9 @@ class OperatorLimit extends Error { constructor(public lim: LimitInfo) { super('
 export function commandPrefix(command: string): string | null {
   const first = command.split(/;|&&|\|\||\|/)[0].trim();
   const toks = first.split(/\s+/).filter(Boolean);
-  if (!toks.length) return null;
+  // 앞에 붙은 변수 지정(F=/tmp/x cmd)은 명령 이름이 아니다. 따옴표로 시작하면 정확히 끊을 수 없으니 한 번에 허용할 명령으로 제안하지 않는다.
+  while (toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[0])) toks.shift();
+  if (!toks.length || /^["']/.test(toks[0])) return null;
   const out = [toks[0]];
   for (let i = 1; i < toks.length && out.length < 4; i++) {
     const t = toks[i];

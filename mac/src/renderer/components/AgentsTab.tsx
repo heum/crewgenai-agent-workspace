@@ -236,7 +236,7 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
       <div className="agent-form-cols">
       <div className="agent-form-left">
       <div className="agent-char">
-        <span className="agent-char-pic"><CharSprite def={curChar} size={64} /></span>
+        <span className="agent-char-pic"><CharSprite def={curChar} size={96} /></span>
         <span className="agent-char-info">
           <span className="muted small">캐릭터</span>
           <b>{curChar.id} {curChar.name}</b>

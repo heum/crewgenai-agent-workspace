@@ -1,20 +1,19 @@
-// 캐릭터 그림(도트) — 직원 목록·상세·사무실·선택 팝업이 같은 그림을 쓴다.
+// 캐릭터 그림(도트) — 직원 목록·상세·사무실·선택 팝업이 같은 그림(../art.ts)을 쓴다.
+// 크기는 그림 한 칸이 화면 화소 정수 개가 되도록 맞춘다(가장자리가 고르게).
 import { useState } from 'react';
-import { CHARACTERS, CHAR_H, CHAR_W, SIT_H, charById, charRects, type CharDef, type Pose } from '../characters';
+import { char2, CHAR2_H, CHAR2_SIT_H, CHAR2_W, charHead, HEAD_H, HEAD_W, type ArtPose } from '../art';
+import { CHARACTERS, charById, type CharDef } from '../characters';
+import { toPaths } from '../pixel';
 import { Modal } from './common';
 
-/** 장면 안에 넣는 캐릭터(<g>). x,y는 그림 왼쪽 위(테두리 포함). */
-export function CharG({ def, pose, frame = 0, x, y, className }: { def: CharDef; pose: Pose; frame?: number; x: number; y: number; className?: string }) {
-  // 움직임(CSS transform)은 바깥 g에, 자리(translate)는 안쪽 g에 — CSS 애니메이션이 자리 이동을 덮어쓰지 않게
-  const body = <g transform={`translate(${x} ${y})`}>{charRects(def, pose, frame).map(([rx, ry, w, h, c], i) => <rect key={i} x={rx} y={ry} width={w} height={h} fill={c} />)}</g>;
-  return className ? <g className={className}>{body}</g> : body;
-}
-/** 따로 쓰는 캐릭터 그림. head면 얼굴만(목록용). */
-export function CharSprite({ def, pose = 'stand', size, head }: { def: CharDef; pose?: Pose; size: number; head?: boolean }) {
-  const h = head ? 14 : pose === 'stand' ? CHAR_H : SIT_H;
+/** 따로 쓰는 캐릭터 그림. size는 원하는 대략의 높이(px)로, 실제로는 그 이하의 정수 배율로 그린다. head면 얼굴만(목록용). */
+export function CharSprite({ def, pose = 'stand', size, head }: { def: CharDef; pose?: ArtPose; size: number; head?: boolean }) {
+  const w = head ? HEAD_W : CHAR2_W; const h = head ? HEAD_H : pose === 'stand' ? CHAR2_H : CHAR2_SIT_H;
+  const k = Math.max(1, Math.floor(size / h));
+  const rects = head ? charHead(def) : char2(def, pose);
   return (
-    <svg className="char-sprite" width={(size * CHAR_W) / h} height={size} viewBox={`0 0 ${CHAR_W} ${h}`} shapeRendering="crispEdges" aria-hidden="true">
-      {charRects(def, pose).filter(([, ry]) => ry < h).map(([rx, ry, w, hh, c], i) => <rect key={i} x={rx} y={ry} width={w} height={hh} fill={c} />)}
+    <svg className="char-sprite" width={w * k} height={h * k} viewBox={`0 0 ${w} ${h}`} shapeRendering="crispEdges" aria-hidden="true">
+      {toPaths(rects).map((p) => <path key={p.fill} fill={p.fill} d={p.d} />)}
     </svg>
   );
 }
@@ -33,7 +32,7 @@ export function CharacterPicker({ value, who, onApply, onClose }: { value: strin
               <span className="char-id">{c.id}</span>
               {sel === c.id && <span className="char-badge">✓ 선택됨</span>}
               {sel !== c.id && value === c.id && <span className="char-badge char-badge-cur">지금 캐릭터</span>}
-              <CharSprite def={c} size={108} />
+              <CharSprite def={c} size={96} />
               <span className="char-name">{c.name}</span>
             </button>
           ))}

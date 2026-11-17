@@ -21,6 +21,9 @@ describe('권한 거부', () => {
   it('허용 명령 접두어 후보를 만든다', () => {
     expect(commandPrefix('shasum -a 256 /x/y.html')).toBe('shasum -a 256');
     expect(commandPrefix('date; shasum -a 256 /x')).toBe('date');
+    expect(commandPrefix('F=/tmp/a.txt wc -l "$F"')).toBe('wc -l'); // 변수 지정은 건너뛴다
+    expect(commandPrefix('F=/tmp/a.txt')).toBeNull();
+    expect(commandPrefix('"/Applications/Some App/bin" --x')).toBeNull(); // 따옴표 경로는 제안하지 않음
     expect(commandPrefix('git -C /repo log -1')).toBe('git -C');
     expect(commandPrefix('ls -la /a /b')).toBe('ls -la');
     expect(commandPrefix('npx --no-install playwright --version')).toBe('npx --no-install');
