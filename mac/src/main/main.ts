@@ -163,6 +163,9 @@ function register() {
   h('listMissions', (pid) => s().missions.list(pid));
   h('attention', () => s().attention());
   h('pendingDecisions', () => s().pendingDecisions());
+  h('commitPreview', (id: string, rid: string) => s().commitPreview(id, rid));
+  h('commitApprove', (id: string, rid: string, hash: string) => s().commitApprove(id, rid, hash));
+  h('commitDecline', (id: string, rid: string) => s().commitDecline(id, rid));
   h('listLearnings', () => s().learnings.list());
   h('saveLearning', (id, f) => { const r = s().saveLearning(id, f); emit({ type: 'learning' }); return r; });
   h('deleteLearning', (id) => { s().learnings.remove(id); emit({ type: 'learning' }); });

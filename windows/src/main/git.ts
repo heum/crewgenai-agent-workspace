@@ -5,17 +5,20 @@
 // - 되돌리기 중 충돌하면 진행분을 취소하되, 그 사이 다른 커밋이 생겼으면 되감지 않고 실제 상태를 그대로 알린다.
 // - 같은 작업 트리(git dir)를 쓰는 작업은 한 줄로 세워 실행하고, 앱 종료 때 진행 중인 git 작업을 기다린다.
 import { execFile } from 'node:child_process';
-import { existsSync, readdirSync, realpathSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, sep } from 'node:path';
 import { PROTECTED_BRANCHES } from './autopilot';
 import { cleanEnv } from './cli/claudeCli';
 
-export interface GitResult { ok: boolean; out: string; err: string; raw: string }
+export interface GitResult { ok: boolean; out: string; err: string; raw: string; code: number }
 
 function git(cwd: string, args: string[], env: Record<string, string> = {}, timeoutMs = 60000): Promise<GitResult> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, ...args], { timeout: timeoutMs, env: cleanEnv({ GIT_TERMINAL_PROMPT: '0', GIT_LITERAL_PATHSPECS: '1', ...env }), maxBuffer: 8 * 1024 * 1024 }, (e, stdout, stderr) => {
-      resolve({ ok: !e, out: String(stdout).trim(), raw: String(stdout), err: String(stderr).trim() || (e ? e.message : '') });
+      const code = !e ? 0 : typeof (e as { code?: unknown }).code === 'number' ? (e as { code: number }).code : -1;
+      resolve({ ok: !e, out: String(stdout).trim(), raw: String(stdout), err: String(stderr).trim() || (e ? e.message : ''), code });
     });
   });
 }
@@ -109,7 +112,7 @@ export function commitPaths(folder: string, paths: string[], author: { name: str
  * - 있고 지금 브랜치에 없는 커밋이 있으면 섞지 않도록 뒤에 번호를 붙인 새 브랜치를 만든다.
  * 분리된 HEAD(detached)나 보호 브랜치가 아니면 그대로 둔다.
  */
-async function ensureWorkBranch(folder: string, name: string): Promise<{ note: string | null; error: string | null }> {
+async function ensureWorkBranch(folder: string, name: string, pre: string[] = []): Promise<{ note: string | null; error: string | null; target?: string }> {
   const cur = await git(folder, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (!cur.ok || !PROTECTED_BRANCHES.has(cur.out)) return { note: null, error: null };
   if (!(await git(folder, ['check-ref-format', '--branch', name])).ok) return { note: null, error: `작업 브랜치 이름이 올바르지 않습니다: ${name}` };
@@ -122,9 +125,9 @@ async function ensureWorkBranch(folder: string, name: string): Promise<{ note: s
       target = `${name}-${n}`; args = ['switch', '-c', target];
     }
   }
-  const r = await git(folder, args);
+  const r = await git(folder, [...pre, ...args]);
   if (!r.ok) return { note: null, error: `${cur.out}에 바로 커밋하지 않으려고 작업 브랜치 ${target}로 바꾸려 했으나 실패해 커밋하지 않았습니다: ${(r.err || r.out).slice(0, 200)}` };
-  return { note: `${cur.out}에 바로 커밋하지 않고 작업 브랜치 ${target}에 커밋`, error: null };
+  return { note: `${cur.out}에 바로 커밋하지 않고 작업 브랜치 ${target}에 커밋`, error: null, target };
 }
 
 async function commitNow(folder: string, paths: string[], author: { name: string; email: string }, subject: string, trailers: Record<string, string>, exclude: Set<string>, workBranch?: string): Promise<CommitInfo> {
@@ -354,4 +357,217 @@ export async function ignoredPaths(folder: string, paths: string[]): Promise<Set
     }
   }
   return out;
+}
+
+// ───── 사용자 승인 커밋 ─────
+// 오퍼레이터가 요청한 '이미 저장소에 있는 미커밋 변경'을 사용자가 파일·메시지를 보고 승인하면 그 파일만 커밋한다(push 없음).
+// - 보여 준 내용(HEAD·브랜치·파일별 모드와 내용 해시)이 승인 순간과 다르면 커밋하지 않는다.
+// - 커밋은 임시 인덱스에 '보여 준 그 내용(blob)'만 넣어 만들고(write-tree·commit-tree), 브랜치는 HEAD가 그대로일 때만 옮긴다.
+//   작업 트리를 다시 읽어 커밋하지 않으므로 그 사이 바뀐 내용·다른 파일이 섞이지 않고, git hook도 실행하지 않는다.
+// - 심볼릭 링크·폴더·검사할 수 없는 파일(큰 파일·이진 파일)·비밀값으로 보이는 것·.gitignore 대상은 막는다.
+export interface ApprovedFile { path: string; status: string; added: number | null; removed: number | null; flags: string[] }
+export interface ApprovedPreview { repo: string; branch: string | null; target: string | null; files: ApprovedFile[]; blocked: string[]; hash: string; error: string | null }
+export const APPROVED_FLAG_LABEL: Record<string, string> = {
+  invalid: '경로 형식 오류', outside: '저장소 밖', missing: '파일 없음', unchanged: '바뀐 내용 없음', ignored: '.gitignore 대상', symlink: '링크 파일', directory: '폴더',
+  unscanned: '내용을 검사할 수 없음(큰 파일·이진 파일)', filtered: 'git 필터(LFS 등) 대상 — 앱이 커밋하지 않음', 'secret-name': '비밀값 파일로 보임', 'secret-content': '비밀값으로 보이는 내용',
+};
+const SECRET_NAME = /(^|\/)(\.env(\.[^/]*)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|[^/]*\.pem|[^/]*\.key|[^/]*\.p12|[^/]*\.pfx|[^/]*\.keystore|[^/]*\.jks|credentials(\.json)?|[^/]*secret[^/]*\.(json|ya?ml|properties|txt))$/i;
+const SECRET_OK = /\.(example|sample|template|dist)$/i;
+const SECRET_TEXT = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /AKIA[0-9A-Z]{16}/, /gh[pousr]_[A-Za-z0-9]{30,}/, /sk-[A-Za-z0-9_-]{20,}/, /xox[abprs]-[A-Za-z0-9-]{10,}/,
+  /(password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret)["']?\s*[:=]\s*["']?[^\s"'$<{}]{8,}/i];
+const SCAN_MAX = 2 * 1024 * 1024;
+// hook·fsmonitor를 실행하지 않는다(승인 흐름의 모든 git 호출에 붙임)
+const NO_HOOKS = ['-c', `core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-c', 'core.fsmonitor=false'];
+const ag = (cwd: string, args: string[], env: Record<string, string> = {}) => git(cwd, [...NO_HOOKS, ...args], env);
+/** diff 출력에서 추가된 줄만(머리글 '+++'와 내용 '++…'를 구분: 첫 '@@' 뒤의 줄만 본다) */
+function addedLines(diff: string): string {
+  const out: string[] = []; let inHunk = false;
+  for (const l of diff.split('\n')) { if (l.startsWith('@@')) { inHunk = true; continue; } if (l.startsWith('diff --git ')) { inHunk = false; continue; } if (inHunk && l.startsWith('+')) out.push(l.slice(1)); }
+  return out.join('\n');
+}
+// 실제 경로 비교: Windows는 8.3 짧은 이름·대소문자 차이가 있어 native 경로를 소문자로 비교한다
+const rp = (p: string) => (process.platform === 'win32' ? realpathSync.native(p).toLowerCase() : realpathSync(p));
+export function looksSecretName(p: string): boolean { return SECRET_NAME.test(p) && !SECRET_OK.test(p); }
+export function looksSecretText(t: string): boolean { return SECRET_TEXT.some((re) => re.test(t)); }
+
+/** 연결 폴더 기준 저장소 경로를 실제 저장소 최상위로 확인한다(폴더 밖·하위 폴더·링크로 빠져나가기 거부). */
+async function approvedRepo(folder: string, repo: string): Promise<{ abs: string; real: string } | string> {
+  const r0 = (repo || '').replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, ''); const r = r0 === '.' ? '' : r0;
+  if (isAbsolute(r) || r.split('/').includes('..')) return `저장소 경로가 올바르지 않습니다: ${repo}`;
+  const abs = r ? join(folder, r) : folder;
+  let real: string; let base: string;
+  try { real = rp(abs); base = rp(folder); } catch { return `저장소를 찾을 수 없습니다: ${repo || '(연결 폴더)'}`; }
+  if (real !== base && !real.startsWith(base + sep)) return '저장소가 연결 폴더 밖에 있습니다.';
+  const root = await gitRoot(abs);
+  let rootReal = '';
+  try { rootReal = root ? rp(root) : ''; } catch { /* 없음 */ }
+  if (rootReal !== real) return `git 저장소의 최상위 폴더가 아닙니다: ${repo || '(연결 폴더)'}`;
+  return { abs, real };
+}
+
+function cleanApprovedPath(p: string): string | null {
+  const x = String(p ?? '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  if (!x || isAbsolute(x) || /^[A-Za-z]:/.test(x) || x.startsWith(':') || x.split('/').some((s) => s === '..' || s === '' || s === '.git') || /[\u0000-\u001f\u007f"]/.test(x)) return null; // 제어 문자·따옴표: git이 이름을 바꿔 출력해 대조가 어긋날 수 있다
+  return x;
+}
+
+/** 경로마다 지금 커밋될 내용: 'delete'(지울 것) 또는 모드·내용 해시. 막힘이면 flags에 이유. */
+interface Entry { path: string; status: string; flags: string[]; added: number | null; removed: number | null; mode: string | null; oid: string | null; del: boolean }
+
+async function approvedEntries(rr: { abs: string; real: string }, files: string[]): Promise<{ entries: Entry[]; head: string | null }> {
+  const headR = await ag(rr.abs, ['rev-parse', '--verify', '-q', 'HEAD']);
+  const head = headR.ok ? headR.out : null;
+  const fileMode = (await ag(rr.abs, ['config', '--bool', 'core.fileMode'])).out !== 'false';
+  const list = [...new Set(files.map(String))].slice(0, 200);
+  const valid = list.map((f) => ({ raw: f, path: cleanApprovedPath(f) }));
+  const all = valid.map((v) => v.path).filter((x): x is string => !!x);
+  // git 필터(clean·process, 예: LFS)는 상태 확인·비교·해시 때 저장소에 설정된 명령을 실행한다: 속성만 읽어(실행 없음) 그런 경로는 아예 다루지 않는다
+  const filtered = new Set<string>(); let attrFailed = false;
+  if (all.length) {
+    const r = await ag(rr.abs, ['-c', 'core.quotePath=false', 'check-attr', 'filter', '--', ...all]);
+    if (!r.ok) attrFailed = true;
+    for (const l of r.raw.split('\n').filter(Boolean)) { const m = /^(.*): filter: (.*)$/.exec(l); if (m && m[2] !== 'unspecified' && m[2] !== 'unset') filtered.add(m[1]); }
+  }
+  const paths = attrFailed ? [] : all.filter((p) => !filtered.has(p));
+  const st = new Map<string, string>();
+  if (paths.length) {
+    const r = await ag(rr.abs, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...paths]);
+    const parts = r.raw.split('\0').filter(Boolean);
+    for (let i = 0; i < parts.length; i++) { const code = parts[i].slice(0, 2); const p = parts[i].slice(3); if (code.includes('R') || code.includes('C')) i++; st.set(p, code); }
+  }
+  // .gitignore 대상: 이미 스테이징했어도(강제 추가) 막는다
+  const ignored = new Set<string>();
+  const names = paths.filter((p) => !p.startsWith(':'));
+  let ignoreFailed = false;
+  if (names.length) {
+    const r = await ag(rr.abs, ['-c', 'core.quotePath=false', 'check-ignore', '--no-index', '--', ...names], { GIT_LITERAL_PATHSPECS: '0' });
+    if (r.code !== 0 && r.code !== 1) ignoreFailed = true; // 종료 1은 '무시 대상 없음'
+    for (const l of r.raw.split('\n').filter(Boolean)) ignored.add(l); // 제어 문자가 든 경로는 처음부터 받지 않으므로 줄 단위로 안전하다
+  }
+  const entries: Entry[] = [];
+  for (const v of valid) {
+    const f = v.path;
+    if (!f) { entries.push({ path: v.raw, status: '', flags: ['invalid'], added: null, removed: null, mode: null, oid: null, del: false }); continue; }
+    const flags: string[] = [];
+    if (attrFailed || filtered.has(f)) { entries.push({ path: f, status: '', flags: [attrFailed ? 'unscanned' : 'filtered'], added: null, removed: null, mode: null, oid: null, del: false }); continue; }
+    const abs = join(rr.abs, f);
+    // 중간 폴더가 링크면 저장소 밖으로 나갈 수 있다: 부모 폴더의 실제 경로가 저장소 안인지 본다
+    try { const parent = rp(join(abs, '..')); if (parent !== rr.real && !parent.startsWith(rr.real + sep)) flags.push('outside'); } catch { /* 부모 없음: 아래 lstat에서 없음 처리 */ }
+    let ls: ReturnType<typeof lstatSync> | null = null;
+    try { ls = lstatSync(abs); } catch { ls = null; }
+    if (ls?.isSymbolicLink()) flags.push('symlink');
+    else if (ls?.isDirectory()) flags.push('directory');
+    const code = st.get(f) ?? '';
+    const tracked = head ? (await ag(rr.abs, ['ls-tree', '-z', head, '--', f])).raw.split('\0').filter(Boolean)[0] ?? '' : '';
+    const headMode = tracked ? tracked.split(' ')[0] : null;
+    if (!code) flags.push(ignored.has(f) ? 'ignored' : ls ? 'unchanged' : 'missing');
+    else if (ignored.has(f)) flags.push('ignored');
+    if (looksSecretName(f)) flags.push('secret-name');
+    if (ignoreFailed) flags.push('unscanned');
+    let added: number | null = null; let removed: number | null = null; let mode: string | null = null; let oid: string | null = null;
+    const del = !ls && !!tracked;
+    if (code && ls?.isFile() && !flags.includes('outside')) {
+      mode = fileMode ? ((ls.mode & 0o111) ? '100755' : '100644') : (headMode === '100755' ? '100755' : '100644');
+      oid = (await ag(rr.abs, ['hash-object', `--path=${f}`, '--', f])).out || null;
+      if (!oid) flags.push('unscanned');
+      let text = '';
+      if (!tracked) {
+        let buf: Buffer | null = null;
+        try { if (ls.size <= SCAN_MAX) buf = readFileSync(abs); } catch { buf = null; }
+        if (!buf || buf.includes(0)) flags.push('unscanned');
+        else { text = buf.toString('utf8'); added = text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0; removed = 0; }
+      } else {
+        const ns = await ag(rr.abs, ['diff', '--no-ext-diff', '--no-textconv', '--numstat', 'HEAD', '--', f]);
+        if (!ns.ok) flags.push('unscanned');
+        const m = ns.out.split('\n')[0]?.split('\t');
+        if (m && m.length >= 2 && m[0] !== '-') { added = Number(m[0]); removed = Number(m[1]); } else if (m && m[0] === '-') flags.push('unscanned');
+        if (ls.size > SCAN_MAX) flags.push('unscanned');
+        else { const d = await ag(rr.abs, ['diff', '--no-ext-diff', '--no-textconv', '-U0', 'HEAD', '--', f]); if (!d.ok) flags.push('unscanned'); text = addedLines(d.raw); }
+      }
+      if (text && looksSecretText(text)) flags.push('secret-content');
+    } else if (code && !ls && !tracked) flags.push('missing'); // 스테이징만 되어 있고 파일은 없음(HEAD에도 없음)
+    entries.push({ path: f, status: code, flags: [...new Set(flags)], added, removed, mode, oid, del });
+  }
+  return { entries, head };
+}
+
+/** 승인 화면에 보여 줄 내용: 파일별 상태·변경 줄 수·막힘 표시, 받을 브랜치, 확인용 해시 */
+export async function previewApprovedCommit(folder: string, repo: string, files: string[], message: string, workBranch?: string): Promise<ApprovedPreview> {
+  return (await approvedState(folder, repo, files, message, workBranch)).preview;
+}
+/** 미리 보기와 그 근거(커밋할 정확한 내용). 승인 때는 해시를 확인한 바로 이 내용만 커밋한다. */
+async function approvedState(folder: string, repo: string, files: string[], message: string, workBranch?: string): Promise<{ preview: ApprovedPreview; entries: Entry[]; head: string | null }> {
+  const empty = (error: string) => ({ preview: { repo, branch: null, target: null, files: [], blocked: [], hash: '', error } as ApprovedPreview, entries: [] as Entry[], head: null });
+  const rr = await approvedRepo(folder, repo);
+  if (typeof rr === 'string') return empty(rr);
+  if (!message.trim()) return empty('커밋 메시지가 비어 있습니다.');
+  const busy = await gitBusy(rr.abs);
+  if (busy) return empty(busy);
+  const { entries, head } = await approvedEntries(rr, files);
+  if (!entries.length) return empty('커밋할 파일 목록이 비어 있습니다.');
+  const cur = await ag(rr.abs, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branch = cur.ok ? cur.out : null;
+  const target = branch && PROTECTED_BRANCHES.has(branch) && workBranch && head ? workBranch : branch;
+  const blocked = entries.flatMap((e) => e.flags.map((fl) => `${e.path}: ${APPROVED_FLAG_LABEL[fl] ?? fl}`));
+  const hash = createHash('sha256').update(JSON.stringify([rr.real, message.trim(), head, branch, target, entries.map((e) => [e.path, e.status, e.mode, e.oid, e.del, e.flags])])).digest('hex');
+  return { preview: { repo, branch, target, files: entries.map((e) => ({ path: e.path, status: e.status, added: e.added, removed: e.removed, flags: e.flags })), blocked, hash, error: branch ? null : '분리된 HEAD(브랜치 없음) 상태라 커밋하지 않습니다.' }, entries, head };
+}
+
+/** 사용자가 승인한 커밋: 보여 준 내용과 같을 때만, 그 파일의 그 내용만 커밋한다. 작성자는 사용자 git 설정(없으면 CREWGENAI). push하지 않는다. */
+export async function commitApproved(folder: string, repo: string, files: string[], message: string, shownHash: string, trailers: Record<string, string>, workBranch?: string): Promise<{ sha: string; branch: string | null; note: string | null }> {
+  const rr = await approvedRepo(folder, repo);
+  if (typeof rr === 'string') throw new Error(rr);
+  return withRepoLock(rr.abs, async () => {
+    const st = await approvedState(folder, repo, files, message, workBranch);
+    const p = st.preview;
+    if (p.error) throw new Error(p.error);
+    if (p.blocked.length) throw new Error(`커밋할 수 없는 파일이 있습니다: ${p.blocked.slice(0, 5).join(', ')}`);
+    if (!shownHash || p.hash !== shownHash) throw new Error('승인 화면을 연 뒤 파일 내용이나 브랜치가 바뀌었습니다. 다시 확인한 뒤 승인하세요.');
+    const { entries, head } = st; // 해시를 확인한 바로 그 내용(다시 읽지 않음)
+    // dev·main이면 작업 브랜치로 옮긴다(작업 트리 변경은 그대로 따라감, hook 없이)
+    let note: string | null = null; let branch = p.branch!;
+    if (p.target && p.target !== p.branch && workBranch) {
+      const b = await ensureWorkBranch(rr.abs, workBranch, NO_HOOKS);
+      if (b.error) throw new Error(b.error);
+      note = b.note; branch = b.target ?? workBranch;
+    }
+    const head2 = (await ag(rr.abs, ['rev-parse', '--verify', '-q', 'HEAD'])).out || null;
+    if (head2 !== head) throw new Error('커밋 직전에 저장소 HEAD가 바뀌어 커밋하지 않았습니다.');
+    const tmp = mkdtempSync(join(tmpdir(), 'crewgenai-approve-'));
+    const env = { GIT_INDEX_FILE: join(tmp, 'index') };
+    try {
+      const rt = head ? await ag(rr.abs, ['read-tree', head], env) : await ag(rr.abs, ['read-tree', '--empty'], env);
+      if (!rt.ok) throw new Error(`임시 인덱스를 만들지 못했습니다: ${rt.err.slice(0, 200)}`);
+      for (const e of entries) {
+        if (e.del) { const r = await ag(rr.abs, ['update-index', '--force-remove', '--', e.path], env); if (!r.ok) throw new Error(`삭제 반영 실패: ${e.path}`); continue; }
+        // 보여 준 내용 그대로인지 다시 확인하며 저장(-w): 다르면 커밋하지 않는다
+        const w = await ag(rr.abs, ['hash-object', '-w', `--path=${e.path}`, '--', e.path]);
+        if (!w.ok || w.out !== e.oid) throw new Error(`승인한 뒤 파일 내용이 바뀌어 커밋하지 않았습니다: ${e.path}`);
+        const u = await ag(rr.abs, ['update-index', '--add', '--cacheinfo', `${e.mode},${e.oid},${e.path}`], env);
+        if (!u.ok) throw new Error(`임시 인덱스 반영 실패: ${e.path}: ${u.err.slice(0, 200)}`);
+      }
+      const tree = (await ag(rr.abs, ['write-tree'], env)).out;
+      if (!tree) throw new Error('커밋할 트리를 만들지 못했습니다.');
+      // 결과 확인: HEAD와 다른 경로가 정확히 승인한 경로뿐인지
+      const changed = head ? (await ag(rr.abs, ['-c', 'core.quotePath=false', 'diff-tree', '-r', '--name-only', '-z', head, tree])).raw.split('\0').filter(Boolean) : entries.map((e) => e.path);
+      const approved = new Set(entries.map((e) => e.path));
+      if (!changed.length) throw new Error('커밋할 변경이 없습니다(이미 같은 내용).');
+      if (changed.some((c) => !approved.has(c))) throw new Error('승인하지 않은 경로가 섞여 커밋하지 않았습니다.');
+      const e2 = await ag(rr.abs, ['config', 'user.email']); const n2 = await ag(rr.abs, ['config', 'user.name']);
+      const who = e2.ok && e2.out && n2.ok && n2.out ? { GIT_AUTHOR_NAME: n2.out, GIT_AUTHOR_EMAIL: e2.out, GIT_COMMITTER_NAME: n2.out, GIT_COMMITTER_EMAIL: e2.out }
+        : { GIT_AUTHOR_NAME: 'CREWGENAI 사용자 승인', GIT_AUTHOR_EMAIL: 'approved@crewgenai.local', GIT_COMMITTER_NAME: 'CREWGENAI', GIT_COMMITTER_EMAIL: 'crewgenai@localhost' };
+      const msg = `${message.trim()}\n\n${Object.entries(trailers).filter(([, v]) => v).map(([k, v]) => `${k}: ${v.replace(/\n/g, ' ')}`).join('\n')}\n`;
+      const c = await ag(rr.abs, ['commit-tree', tree, ...(head ? ['-p', head] : []), '-m', msg], who);
+      if (!c.ok || !c.out) throw new Error(`커밋 생성 실패: ${(c.err || c.out).slice(0, 300)}`);
+      const sym = await ag(rr.abs, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+      if (!sym.ok || sym.out !== branch) throw new Error('커밋 직전에 작업 브랜치가 바뀌어 커밋하지 않았습니다.');
+      // HEAD가 그대로일 때만 브랜치를 옮긴다(그 사이 다른 커밋이 생겼으면 실패)
+      const ur = await ag(rr.abs, ['update-ref', '-m', 'crewgenai: 사용자 승인 커밋', `refs/heads/${branch}`, c.out, head ?? '0'.repeat(40)]);
+      if (!ur.ok) throw new Error(`브랜치를 옮기지 못했습니다(그 사이 다른 커밋이 생김): ${ur.err.slice(0, 200)}`);
+      // 실제 인덱스의 그 경로들을 새 HEAD에 맞춘다(작업 트리는 건드리지 않음). 그 사이 브랜치가 바뀌었으면 건드리지 않는다
+      const sym2 = await ag(rr.abs, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+      if (sym2.ok && sym2.out === branch) await ag(rr.abs, ['reset', '-q', '--', ...entries.map((e) => e.path)]);
+      return { sha: c.out, branch, note };
+    } finally { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* 무시 */ } }
+  });
 }

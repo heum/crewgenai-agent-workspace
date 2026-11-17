@@ -422,6 +422,10 @@ export interface WorkspaceApi {
   listMissions(projectId: ID): Promise<Mission[]>;
   attention(): Promise<Attention>;
   pendingDecisions(): Promise<PendingDecision[]>;
+  /** 승인 커밋: 화면에 보여 줄 내용, 승인(보여 준 hash가 지금과 같을 때만), 거절 */
+  commitPreview(missionId: ID, requestId: string): Promise<CommitPreview>;
+  commitApprove(missionId: ID, requestId: string, shownHash: string): Promise<MissionCommitRequest>;
+  commitDecline(missionId: ID, requestId: string): Promise<MissionCommitRequest>;
   listLearnings(): Promise<Learning[]>;
   saveLearning(id: ID | null, fields: LearningFields & { active?: boolean }): Promise<Learning>;
   deleteLearning(id: ID): Promise<void>;
@@ -552,6 +556,8 @@ export interface Mission {
   /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */
   parkedSigs?: string[];
   results?: MissionResult[]; // 마지막 판단의 '열어 볼 결과물'(작업별)
+  /** 오퍼레이터가 요청한 커밋(이미 있는 미커밋 변경). 사용자가 팝업에서 파일·메시지를 보고 승인해야만 앱이 커밋한다 */
+  commitRequests?: MissionCommitRequest[];
   resultsCycle?: number;
   resultsHistory?: { cycle: number; results: MissionResult[] }[]; // 최근 회차별 결과물(최신 먼저, 최대 6회차)
   idleCycles?: number; // 반영된 변경 없이 끝난 사이클이 연속 몇 번인가(상한에 넣지 않음, 이어지면 멈추고 물음)
@@ -570,6 +576,19 @@ export interface MissionGap {
   /** 문서를 읽지 않은 사용자도 알 수 있게 쓴 쉬운 설명(배경·왜 중요한지·고르면 어떻게 되는지) */ explain?: string;
   /** 근거 위치: 프로젝트 폴더 기준 경로(또는 참고 문서 절대 경로)와 줄 번호 */ refs?: MissionRef[];
 }
+/** 사용자 승인 커밋 요청 한 건 */
+export interface MissionCommitRequest {
+  id: string; cycle: number;
+  repo: string; // 연결 폴더 기준 저장소 경로(폴더 자체가 저장소면 빈 문자열)
+  files: string[]; // 저장소 기준 경로
+  message: string; why: string; task: string;
+  status: 'pending' | 'approved' | 'declined' | 'failed';
+  sha?: string | null; branch?: string | null; error?: string | null;
+  at: string; decidedAt?: string | null;
+}
+export interface CommitPreviewFile { path: string; status: string; added: number | null; removed: number | null; flags: string[] }
+/** 승인 화면 내용: hash는 승인할 때 그대로 돌려줘야 한다(그 사이 바뀌면 커밋하지 않음) */
+export interface CommitPreview { repo: string; branch: string | null; target: string | null; files: CommitPreviewFile[]; blocked: string[]; hash: string; error: string | null; flagLabels: Record<string, string> }
 /** 사용자가 고를 선택지 */
 export interface MissionChoice { label: string; effect: string; recommended: boolean; why: string; action?: 'stop' } // action=stop: 고르면 미션을 종료
 export interface MissionRef { path: string; line?: number | null }
@@ -712,7 +731,7 @@ export interface PendingDecision {
   key: string;
   projectId: ID; projectName: string;
   missionId: ID; missionTitle: string; cycle: number;
-  kind: 'question' | 'gap' | 'permission';
+  kind: 'question' | 'gap' | 'permission' | 'commit';
   task: string; // 어떤 작업·문서의 결정인지
   question: string; // 무엇을 정해야 하는지
   explain: string; // 쉬운 설명(있을 때)
@@ -720,4 +739,5 @@ export interface PendingDecision {
   choices: MissionChoice[];
   waiting: boolean; // 미션이 이 결정을 기다리며 멈춰 있는가
   denial?: MissionDenial; // 권한 보류 항목(허용하면 그 직원 설정에 넣고 다시 시도)
+  commit?: MissionCommitRequest; // 승인 커밋 요청
 }

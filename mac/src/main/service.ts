@@ -6,13 +6,13 @@ import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha, isAppTempPath } from './engine/fsutil';
 import { DemoManager, demoInfo, readManifest } from './demo';
 import { isCharacterId } from '../shared/characterIds';
-import type { Attention, AttentionItem, Learning, LearningFields, DocItem, MissionChoice, PendingDecision, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
-import { COMMAND_LEVELS, projectSkillDirs, type CommandLevel } from './autopilot';
+import type { Attention, AttentionItem, CommitPreview, Learning, LearningFields, DocItem, MissionChoice, MissionCommitRequest, PendingDecision, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
+import { COMMAND_LEVELS, projectSkillDirs, workBranchName, type CommandLevel } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
-import { gitRoot, gitShutdown, workspaceRepos } from './git';
+import { APPROVED_FLAG_LABEL, commitApproved, gitRoot, gitShutdown, previewApprovedCommit, workspaceRepos } from './git';
 import { LearningStore } from './learning';
 import { MissionRunner } from './mission';
 import { autoLayout, needsLayout } from '../shared/layout';
@@ -349,9 +349,14 @@ export class Service {
       choices?.length ? choices : (options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' }));
     for (const p of this.store.listProjects()) {
       for (const m of this.missions.list(p.id)) {
-        if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정(근거 부족 항목)은 보여 준다
         const title = m.prompt.split('\n').map((l) => l.replace(/^#+\s*/, '').trim()).find(Boolean)?.slice(0, 80) ?? '미션';
         const base = { projectId: p.id, projectName: p.plan.name, missionId: m.id, missionTitle: title, cycle: m.cycle };
+        // 승인 커밋 요청은 미션이 멈춰 있어도 보여 준다(미션 진행과 따로 정할 수 있음). 승인 전에는 아무것도 커밋하지 않는다.
+        for (const r of m.commitRequests ?? []) {
+          if (r.status !== 'pending') continue;
+          out.push({ ...base, key: `${m.id}|c|${r.id}`, kind: 'commit', task: `커밋 승인 요청 · 사이클 ${r.cycle}${r.task ? ` · ${r.task}` : ''}`, question: `${r.repo || '연결 폴더'} 저장소에 파일 ${r.files.length}개를 커밋할까요?`, explain: r.why, doc: '', issue: '', choices: [], waiting: false, commit: r });
+        }
+        if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정(근거 부족 항목)은 보여 준다
         // 미션이 기다리는 질문은 선택지가 없어도 보여 준다(직접 적어 답한다)
         if (m.status === 'waiting_user' && m.question && !(m.gaps?.length && !(m.questionOptions?.length))) {
           out.push({ ...base, key: `${m.id}|q|${m.cycle}|${m.question.slice(0, 200)}`, kind: 'question', task: `오퍼레이터 질문 · 사이클 ${m.cycle}`, question: m.question, explain: '', doc: '', issue: '', choices: asChoices(m.questionChoices, m.questionOptions), waiting: true });
@@ -369,6 +374,38 @@ export class Service {
       }
     }
     return out;
+  }
+
+  // ───── 사용자 승인 커밋 ─────
+  private commitReq(missionId: string, requestId: string): { req: MissionCommitRequest; folder: string; branch: string | undefined } {
+    const m = this.missions.get(missionId);
+    const req = (m.commitRequests ?? []).find((r) => r.id === requestId);
+    if (!req) throw new Error('커밋 요청을 찾을 수 없습니다.');
+    const folder = this.store.getProject(m.projectId).plan.folder;
+    return { req, folder, branch: this.settings().autoAssist !== false ? workBranchName(m.id) : undefined };
+  }
+  async commitPreview(missionId: string, requestId: string): Promise<CommitPreview> {
+    const { req, folder, branch } = this.commitReq(missionId, requestId);
+    return { ...(await previewApprovedCommit(folder, req.repo, req.files, req.message, branch)), flagLabels: APPROVED_FLAG_LABEL };
+  }
+  /** 사용자가 팝업에서 승인한 커밋: 보여 준 내용(hash)과 지금이 같을 때만 그 파일만 커밋한다. push하지 않는다. */
+  async commitApprove(missionId: string, requestId: string, shownHash: string): Promise<MissionCommitRequest> {
+    const { req, folder, branch } = this.commitReq(missionId, requestId);
+    if (req.status !== 'pending') throw new Error('이미 처리한 커밋 요청입니다.');
+    try {
+      const r = await commitApproved(folder, req.repo, req.files, req.message, String(shownHash ?? ''), { 'Crewgenai-Mission': missionId, 'Crewgenai-Approved': 'user' }, branch);
+      return this.missions.markCommitRequest(missionId, requestId, { status: 'approved', sha: r.sha, branch: r.branch, error: r.note }, `커밋 승인: ${req.repo || '(연결 폴더)'} · "${req.message}" → ${r.branch ?? ''} ${r.sha.slice(0, 8)}${r.note ? ` (${r.note})` : ''}`);
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 보여 준 뒤 바뀐 경우는 요청을 그대로 두고 다시 확인하게 한다. 그 밖의 실패는 기록한다.
+      if (!/바뀌었습니다|커밋할 수 없는 파일/.test(msg)) this.missions.markCommitRequest(missionId, requestId, { status: 'failed', error: msg.slice(0, 500) }, `커밋 실패: "${req.message}" — ${msg.slice(0, 300)}`);
+      throw e;
+    }
+  }
+  commitDecline(missionId: string, requestId: string): MissionCommitRequest {
+    const { req } = this.commitReq(missionId, requestId);
+    if (req.status !== 'pending') throw new Error('이미 처리한 커밋 요청입니다.');
+    return this.missions.markCommitRequest(missionId, requestId, { status: 'declined' }, `커밋하지 않음(사용자 결정): ${req.repo || '(연결 폴더)'} · "${req.message}"`);
   }
 
   /** 배운 것 직접 추가·수정(사용자가 한 것이므로 검토한 것으로 본다) */

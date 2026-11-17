@@ -1,7 +1,7 @@
 // 결정 팝업: 사용자가 정해야 하는 것이 생기면 어느 탭에서든 팝업으로 알리고, 그 자리에서 버튼으로 고르게 한다.
 // 추천안은 '추천' 표시와 이유만 보여 주고 자동으로 고르지 않는다. 닫아도 오른쪽 아래 '결정 대기'로 다시 열 수 있다.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { LiveEvent, PendingDecision } from '../../shared/types';
+import type { CommitPreview, LiveEvent, PendingDecision } from '../../shared/types';
 import { useAction, ws } from '../api';
 import { Banner } from './common';
 
@@ -35,6 +35,35 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
 
   const cur = items[Math.min(idx, items.length - 1)] ?? null;
   useEffect(() => { setOwn(''); }, [cur?.key]);
+  // 승인 커밋: 지금 저장소 상태로 파일·변경 줄 수·막힘을 다시 읽어 보여 준다(승인할 때 이 내용과 같아야 커밋)
+  const [preview, setPreview] = useState<CommitPreview | null>(null);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const loadPreview = () => {
+    setPreview(null); setPreviewErr(null);
+    if (cur?.kind !== 'commit' || !cur.commit) return;
+    const key = cur.key;
+    ws().commitPreview(cur.missionId, cur.commit.id).then((p) => { if (curKey.current === key) setPreview(p); }).catch((e: Error) => { if (curKey.current === key) setPreviewErr(e.message); });
+  };
+  const curKey = useRef<string | null>(null);
+  useEffect(() => { curKey.current = cur?.key ?? null; loadPreview(); }, [cur?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const afterCommit = async (msg: string) => {
+    const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+    for (const d of list) seen.current.add(d.key);
+    setItems(list); setIdx(0); setDone(msg);
+    if (!list.length) setTimeout(() => setOpen(false), 2200);
+  };
+  const approveCommit = () => act.run(async () => {
+    if (!cur?.commit || !preview) return;
+    try {
+      const r = await ws().commitApprove(cur.missionId, cur.commit.id, preview.hash);
+      await afterCommit(`커밋했습니다: ${r.branch ?? ''} ${r.sha?.slice(0, 8) ?? ''} · "${cur.commit.message}" (push하지 않음)${r.error ? ` — ${r.error}` : ''}`);
+    } catch (e) { loadPreview(); throw e; }
+  });
+  const declineCommit = () => act.run(async () => {
+    if (!cur?.commit) return;
+    await ws().commitDecline(cur.missionId, cur.commit.id);
+    await afterCommit('커밋하지 않기로 기록했습니다. 오퍼레이터는 이 결정을 따릅니다.');
+  });
   const rec = useMemo(() => cur?.choices.find((c) => c.recommended) ?? null, [cur]);
 
   // 고른 안의 설명(고르면 달라지는 것)도 함께 넘겨 다음 계획이 사용자가 승인한 내용 그대로 따르게 한다
@@ -109,6 +138,35 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                 </div>
                 <div className="decision-q">{cur.question}</div>
                 {cur.explain && <div className="decision-explain small">{cur.explain}</div>}
+                {cur.kind === 'commit' && cur.commit && (
+                  <div className="decision-commit" style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 16px', borderRadius: 10, background: 'var(--bg-soft, #f5f6f8)', lineHeight: 1.6 }}>
+                    <div className="small"><span className="muted">저장소</span> {cur.commit.repo || '(연결 폴더)'}
+                      {preview && <> · <span className="muted">받을 브랜치</span> <b>{preview.target ?? '—'}</b>{preview.target && preview.target !== preview.branch ? <span className="muted"> (지금 {preview.branch}에는 바로 커밋하지 않음{preview.target ? ', 같은 이름이 있으면 번호를 붙임' : ''})</span> : null}</>}
+                    </div>
+                    <div className="small"><span className="muted">커밋 메시지</span> <code>{cur.commit.message}</code></div>
+                    {!preview && !previewErr && <div className="muted small">저장소 상태를 확인하는 중…</div>}
+                    {previewErr && <Banner>{previewErr}</Banner>}
+                    {preview?.error && <Banner>{preview.error}</Banner>}
+                    {preview && preview.files.length > 0 && (
+                      <ul className="decision-files" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+                        {preview.files.map((f) => (
+                          <li key={f.path} className={f.flags.length ? 'is-bad' : ''} style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', color: f.flags.length ? 'var(--danger, #b42318)' : undefined }}>
+                            <span className="mono small">{f.path}</span>
+                            <span className="small decision-num muted">{f.status.trim() === '??' ? '새 파일' : f.status.includes('D') ? '삭제' : '수정'}{f.added !== null ? ` +${f.added}` : ''}{f.removed !== null ? ` −${f.removed}` : ''}</span>
+                            {f.flags.map((fl) => <span key={fl} className="badge badge-warn">{preview.flagLabels[fl] ?? fl}</span>)}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {preview && preview.blocked.length > 0 && <div className="small decision-blocked" style={{ color: 'var(--danger, #b42318)' }}>표시된 파일 때문에 커밋할 수 없습니다. 거절하면 오퍼레이터가 다른 방법을 찾습니다.</div>}
+                    <div className="muted small">승인하면 위 파일만 커밋합니다(다른 변경은 그대로 둠). push·PR·병합은 하지 않습니다. 화면을 연 뒤 파일이 바뀌면 커밋하지 않고 다시 보여 줍니다.</div>
+                    <div className="row gap">
+                      <button className="btn btn-primary" disabled={act.busy || !preview || !!preview.error || preview.blocked.length > 0} onClick={() => void approveCommit()}>커밋 승인</button>
+                      <button className="btn" disabled={act.busy} onClick={() => void declineCommit()}>커밋하지 않음</button>
+                      <button className="btn-link small" disabled={act.busy} onClick={loadPreview}>다시 확인</button>
+                    </div>
+                  </div>
+                )}
                 {rec && <div className="decision-rec small"><span className="badge badge-info">추천</span> {rec.label}{rec.why ? ` — ${rec.why}` : ''} <span className="muted">(자동으로 고르지 않습니다)</span></div>}
                 <ul className="decision-choices">
                   {cur.choices.map((c, i) => (
@@ -120,8 +178,8 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                     </li>
                   ))}
                 </ul>
-                {cur.choices.length === 0 && <div className="muted small">고를 선택지가 없는 질문입니다. 아래에 답을 적어 보내면 미션이 그 답으로 이어서 진행합니다.</div>}
-                {cur.kind !== 'permission' && <div className="row gap decision-own">
+                {cur.choices.length === 0 && cur.kind !== 'commit' && <div className="muted small">고를 선택지가 없는 질문입니다. 아래에 답을 적어 보내면 미션이 그 답으로 이어서 진행합니다.</div>}
+                {cur.kind !== 'permission' && cur.kind !== 'commit' && <div className="row gap decision-own">
                   <input className="input" value={own} placeholder={cur.choices.length ? '다른 답을 직접 적기' : '답을 적어 주세요'} onChange={(e) => setOwn(e.target.value)} />
                   <button className="btn" disabled={act.busy || !own.trim()} onClick={() => void choose(own)}>이 답으로 정하기</button>
                 </div>}

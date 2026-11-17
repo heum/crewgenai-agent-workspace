@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
@@ -48,6 +48,10 @@ function demoRule(plan: PlanFields): string {
 }
 /** 진전 없는 사이클이 이만큼 이어지면 멈추고 묻는다 */
 const IDLE_LIMIT = 2;
+const COMMIT_RULE = [
+  '- 앱이 할 수 있는 일(이것 말고는 계획·질문 선택지로 내지 않는다): 직원 작업이 바꾼 파일은 앱이 작업 브랜치에 자동 커밋한다. commitRequests로 요청한 커밋은 사용자가 팝업에서 파일·메시지를 보고 승인하면 앱이 그 파일만 커밋한다(push·PR·병합은 하지 않음). 시연 서비스 실행(사용자 승인), 보류한 명령·경로 허용(사용자 결정). 앱에 없는 동작(예: 반영 단계에서 문서에 적힌 파일 목록 커밋, push, PR)은 선택지로 내지 않는다.',
+  '- commitRequests: 저장소에 이미 있는 미커밋 변경을 커밋해야 다음 일을 할 수 있을 때만 쓴다. repo는 프로젝트 폴더 기준 저장소 경로(폴더 자체가 저장소면 빈 문자열), files는 저장소 기준 경로로 실제로 바뀐 파일만, message는 커밋 메시지 한 줄, why는 왜 지금 필요한지 한 문장. 비밀값·.env·키 파일은 넣지 않는다. 커밋 여부를 질문 선택지로 따로 묻지 않는다. 아래 커밋 요청 목록에 이미 있는(대기·승인된) 요청은 다시 내지 않고, 거절된 요청은 사용자 결정으로 따른다.',
+].join('\n');
 const NO_MANUAL_RULE = '- 사용자에게 수작업을 맡기지 않는다: 앱에서 직원을 대신 실행하기, 터미널 명령 실행, 결과·원문 붙여넣기, 파일 직접 저장을 요청하거나 질문 선택지로 내지 않는다. 직원 권한·도구로 할 수 없는 일은 막힘(이유)으로 진행 보고에 남기고, 그 일 없이 할 수 있는 다음 개발 작업으로 넘어간다. 같은 막힘 때문에 같은 질문을 되풀이하지 않는다. 예외는 사용자만 할 수 있는 일(본인 계정 로그인, 비밀값 입력, 실제 메일·결제 같은 외부 발송 승인)뿐이며, 이때는 무엇을 왜 하는지 한 줄로 요청한다. 리뷰의 후속 항목([후속])은 다음 작업 목록에 기록만 하고 이번 작업을 다시 하지 않는다.';
 /** 판단 summary = 사용자가 보고 판단하는 진행 보고 */
 const REPORT_RULE = [
@@ -78,13 +82,36 @@ const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
   properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
     results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' },
-      demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } } },
+      demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } },
+    commitRequests: { type: 'array', items: { type: 'object', required: ['repo', 'files', 'message', 'why'], properties: { repo: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, message: { type: 'string' }, why: { type: 'string' }, task: { type: 'string' } } } } },
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
 interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
 interface RawResult { task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
-interface Judge { results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
+interface Judge { commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+
+/** 오퍼레이터의 커밋 요청 정리: 형식이 맞는 것만, 이미 대기·승인된 같은 요청은 빼고, 대기 요청은 최대 5개 */
+export function cleanCommitRequests(raw: unknown, existing: MissionCommitRequest[], cycle: number): MissionCommitRequest[] {
+  if (!Array.isArray(raw)) return [];
+  const key = (repo: string, files: string[], msg: string) => JSON.stringify([repo, [...files].sort(), msg]);
+  const seen = new Set(existing.filter((r) => r.status === 'pending' || r.status === 'approved').map((r) => key(r.repo, r.files, r.message)));
+  let room = Math.max(0, 5 - existing.filter((r) => r.status === 'pending').length);
+  const out: MissionCommitRequest[] = [];
+  for (const x of raw as RawCommit[]) {
+    if (!room) break;
+    const r0 = String(x?.repo ?? '').trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, '').slice(0, 300); const repo = r0 === '.' ? '' : r0;
+    const files = [...new Set((Array.isArray(x?.files) ? x.files : []).map((f) => String(f ?? '').trim().replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean))].slice(0, 100);
+    const message = String(x?.message ?? '').trim().slice(0, 300);
+    if (!files.length || !message) continue;
+    const k = key(repo, files, message);
+    if (seen.has(k)) continue;
+    seen.add(k); room--;
+    out.push({ id: uid(), cycle, repo, files, message, why: String(x?.why ?? '').trim().slice(0, 500), task: String(x?.task ?? '').trim().slice(0, 200), status: 'pending', sha: null, branch: null, error: null, at: now(), decidedAt: null });
+  }
+  return out;
+}
 
 /** 오퍼레이터가 낸 선택지 정리: 빈 값·중복을 빼고 최대 4개, 각 200자 */
 function cleanOptions(v: unknown): string[] {
@@ -875,6 +902,8 @@ export class MissionRunner {
         { const results = resolveResults(project.plan.folder, judge.results);
           const hist = [{ cycle: m.cycle, results }, ...(this.get(id).resultsHistory ?? []).filter((h) => h.cycle !== m.cycle)].slice(0, 6);
           m = this.set(id, { results, resultsCycle: m.cycle, resultsHistory: hist }); }
+        { const reqs = cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
+          if (reqs.length) { m = this.set(id, { commitRequests: [...(this.get(id).commitRequests ?? []), ...reqs].slice(-30) }); for (const r of reqs) this.event(m, 'system', `커밋 승인 요청: ${r.repo || '(연결 폴더)'} · 파일 ${r.files.length}개 · "${r.message}" — 사용자가 승인해야 커밋합니다.`, { commitRequest: r.id }); } }
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
           this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}${open ? `\n(보류한 업무 ${open}건은 확인이 필요합니다)` : ''}` });
@@ -1050,7 +1079,7 @@ export class MissionRunner {
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 유지·되돌림, 범위·우선순위 등)이면 choices에 2~4개의 선택지를 쓴다: label(예: 'HTML 기준 유지'), effect(고르면 무엇이 달라지는지 쉬운 한 문장, 예: '제품 화면을 HTML에 맞춰 고친다'), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장). 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 선택지로 내지 않는다. '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
-      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULT_RULE, demoRule(plan), ...this.demoSection(plan),
+      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, RESULT_RULE, demoRule(plan), ...this.demoSection(plan), ...this.commitSection(m),
       '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
@@ -1161,12 +1190,32 @@ export class MissionRunner {
       '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
-      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, RESULTS_RULE, demoRule(plan), '- results의 demo: 실행 가능한 기능의 결과물이면 시연 목록의 service id와, 화면이면 path(예: /operator/companies), API면 api(apis 항목 id), steps(사용자가 눌러 볼 순서), expected(예상 결과), data(api+db·screen-only·mock)를 쓴다. 시연 목록에 없는 서비스는 쓰지 않는다. 문서만 만든 작업은 demo를 비운다.', ...this.demoSection(plan),
+      REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, ...this.commitSection(m), RESULTS_RULE, demoRule(plan), '- results의 demo: 실행 가능한 기능의 결과물이면 시연 목록의 service id와, 화면이면 path(예: /operator/companies), API면 api(apis 항목 id), steps(사용자가 눌러 볼 순서), expected(예상 결과), data(api+db·screen-only·mock)를 쓴다. 시연 목록에 없는 서비스는 쓰지 않는다. 문서만 만든 작업은 demo를 비운다.', ...this.demoSection(plan),
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
       '- 보류한 업무(아래)는 사용자 확인을 기다리는 중이다. 그 실패만으로 ask_user를 고르지 말고 나머지 일로 판단한다. 남은 일이 보류한 업무뿐이면 ask_user.',
       ...this.parkedSection(m),
     ].join('\n');
+  }
+
+  /** 계획·판단에 알려 줄 커밋 요청과 결과(같은 요청을 되풀이하지 않게) */
+  private commitSection(m: Mission): string[] {
+    const rs = (m.commitRequests ?? []).slice(-10);
+    if (!rs.length) return [];
+    const st = { pending: '사용자 승인 대기', approved: '승인·커밋됨', declined: '사용자가 거절(커밋하지 않음)', failed: '커밋 실패' } as const;
+    return ['## 커밋 요청(최근)', ...rs.map((r) => `- [${st[r.status]}] ${r.repo || '(연결 폴더)'} · "${r.message}" · 파일 ${r.files.slice(0, 8).join(', ')}${r.files.length > 8 ? ` 외 ${r.files.length - 8}개` : ''}${r.sha ? ` → ${r.branch ?? ''} ${r.sha.slice(0, 8)}` : ''}${r.error ? ` (이유: ${r.error.slice(0, 200)})` : ''}`), ''];
+  }
+
+  /** 사용자 승인 커밋 요청의 상태를 바꾸고 기록을 남긴다 */
+  markCommitRequest(id: string, reqId: string, patch: Partial<MissionCommitRequest>, text: string): MissionCommitRequest {
+    const m = this.get(id);
+    const list = m.commitRequests ?? [];
+    const cur = list.find((r) => r.id === reqId);
+    if (!cur) throw new Error('커밋 요청을 찾을 수 없습니다.');
+    const next = { ...cur, ...patch, decidedAt: now() };
+    const nm = this.set(id, { commitRequests: list.map((r) => (r.id === reqId ? next : r)) });
+    this.event(nm, 'answer', text, { commitRequest: reqId, status: next.status });
+    return next;
   }
 
   /** 계획·판단에 알려 줄 지금 시연 목록(서비스·API·목록 오류) */

@@ -22,6 +22,7 @@
 //   [[mock:gaps-options-only]] 선택지 달린 근거 부족만 내고 작업 없음 — 사용자 결정이 생기면 작업을 계획
 //   [[mock:staff]]          오퍼레이터가 직원 제안(새 직원·역할 변경, 오퍼레이터 00 변경은 걸러져야 함)을 함께 냄(기록에 있으면 다시 내지 않음)
 //   [[mock:ask-options]]     계획 질문을 선택지(questionOptions)와 함께 묻는다(답변 전 한 번)
+//   [[mock:commit-request]]  판단에서 이미 있는 미커밋 파일(pending.txt) 커밋을 요청(목록에 있으면 다시 내지 않음)
 // Windows: 파이프 출력이 비동기라 process.exit 전에 내용이 잘릴 수 있어 동기 쓰기로 바꾼다
 for (const s of [process.stdout, process.stderr]) { try { if (s._handle && s._handle.setBlocking) s._handle.setBlocking(true); } catch { /* 무시 */ } }
 const fs = require('node:fs');
@@ -169,6 +170,7 @@ async function main() {
     const dec = failed ? { decision: 'ask_user', summary: '실행 실패', question: '실패를 어떻게 처리할까요?', nextFocus: '' }
       : cyc >= 2 ? { decision: 'done', summary: '두 사이클로 목표 충족', question: '', nextFocus: '' }
       : { decision: 'continue', summary: '1차 결과 확인, 보완 필요', question: '', nextFocus: '보완' };
+    if (prompt.includes('[[mock:commit-request]]') && !prompt.includes('## 커밋 요청(최근)')) dec.commitRequests = [{ repo: '', files: ['pending.txt'], message: '대기 변경 커밋', why: '다음 작업에 필요' }];
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(dec), structured_output: dec, permission_denials: [] });
     process.exit(0);
   }
