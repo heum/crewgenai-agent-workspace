@@ -216,3 +216,31 @@ export async function demoInfo(m: DemoManager, projectId: string, plan: PlanFiel
   const states = await Promise.all(man.services.map((s) => m.state(projectId, s)));
   return { manifestPath: man.path, exists: man.exists, relPath: relative(plan.folder, man.path).split(sep).join('/'), services: states, apis: man.apis, errors: man.errors };
 }
+
+/**
+ * 앱이 직접 하는 시연 확인(사이클 판단 전): 사용자가 이미 실행을 승인한 시연 서비스만 켜고(승인 안 된 것은 켜지 않음),
+ * 상태 확인 경로와 데이터를 바꾸지 않는 요청(GET, 로그인처럼 값을 잡아 두는 POST)을 목록 순서대로 보내 결과를 남긴다.
+ * 직원 세션에서 서버를 오래 띄워 기다리다 시간 제한에 걸리는 일을 없애고, 판단·검토 지점에 실제 확인 근거를 준다.
+ */
+export async function verifyDemo(mgr: DemoManager, projectId: string, plan: PlanFields): Promise<string[]> {
+  const man = readManifest(plan);
+  if (!man.exists || !man.services.length) return [];
+  const out: string[] = [];
+  const up = new Set<string>();
+  for (const s of man.services) {
+    if (!mgr.approved(projectId, s)) { out.push(`- ${s.name}(${s.id}): 실행 승인 필요 — 사용자가 시연 열기에서 처음 한 번 승인해야 앱이 켤 수 있음(켜지 않음)`); continue; }
+    try { await mgr.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services); up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상`); }
+    catch (e) { out.push(`- ${s.name}(${s.id}): 켜지 못함 — ${redact((e as Error).message).slice(0, 200)}`); }
+  }
+  for (const a of man.apis) {
+    const s = man.services.find((x) => x.id === a.service);
+    if (!s || !up.has(s.id)) continue;
+    const safe = a.method === 'GET' || (a.method === 'POST' && Object.keys(a.capture).length > 0);
+    if (!safe) { out.push(`- API ${a.id} ${a.method} ${a.path}: 데이터를 바꾸는 요청이라 앱이 자동으로 보내지 않음(시연 화면에서 확인)`); continue; }
+    try {
+      const r = await mgr.request(projectId, s, { method: a.method, path: a.path, headers: a.headers, body: a.body, capture: a.capture });
+      out.push(`- API ${a.id} ${a.method} ${a.path}: ${r.status}${a.expect ? ` (기대: ${a.expect.slice(0, 80)})` : ''}`);
+    } catch (e) { out.push(`- API ${a.id} ${a.method} ${a.path}: 요청 실패 — ${redact((e as Error).message).slice(0, 160)}`); }
+  }
+  return out.slice(0, 40);
+}

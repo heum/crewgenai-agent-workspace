@@ -4,7 +4,7 @@ import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha, isAppTempPath } from './engine/fsutil';
-import { DemoManager, demoInfo, readManifest } from './demo';
+import { DemoManager, demoInfo, readManifest, verifyDemo } from './demo';
 import { isCharacterId } from '../shared/characterIds';
 import type { Attention, AttentionItem, CommitPreview, Learning, LearningFields, DocItem, MissionChoice, MissionCommitRequest, PendingDecision, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
 import { COMMAND_LEVELS, projectSkillDirs, workBranchName, type CommandLevel } from './autopilot';
@@ -101,6 +101,7 @@ export class Service {
       autoAssist: () => this.settings().autoAssist !== false,
       commandLevel: () => this.commandLevel(),
       testLocalSockets: () => this.settings().testLocalSockets === true,
+      demoVerify: (projectId) => verifyDemo(this.demo, projectId, this.store.getProject(projectId).plan),
     });
   }
 
@@ -375,7 +376,9 @@ export class Service {
           out.push({ ...base, key: `${m.id}|q|${m.cycle}|${m.question.slice(0, 200)}`, kind: 'question', task: `오퍼레이터 질문 · 사이클 ${m.cycle}`, question: m.question, explain: '', doc: '', issue: '', choices: asChoices(m.questionChoices, m.questionOptions), waiting: true });
         }
         // 권한 때문에 보류한 업무: 허용하면 그 직원에게만 허용하고 다시 시도한다(허용 안 하면 보류 유지)
-        for (const d of m.denials ?? []) {
+        // 권한 보류는 그 업무만 빼고 나머지가 계속 진행되므로 진행 중에는 팝업으로 띄우지 않고 검토 지점·확인 대기에 모아 보여 준다
+        const showDenials = !['planning', 'running', 'evaluating'].includes(m.status) && m.pauseKind !== 'restart';
+        for (const d of showDenials ? m.denials ?? [] : []) {
           const what = d.kind === 'command' ? `명령 '${d.suggestion ?? d.target}'` : d.kind === 'path' ? `경로 '${d.suggestion ?? d.target}' 읽기` : `${d.tool} 사용`;
           const allow: MissionChoice[] = d.suggestion && d.kind !== 'other' ? [{ label: d.kind === 'command' ? `${d.agent}에게 '${d.suggestion}' 허용` : `참고 자료로 '${d.suggestion}' 추가`, effect: d.kind === 'command' ? `이 직원만 이 명령을 쓸 수 있게 되고, 보류한 업무를 다시 시도합니다(격리 복사본 안에서 실행).` : `이 경로를 읽기 전용 참고 자료로 열고, 보류한 업무를 다시 시도합니다.`, recommended: false, why: '' }] : [];
           out.push({ ...base, key: `${m.id}|p|${d.sig}`, kind: 'permission', task: `보류한 업무 · ${d.agent} · ${d.tool}`, question: `${d.agent}이(가) ${what} 권한이 없어 이 업무를 보류했습니다. 허용할까요?`, explain: `거부된 요청: ${d.target}`, doc: '', issue: '', choices: [...allow, { label: '허용하지 않고 보류 유지', effect: '이 업무는 계속 보류하고 나머지 작업만 진행합니다. 나중에 미션 화면에서 다시 고를 수 있습니다.', recommended: false, why: '' }], waiting: m.status === 'waiting_user', denial: d });

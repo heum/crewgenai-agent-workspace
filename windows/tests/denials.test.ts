@@ -23,6 +23,7 @@ describe('권한 거부', () => {
     expect(commandPrefix('date; shasum -a 256 /x')).toBe('date');
     expect(commandPrefix('F=/tmp/a.txt wc -l "$F"')).toBe('wc -l'); // 변수 지정은 건너뛴다
     expect(commandPrefix('F=/tmp/a.txt')).toBeNull();
+    expect(commandPrefix('cd /x/y && wc -l b.html')).toBe('wc -l'); // cd 다음의 실제 명령
     expect(commandPrefix('"/Applications/Some App/bin" --x')).toBeNull(); // 따옴표 경로는 제안하지 않음
     expect(commandPrefix('git -C /repo log -1')).toBe('git -C');
     expect(commandPrefix('ls -la /a /b')).toBe('ls -la');

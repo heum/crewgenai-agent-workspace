@@ -44,7 +44,7 @@ function demoRule(plan: PlanFields): string {
     `- 완료 기준은 사용자가 로컬에서 실제 기능을 실행해 볼 수 있는 상태다. 실행 가능한 기능(웹 화면·API·DB/관리 화면·앱)을 만든 작업은 시연을 마련한다. MD·소스·시험 기록은 보조 자료다. 문서만 만드는 작업은 문서가 결과물이다.`,
     `- 시연 목록 파일: ${file}. 앱이 이 파일을 읽어 사용자가 버튼으로 서비스를 켜고 끈다(사용자는 터미널을 쓰지 않는다). 형식: {"services":[{"id":"api-server","name":"API 서버","kind":"api|web|admin|app","repo":"저장소 폴더","start":["./scripts/run.sh","인자"] 또는 ["npm","run","dev"],"port":8081,"health":"/actuator/health","env":{"SPRING_PROFILES_ACTIVE":"demo"},"needs":["먼저 켤 서비스 id"],"data":"api+db|screen-only|mock","note":"시연용 데이터 설명","startupSec":180}],"apis":[{"service":"api-server","id":"list-items","group":"항목 관리","title":"항목 목록","method":"GET","path":"/api/...","headers":{"Authorization":"Bearer {{token}}"},"body":{},"description":"무엇을 하는지","expect":"정상 200·오류 401 예","capture":{"token":"응답 JSON 경로"}}]}`,
     `- 시연 원칙: 기존 데이터에 영향이 없는 시연용 데이터(별도 시연 프로필·별도 로컬 DB·예시 계정)를 쓴다. 비밀값은 목록 env에 넣지 않는다(시연 프로필 설정 파일에). 연결된 작업은 같은 시연 환경을 함께 쓰고, 작은 수정마다 새 환경을 만들지 않는다. API는 apis 항목(앱의 API 시연 화면에서 직접 호출)에 로그인·정상·오류 예시를 넣는다. DB·ERP 변경은 조회·등록·수정이 되는 관리 화면(기존 관리 화면을 우선 활용)과 다시 조회해 저장값을 확인하는 흐름으로 보여 준다. 화면만 있고 API·DB가 연결되지 않았거나 예시·대체 응답을 쓰면 data를 screen-only·mock으로 표시한다.`,
-    `- 시연을 마련한 직원은 직접 서비스를 띄워(허용된 명령으로) 상태 확인 경로와 주요 동작을 확인하고 그 결과를 보고한다. 띄워 보지 못했으면 미검증으로 쓴다.`,
+    `- 서버 실행·시연 확인은 앱이 한다: 직원은 서비스를 직접 띄워 오래 기다리지 않는다(시간 제한에 걸림). 시연 목록을 정확히 만들고 빌드·단위 시험까지 하면, 앱이 판단 직전에 사용자가 승인한 서비스를 켜고 상태 확인·API를 보내 결과를 '앱이 직접 확인한 시연 결과'로 넘긴다. 판단은 그 결과를 검증 근거로 쓴다.`,
   ].join('\n');
 }
 /** 운영 흐름: 큰 기능을 먼저 만들고, 사람의 검토는 의미 있는 결과가 준비된 지점에 모은다 */
@@ -182,6 +182,7 @@ export interface MissionDeps {
   autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
   commandLevel?: () => CommandLevel; // 명령 허용 범위
   testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
+  /** 앱이 직접 하는 시연 확인(승인된 서비스만 켜고 상태·안전한 API 확인) */ demoVerify?: (projectId: string) => Promise<string[]>;
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
@@ -189,7 +190,9 @@ class OperatorLimit extends Error { constructor(public lim: LimitInfo) { super('
 
 /** 거부된 명령에서 허용 명령 접두어 후보를 만든다: 첫 단순 명령의 이름과 그 뒤 옵션(값 포함). 예) 'shasum -a 256 /x/y' → 'shasum -a 256', 'git -C /repo log' → 'git -C' */
 export function commandPrefix(command: string): string | null {
-  const first = command.split(/;|&&|\|\||\|/)[0].trim();
+  // 'cd 폴더 && 명령'처럼 폴더 이동이 앞에 오면 실제로 필요한 것은 뒤의 명령이다(cd 허용은 의미가 없다)
+  const parts = command.split(/;|&&|\|\||\|/).map((x) => x.trim()).filter(Boolean);
+  const first = parts.find((x) => !/^cd(\s|$)/.test(x)) ?? parts[0] ?? '';
   const toks = first.split(/\s+/).filter(Boolean);
   // 앞에 붙은 변수 지정(F=/tmp/x cmd)은 명령 이름이 아니다. 따옴표로 시작하면 정확히 끊을 수 없으니 한 번에 허용할 명령으로 제안하지 않는다.
   while (toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[0])) toks.shift();
@@ -216,6 +219,7 @@ export function failureSig(reason: string, step = ''): string {
 
 export class MissionRunner {
   private loops = new Set<string>();
+  private demoChecks = new Map<string, string[]>(); // 미션별 최근 앱 시연 확인 결과
   private procs = new Map<string, ProcessHandle>();
   private closed = false;
   private replan = new Set<string>(); // '지금 반영' 추가 지시를 받은 미션
@@ -972,8 +976,13 @@ export class MissionRunner {
           continue;
         }
 
-        // 3) 오퍼레이터 판단
+        // 3) 오퍼레이터 판단(그 전에 앱이 시연 환경을 직접 켜고 확인해 판단 근거로 준다)
         m = this.set(id, { status: 'evaluating', stage: 'judge' });
+        if (this.d.demoVerify) {
+          try { const lines = await this.d.demoVerify(m.projectId); this.demoChecks.set(id, lines); if (lines.length) this.event(m, 'system', `앱이 시연 환경을 직접 확인했습니다(승인된 서비스만 켬):\n${lines.join('\n')}`); }
+          catch (e) { this.demoChecks.set(id, [`- 시연 확인 실패: ${redact((e as Error).message).slice(0, 200)}`]); }
+          if (this.closed || this.get(id).status === 'stopped') return;
+        }
         const judge = await this.patient(id, () => this.callOperator<Judge>(this.get(id), project.plan, this.judgePrompt(this.get(id), project.plan, run.id), JUDGE_SCHEMA));
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_judge', `판단: ${judge.decision === 'continue' ? '계속' : judge.decision === 'done' ? '완료' : '사용자 확인'} — ${judge.summary}`, judge);
@@ -1266,6 +1275,7 @@ export class MissionRunner {
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
       `## 실행 결과: ${d.run.status}${d.run.reason ? ` — ${d.run.reason}` : ''}`, ...(failed.length ? ['### 실패 단계', ...failed.map((f) => `- ${f}`)] : []), '',
       '## 리뷰 기록', ...(reviews.length ? reviews : ['- (없음)']), '',
+      '## 앱이 직접 확인한 시연 결과(이번 판단 직전, 사실로 쓴다)', ...((this.demoChecks.get(m.id) ?? []).length ? this.demoChecks.get(m.id)! : ['- (시연 목록이 없거나 확인할 서비스가 없음)']), '',
       '## 직원(역할·지시 요약 — 직원 제안 판단용)', ...this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== '00').map((a) => `- ${a.code} ${a.name}: ${a.role} — ${a.instructions.replace(/\s+/g, ' ').slice(0, 400)}`), '',
       '## 지금까지의 판단·사용자 답변', this.history(m), '',
       ...this.decisionsSection(m),
