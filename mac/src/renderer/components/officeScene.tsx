@@ -1,15 +1,15 @@
-// 사무실 그림(배경·가구·인물)과 자리 배치. 그림은 이 앱에서 직접 그린 도트 그림(../art.ts)이다.
+// 사무실 그림(A안: 예전 픽셀 감성). 배경·가구·인물·상태 표시를 따로 그린다.
 // 원칙: 한 사람은 지도에 한 번만. 자리·자세는 실제 상태에서만 정한다(업무 자리는 실제로 일할 때만 앉는다).
-// 출력: 그림 한 칸(1 단위)은 화면에서 정수 개의 실제 화소가 되도록 배율을 고르고(OfficeTab), 장면의 가로·세로 칸 수는
-// 화면 크기에서 계산해 구역(업무 공간·라운지·리뷰룸)을 다시 배치한다. 고정 그림 한 장을 늘리거나 줄이지 않는다.
+// 휴식 공간의 자리·자세(컵·책·기지개)와 깜빡임·손 흔들기는 장식이며 실제 상태·실행 기록을 바꾸지 않는다.
+// 출력: 그림 한 칸이 실제 화면 화소 정수 개가 되는 배율만 쓰고(pickScale), 장면 칸 수는 무대 크기에서 계산한다.
 // 시간대 분위기는 벽·바닥·창밖에만 입히고, 가구·인물·글자는 고유 색 그대로 둔다(밤에도 선명하게).
-import { memo } from 'react';
+import { memo, type JSX } from 'react';
 import type { Agent, MissionDenial } from '../../shared/types';
+import { type ArtMod, type ArtPose, type DeskProp } from '../art';
+import { retroBoard, retroChar, retroClock, retroCork, retroHead, retroPlant, retroShelf, retroWindow, RETRO_H, RETRO_SIT_H, RETRO_W } from '../artRetro';
 import { type CharDef } from '../characters';
-import {
-  BOARD_SLOT, bookshelf2, chairBack, char2, CHAR2_H, CHAR2_W, charHead, coffeeBar, coffeeTable, corkBoard, deskFront, floorLamp, plant2,
-  charSide, emptySide, flipX, pairTable, SEAT_X, SEAT_Y, SIDE_H, SIDE_W, SOFA_SEAT, sofaBack, sofaFront, STATION_H, STATION_W, wallClock, whiteboard, windowFrame, type ArtPose, type DeskProp, type Screen,
-} from '../art';
+import { KITS, isStanding, type Piece } from '../officeKit';
+import { habitsFor, loungePlan, reviewPlan, type Habit, type LoungePlan, type ReviewGroupIn, type ReviewPlan } from '../officePlan';
 import { toPaths, type Rect } from '../pixel';
 import type { Mood } from './officeTime';
 
@@ -19,6 +19,8 @@ export type Prop = DeskProp;
 export type Person = {
   key: string; agent: Agent | null; code: string; name: string; role: string; char: CharDef; prop: Prop;
   state: State; pose: Pose; task: string; since: string | null; external: boolean; blocked: MissionDenial[]; blockedSteps: string[]; asks: boolean;
+  /** 검토 중이면 리뷰 받는 직원의 key(같은 작업 그룹으로 묶기 위해) */
+  reviewOf?: string | null;
 };
 
 export function propOf(a: { name: string; role: string }): Prop {
@@ -30,125 +32,116 @@ export function propOf(a: { name: string; role: string }): Prop {
   return (rules.find(([re]) => re.test(a.name)) ?? rules.find(([re]) => re.test(a.role)))?.[1] ?? 'plant';
 }
 
-// ───── 배치(그림 1칸 = 1) ─────
-export const WALL = 52; // 윗벽(창·책장·화이트보드)
-const COL = 100; const ROW = 66; // 책상 간격(이름표가 다음 줄 머리를 가리지 않게 배율이 작으면 줄 간격을 늘린다)
-const TAG_PX = 22; // 이름표 높이(화면 px, 배율과 무관)
-const BAND_MIN = 122; // 라운지·리뷰룸 띠의 최소 높이
-export const MIN_W = 440;
+const K = KITS.A;
+// ───── 배치(그림 1칸 = 1, A안 단위) ─────
+export const WALL = 30;
+const COL = 54; const DESK_W = K.desk.w; const DESK_H = K.desk.h;
+const BAND_MIN = 92;
+export const MIN_W = 300;
+const TAG_PX = 22;
 export type Box = { x: number; y: number; w: number; h: number };
-export type Seat = { x: number; y: number; pose: ArtPose; kind: 'sofa' | 'arm' | 'stand' };
-export type Layout = {
-  W: number; H: number; fits: boolean; cols: number; rows: number; desks: { x: number; y: number }[];
-  band: number; tableY: number; lounge: Box; review: Box; loungeSeats: Seat[]; reviewSeats: { left: { x: number; y: number }[]; right: { x: number; y: number }[] }; reviewRows: { y: number; tableX: number; tableY: number; left: { x: number; y: number }; right: { x: number; y: number } }[]; tableW: number;
-  sofas: { x: number; y: number; seats: number }[]; arms: { x: number; y: number }[]; bar: { x: number; y: number } | null; wall: WallItem[];
-};
 export type WallItem = { kind: 'window' | 'shelf' | 'board' | 'clock' | 'cork' | 'plant'; x: number; w: number };
+export type Layout = { scale: number; W: number; H: number; fits: boolean; cols: number; rows: number; desks: { x: number; y: number }[]; band: number; lounge: Box; review: Box; wall: WallItem[]; tableY: number };
 
-/** 화면 크기(그림 칸 단위)와 직원 수로 배치를 정한다. 필요한 높이가 화면보다 크면 fits=false(스크롤). */
-export function layoutFor(staff: number, Wavail: number, Havail: number, offCount = 0, scale = 2): Layout {
-  const row = Math.max(ROW, 43 + Math.ceil(TAG_PX / scale) + 8);
+export function layoutFor(staff: number, Wavail: number, Havail: number, offCount = 0, scale = 3, reviewGroups: number[] = [1]): Layout {
   const W = Math.max(MIN_W, Math.floor(Wavail));
   const n = Math.max(1, staff);
-  const cols = Math.max(1, Math.min(n, Math.floor((W - 4) / COL)));
-  const rows = Math.ceil(n / cols);
-  const gridW = cols * COL - (COL - STATION_W);
+  const row = Math.max(44, 24 + Math.ceil(TAG_PX / scale) + 4); // 이름표가 다음 줄 머리를 가리지 않게
+  const maxCols = Math.max(1, Math.min(n, Math.floor((W - 4) / COL)));
+  const rows = Math.ceil(n / maxCols);
+  const cols = Math.ceil(n / rows); // 줄마다 고르게(15+1처럼 한 줄에 몰리지 않게)
+  const gridW = cols * COL - (COL - DESK_W);
   const x0 = Math.floor((W - gridW) / 2);
-  const need = WALL + 12 + (rows - 1) * row + STATION_H + 6 + BAND_MIN;
+  const need = WALL + 4 + (rows - 1) * row + DESK_H + 4 + BAND_MIN;
   const H = Math.max(Math.floor(Havail), need);
-  // 남는 높이는 빈 바닥으로 두지 않고 줄 간격·띠 안 배치에 고르게 나눈다
   const extra = H - need;
-  const pitch = row + (rows > 1 ? Math.min(20, Math.floor((extra * 0.35) / (rows - 1))) : 0);
-  const deskTop = WALL + 12 + Math.min(14, Math.floor(extra * 0.1));
+  const pitch = row + (rows > 1 ? Math.min(10, Math.floor((extra * 0.3) / (rows - 1))) : 0);
+  const deskTop = WALL + 4 + Math.min(8, Math.floor(extra * 0.08));
   const desks = Array.from({ length: staff }, (_, i) => ({ x: x0 + (i % cols) * COL, y: deskTop + Math.floor(i / cols) * pitch }));
-  const band = deskTop + (rows - 1) * pitch + STATION_H + 6;
-  const bandExtra = Math.max(0, H - band - BAND_MIN);
-  // 띠: 왼쪽 라운지, 오른쪽 리뷰룸(유리 벽)
-  const RW = Math.max(196, Math.min(290, Math.round(W * 0.36)));
+  const band = deskTop + (rows - 1) * pitch + DESK_H + 4;
+  // 리뷰룸 폭: 동시에 열린 그룹 수에 맞춰(최대 장면 폭의 절반)
+  // 리뷰룸 폭: 실제 그룹·참여자 수로 필요한 탁자 폭을 더해 정한다(최대 장면 폭의 55%, 넘치면 줄을 바꿔 앉음)
+  const podsW = (reviewGroups.length ? reviewGroups : [1]).reduce((t, n) => t + K.pod(Math.max(1, n), []).w + 5, 6);
+  const RW = Math.max(110, Math.min(Math.floor(W * 0.55), podsW));
   const review: Box = { x: W - RW, y: band, w: RW, h: H - band };
-  const lounge: Box = { x: 0, y: band, w: W - RW - 4, h: H - band };
-  // 라운지 가구: 뒷줄 소파(3인), 앞줄 안락의자, 오른쪽 커피 바(두 사람이 서서 쉬는 자리)
-  // 가구 수는 직원 수에 맞춘다(쉬는 사람이 모두 앉을 만큼, 넓다고 끝없이 늘리지 않음). 묶음을 라운지 가운데에 둔다.
-  const barW = 74; const hasBar = lounge.w >= 300;
-  const usable = lounge.w - 16 - (hasBar ? barW + 12 : 0);
-  const SOFA_PITCH = 14 + 3 * SOFA_SEAT + 8;
-  const sofaN = Math.max(1, Math.min(Math.floor(usable / SOFA_PITCH), Math.ceil(n / 3), 3));
-  const left0 = Math.max(0, Math.floor((usable - sofaN * SOFA_PITCH + 8) / 2));
-  const sofas: Layout['sofas'] = []; const seats: Seat[] = [];
-  const sy = lounge.y + 26 + Math.min(40, Math.floor(bandExtra * 0.25));
-  for (let i = 0; i < sofaN; i++) { const x = lounge.x + 8 + left0 + i * SOFA_PITCH; sofas.push({ x, y: sy, seats: 3 }); for (let k = 0; k < 3; k++) seats.push({ x: x + 6 + k * SOFA_SEAT + Math.floor(SOFA_SEAT / 2) - 17, y: sy - 14, pose: 'rest', kind: 'sofa' }); }
-  const arms: Layout['arms'] = [];
-  const ay = sy + 46 + Math.min(30, Math.floor(bandExtra * 0.15));
-  const standN = hasBar ? 2 : 0;
-  const armWant = Math.max(0, n - sofaN * 3 - standN);
-  if (lounge.y + lounge.h - ay >= 40 && (armWant > 0 || bandExtra >= 40)) {
-    const armN = Math.min(Math.floor(usable / 44), Math.max(armWant, Math.min(4, Math.ceil(n / 3))));
-    const a0 = Math.max(0, Math.floor((usable - armN * 44 + 4) / 2));
-    for (let i = 0; i < armN; i++) { const x = lounge.x + 8 + a0 + i * 44; arms.push({ x, y: ay }); seats.push({ x: x + 3, y: ay - 14, pose: 'rest', kind: 'arm' }); }
-  }
-  const bar = hasBar ? { x: lounge.x + lounge.w - barW - 6, y: sy - 20 } : null;
-  if (bar) for (const dx of [6, 36]) seats.push({ x: bar.x + dx, y: bar.y + 42, pose: 'stand', kind: 'stand' });
-  // 리뷰룸: 리뷰 받는 직원(왼쪽)과 검토하는 쪽(오른쪽)이 작은 탁자를 사이에 두고 마주 앉는다. 한 줄에 한 쌍, 최대 3줄.
-  const tableW = Math.max(28, Math.min(60, review.w - 2 * SIDE_W - 70));
-  const per = Math.max(1, Math.min(3, Math.floor((review.h - 22 - SIDE_H) / 34) + 1));
-  const PITCH = per > 1 ? Math.min(52, Math.floor((review.h - 22 - SIDE_H) / (per - 1))) : 34; // 자리가 넉넉하면 줄 사이를 띄운다
-  const blockH = (per - 1) * PITCH + SIDE_H;
-  const y0 = review.y + 18 + Math.max(0, Math.floor((review.h - 22 - blockH) / 2));
-  const rx0 = review.x + Math.floor((review.w - (24 + tableW - 12 + SIDE_W)) / 2);
-  const reviewRows = Array.from({ length: per }, (_, i) => { const y = y0 + i * PITCH; const tableX = rx0 + 24; return { y, tableX, tableY: y + 26, left: { x: rx0, y }, right: { x: tableX + tableW - 12, y } }; });
-  const left = reviewRows.map((r) => r.left); const right = reviewRows.map((r) => r.right);
-  const ty = reviewRows[0].tableY;
-  return { W, H, fits: need <= Math.floor(Havail), cols, rows, desks, band, tableY: ty, lounge, review, loungeSeats: seats, reviewSeats: { left, right }, reviewRows, tableW, sofas, arms, bar, wall: wallItems(W, offCount) };
+  const lounge: Box = { x: 0, y: band, w: W - RW - 2, h: H - band };
+  return { scale, W, H, fits: need <= Math.floor(Havail), cols, rows, desks, band, lounge, review, wall: wallItems(W, offCount), tableY: band };
 }
 
-/** 그림 배율: 그림 한 칸이 화면의 실제 화소 정수 개(scale×dpr이 정수)가 되는 값 중 장면이 무대에 다 들어가는 가장 큰 값(최대 3배).
- *  어느 것도 안 들어가면 화면 화소 1:1 근처(최소 배율)로 그리고 세로 스크롤. */
-export function pickScale(stageW: number, stageH: number, dpr: number, staff: number, off: number): { scale: number; layout: Layout } {
+export function pickScale(stageW: number, stageH: number, dpr: number, staff: number, off: number, groups: number[] = [1]): { scale: number; layout: Layout } {
   const d = dpr > 0 ? dpr : 1;
-  for (let k = Math.floor(3 * d); k >= Math.ceil(d); k--) {
-    const s = k / d; const L = layoutFor(staff, stageW / s, stageH / s, off, s);
+  for (let k = Math.floor(4 * d); k >= Math.ceil(2 * d); k--) {
+    const s = k / d; const L = layoutFor(staff, stageW / s, stageH / s, off, s, groups);
     if (stageW / s >= MIN_W && L.fits) return { scale: s, layout: L };
   }
-  const s = Math.ceil(d) / d;
-  return { scale: s, layout: layoutFor(staff, stageW / s, stageH / s, off, s) };
+  const s = Math.ceil(2 * d) / d;
+  return { scale: s, layout: layoutFor(staff, stageW / s, stageH / s, off, s, groups) };
 }
 
-/** 윗벽 장식: 창·책장·화이트보드·시계를 폭에 맞춰 고르게, 오른쪽 끝에는 휴가 게시판 */
 function wallItems(W: number, off: number): WallItem[] {
-  const corkW = 10 + Math.max(1, Math.min(off, 6)) * BOARD_SLOT;
-  const right = off > 0 ? corkW + 12 : 0;
+  const corkW = 6 + Math.max(1, Math.min(off, 6)) * 18;
+  const right = off > 0 ? corkW + 6 : 0;
   const pattern: WallItem['kind'][] = ['shelf', 'window', 'plant', 'window', 'board', 'window', 'clock', 'shelf', 'window', 'window'];
-  const widthOf = (k: WallItem['kind']) => (k === 'window' ? 66 : k === 'shelf' ? 44 : k === 'board' ? 62 : k === 'plant' ? 20 : k === 'clock' ? 18 : 0);
-  const items: WallItem[] = [];
-  let used = 0;
-  for (const k of [...pattern, ...pattern]) { const w = widthOf(k); if (used + w + 14 > W - 12 - right) break; items.push({ kind: k, x: 0, w }); used += w + 14; }
-  // 남는 폭을 사이에 고르게 나눈다
-  const gap = items.length > 1 ? Math.floor((W - 12 - right - used + 14 * items.length) / (items.length + (right ? 1 : 0))) : 14;
-  let x = 8;
-  for (const it of items) { it.x = x; x += it.w + gap; }
-  if (off > 0) items.push({ kind: 'cork', x: W - corkW - 8, w: corkW });
+  const widthOf = (k: WallItem['kind']) => (k === 'window' ? 36 : k === 'shelf' ? 24 : k === 'board' ? 32 : 12);
+  const items: WallItem[] = []; let used = 0;
+  for (const k of [...pattern, ...pattern]) { const w = widthOf(k); if (used + w + 8 > W - 8 - right) break; items.push({ kind: k, x: 0, w }); used += w + 8; }
+  const gap = items.length > 1 ? Math.floor((W - 8 - right - used + 8 * items.length) / (items.length + (right ? 1 : 0))) : 8;
+  let x = 4; for (const it of items) { it.x = x; x += it.w + gap; }
+  if (off > 0) items.push({ kind: 'cork', x: W - corkW - 4, w: corkW });
   return items;
 }
 
-export type Placed = { p: Person; zone: 'desk' | 'review' | 'lounge'; x: number; y: number; w: number; h: number; pose: ArtPose; seat?: Seat };
-/** 사람마다 한 자리(중복 없음). 휴가는 벽의 게시판 사진으로만 보인다. 자리가 모자라면 넘친 인원을 따로 돌려준다. */
-export function placePeople(people: Person[], staff: Person[], L: Layout): { placed: Placed[]; overflow: { review: number; lounge: number } } {
+// ───── 자리 정하기 ─────
+export type Placed = { p: Person; zone: 'desk' | 'review' | 'lounge'; x: number; y: number; w: number; h: number; pose: ArtPose; mod?: ArtMod; habits: Habit[]; spot?: string; group?: string };
+export type Group = { key: string; task: string; author: Person | null; authorRef: Person | null; reviewers: Person[] };
+export type Plan = { placed: Placed[]; lounge: LoungePlan; review: ReviewPlan; groups: Group[]; overflow: { review: Person[]; lounge: Person[] } };
+
+/** 리뷰 그룹: 리뷰 받는 직원 한 명과 그 직원을 검토하는 사람들(같은 작업). 대상을 모르는 검토는 작업 이름으로 묶는다. */
+export function reviewGroups(people: Person[]): Group[] {
+  const authors = people.filter((p) => p.pose === 'reviewed');
+  const reviewers = people.filter((p) => p.pose === 'review');
+  const groups: Group[] = [];
+  // 같은 직원이 여러 작업을 동시에 검토받으면 작업마다 다른 그룹(그 직원은 지도에 한 번만: 작업 이름이 맞는 첫 그룹에 앉는다)
+  for (const a of authors) {
+    const mine = reviewers.filter((r) => r.reviewOf === a.key);
+    const tasks = [...new Set(mine.map((r) => r.task))];
+    if (!tasks.length) { groups.push({ key: `g:${a.key}`, task: a.task, author: a, authorRef: a, reviewers: [] }); continue; }
+    const seat = tasks.find((t) => a.task.includes(t)) ?? tasks[0];
+    for (const t of tasks) groups.push({ key: `g:${a.key}:${t}`, task: t, author: t === seat ? a : null, authorRef: a, reviewers: mine.filter((r) => r.task === t) });
+  }
+  for (const r of reviewers) {
+    if (groups.some((g) => g.reviewers.includes(r))) continue;
+    const k = `t:${r.task}`; let g = groups.find((x) => x.key === k);
+    if (!g) { g = { key: k, task: r.task, author: null, authorRef: null, reviewers: [] }; groups.push(g); }
+    g.reviewers.push(r);
+  }
+  return groups;
+}
+
+export function placePeople(people: Person[], staff: Person[], L: Layout): Plan {
   const out: Placed[] = [];
   staff.forEach((p, i) => {
     if (p.pose === 'code' || p.pose === 'doc' || p.pose === 'plan' || p.pose === 'wait') {
-      const d = L.desks[i];
-      out.push({ p, zone: 'desk', x: d.x + SEAT_X, y: d.y + SEAT_Y, w: CHAR2_W, h: 40, pose: p.pose === 'code' ? 'type' : 'sit' });
+      const d = L.desks[i]; const pose: ArtPose = p.pose === 'code' ? 'type' : 'sit';
+      out.push({ p, zone: 'desk', x: d.x + K.desk.seat.x, y: d.y + K.desk.seat.y, w: RETRO_W, h: RETRO_SIT_H, pose, habits: habitsFor(p.key, pose) });
     }
   });
-  const left = people.filter((p) => p.pose === 'reviewed');
-  const right = people.filter((p) => p.pose === 'review');
-  const per = L.reviewSeats.left.length;
-  left.slice(0, per).forEach((p, i) => out.push({ p, zone: 'review', ...L.reviewSeats.left[i], w: SIDE_W, h: SIDE_H - 2, pose: 'sit' }));
-  right.slice(0, per).forEach((p, i) => out.push({ p, zone: 'review', ...L.reviewSeats.right[i], w: SIDE_W, h: SIDE_H - 2, pose: 'review' }));
+  const groups = reviewGroups(people);
+  const pad = 3;
+  const rbox = { x: L.review.x + pad, y: L.review.y + 9, w: L.review.w - 2 * pad, h: L.review.h - 11 };
+  const gin: ReviewGroupIn[] = groups.map((g) => ({ key: g.key, author: g.author?.key ?? null, reviewers: g.reviewers.map((r) => ({ key: r.key, external: r.external })) }));
+  const review = reviewPlan(K, rbox, gin, Math.ceil(TAG_PX / L.scale) + 2);
+  const byKey = new Map(people.map((p) => [p.key, p]));
+  for (const pd of review.pods) {
+    if (pd.author) { const a = byKey.get(pd.author)!; out.push({ p: a, zone: 'review', x: pd.x + pd.pod.author.x, y: pd.y + pd.pod.author.y, w: RETRO_W, h: RETRO_SIT_H, pose: 'sit', mod: 'glanceR', habits: [{ mod: 'blink', period: 6 + (a.key.length % 3), delay: 1 }], group: pd.key }); }
+    for (const r of pd.shown) { const p = byKey.get(r.key)!; const pose: ArtPose = p.external ? 'sit' : 'review'; out.push({ p, zone: 'review', x: r.x, y: r.y, w: RETRO_W, h: RETRO_SIT_H, pose, mod: 'glanceL', habits: habitsFor(p.key, pose).filter((h) => h.mod === 'blink' || h.mod === 'sip'), group: pd.key }); }
+  }
   const rest = people.filter((p) => p.pose === 'rest');
-  const seats = L.loungeSeats;
-  rest.slice(0, seats.length).forEach((p, i) => { const s = seats[i]; out.push({ p, zone: 'lounge', x: s.x, y: s.y, w: CHAR2_W, h: s.pose === 'stand' ? CHAR2_H : 40, pose: s.pose, seat: s }); });
-  return { placed: out, overflow: { review: Math.max(0, left.length - per) + Math.max(0, right.length - per), lounge: Math.max(0, rest.length - seats.length) } };
+  const lbox = { x: L.lounge.x + 3, y: L.lounge.y + 9, w: L.lounge.w - 6, h: L.lounge.h - 11 };
+  const lounge = loungePlan(K, lbox, rest.map((p) => p.key), Math.ceil(TAG_PX / L.scale) + 2);
+  for (const s of lounge.seats) { const p = byKey.get(s.key)!; out.push({ p, zone: 'lounge', x: s.x, y: s.y, w: RETRO_W, h: isStanding(s.pose) ? RETRO_H : RETRO_SIT_H, pose: s.pose, habits: s.habits, spot: s.spot }); }
+  const hiddenReview = [...review.overflow.flatMap((g) => [g.author, ...g.reviewers.map((r) => r.key)]), ...review.pods.flatMap((p) => p.hidden)].filter((k): k is string => !!k).map((k) => byKey.get(k)!).filter(Boolean);
+  return { placed: out, lounge, review, groups, overflow: { review: hiddenReview, lounge: lounge.overflow.map((k) => byKey.get(k)!) } };
 }
 
 // ───── 그리기 ─────
@@ -158,44 +151,57 @@ export const Pix = memo(function Pix({ r, x, y, className }: { r: Rect[]; x: num
   return className ? <g className={className}>{body}</g> : body;
 });
 
-const floorCache = new Map<string, Rect[]>();
-function planks(x0: number, y0: number, w: number, h: number, cols: string[], line: string, plank = 56, ph = 7): Rect[] {
-  const k = `${x0}|${y0}|${w}|${h}|${cols.join()}`; const hit = floorCache.get(k); if (hit) return hit;
-  const r: Rect[] = [];
-  for (let y = y0, row = 0; y < y0 + h; y += ph, row++) {
-    const hh = Math.min(ph, y0 + h - y);
-    for (let x = x0 - ((row * 29) % plank); x < x0 + w; x += plank) {
-      const a = Math.max(x, x0); const b = Math.min(x + plank - 1, x0 + w);
-      if (b > a) r.push([a, y, b - a, Math.max(0, hh - 1), cols[(row * 3 + Math.abs(Math.floor(x / plank))) % cols.length]]);
-      if (x + plank - 1 >= x0 && x + plank - 1 < x0 + w) r.push([x + plank - 1, y, 1, Math.max(0, hh - 1), line]);
-    }
-    if (hh === ph) r.push([x0, y + ph - 1, w, 1, line]);
+function Floor({ x, y, w, h, kind }: { x: number; y: number; w: number; h: number; kind: 'wood' | 'warm' | 'tile' }) {
+  const r: JSX.Element[] = [];
+  if (kind === 'tile') {
+    r.push(<rect key="b" x={x} y={y} width={w} height={h} fill="#dfe5dc" />);
+    for (let yy = y + 8; yy < y + h; yy += 9) r.push(<rect key={`y${yy}`} x={x} y={yy} width={w} height={1} fill="#ccd4ca" />);
+    for (let xx = x + 8; xx < x + w; xx += 9) r.push(<rect key={`x${xx}`} x={xx} y={y} width={1} height={h} fill="#ccd4ca" />);
+    return <g>{r}</g>;
   }
-  floorCache.set(k, r); return r;
-}
-function tiles(x0: number, y0: number, w: number, h: number): Rect[] {
-  const k = `t|${x0}|${y0}|${w}|${h}`; const hit = floorCache.get(k); if (hit) return hit;
-  const r: Rect[] = [[x0, y0, w, h, '#dfe5dc']];
-  for (let y = y0 + 15; y < y0 + h; y += 16) r.push([x0, y, w, 1, '#ccd4ca']);
-  for (let x = x0 + 15; x < x0 + w; x += 16) r.push([x, y0, 1, h, '#ccd4ca']);
-  floorCache.set(k, r); return r;
+  const base = kind === 'wood' ? '#cf9c6c' : '#d9ab7a'; const line = kind === 'wood' ? '#b98654' : '#c99a6a'; const alt = kind === 'wood' ? '#c99566' : '#d4a472';
+  r.push(<rect key="b" x={x} y={y} width={w} height={h} fill={base} />);
+  for (let yy = y, i = 0; yy < y + h; yy += 5, i++) {
+    if (i % 2) r.push(<rect key={`a${i}`} x={x} y={yy} width={w} height={4} fill={alt} />);
+    r.push(<rect key={`l${i}`} x={x} y={yy + 4} width={w} height={1} fill={line} />);
+    for (let xx = x + ((i * 17) % 31); xx < x + w; xx += 31) r.push(<rect key={`j${i}-${xx}`} x={xx} y={yy} width={1} height={4} fill={line} />);
+  }
+  return <g>{r}</g>;
 }
 
-function screenOf(pose: Pose | null): Screen { return pose === 'code' ? 'code' : pose === 'doc' ? 'doc' : pose === 'plan' ? 'plan' : pose === 'wait' ? 'wait' : 'off'; }
+function screenOf(pose: Pose | null): 'code' | 'doc' | 'plan' | 'wait' | 'off' { return pose === 'code' ? 'code' : pose === 'doc' ? 'doc' : pose === 'plan' ? 'plan' : pose === 'wait' ? 'wait' : 'off'; }
+
+/** 사람 하나: 기본 그림 + 직원마다 다른 때에 잠깐 보이는 버릇(깜빡임·곁눈질·한 모금). 손 흔들기는 누른 직후 잠깐 */
+function Actor({ pl, waving, still }: { pl: Placed; waving: boolean; still: boolean }) {
+  const c = pl.p.char; const standing = isStanding(pl.pose);
+  if (waving && !still) return <Pix r={retroChar(c, standing ? 'wave' : pl.pose, 0, standing ? '' : 'wave')} x={pl.x} y={pl.y} className="ofc-wave" />;
+  const base = pl.pose === 'type'
+    ? <><Pix r={retroChar(c, 'type', 0, pl.mod)} x={pl.x} y={pl.y} className="ofc-fa" /><Pix r={retroChar(c, 'type', 1, pl.mod)} x={pl.x} y={pl.y} className="ofc-fb" /></>
+    : <Pix r={retroChar(c, pl.pose, 0, pl.mod)} x={pl.x} y={pl.y} />;
+  return (
+    <g>
+      {base}
+      {!still && pl.habits.map((h) => <g key={h.mod} className={`ofc-hab ofc-hab-${h.mod === 'blink' ? 'short' : 'long'}`} style={{ animationDuration: `${h.period}s`, animationDelay: `${h.delay}s` }}><Pix r={retroChar(c, pl.pose, 0, h.mod)} x={pl.x} y={pl.y} /></g>)}
+    </g>
+  );
+}
+
+const shiftP = (ps: Piece[], x: number, y: number) => ps.map((p) => ({ ...p, x: p.x + x, y: p.y + y }));
+function Pieces({ ps, sky }: { ps: Piece[]; sky: string }) {
+  return <>{ps.map((p, i) => <g key={i}>{p.sky && <rect x={p.x + 2} y={p.y + 2} width={p.sky.w - 2} height={p.sky.h - 2} fill={sky} />}<Pix r={p.r} x={p.x} y={p.y} /></g>)}</>;
+}
 
 /** 사무실 그림 */
-export function Scene({ people, staff, layout: L, placed, mood, selected }: { people: Person[]; staff: Person[]; layout: Layout; placed: Placed[]; mood: Mood; selected: string | null }) {
+export function Scene({ people, staff, layout: L, plan, mood, selected, waving, still, selectedGroup, onGroup }: {
+  people: Person[]; staff: Person[]; layout: Layout; plan: Plan; mood: Mood; selected: string | null; waving: string | null; still: boolean; selectedGroup: string | null; onGroup: (key: string) => void;
+}) {
   const { W, H, lounge, review } = L;
   const tr = { transition: 'fill 1.6s ease, opacity 1.6s ease, stop-color 1.6s ease' };
+  const placed = plan.placed;
   const deskPlaced = new Map(placed.filter((x) => x.zone === 'desk').map((x) => [x.p.key, x]));
   const off = people.filter((p) => p.state === 'off');
   const wins = L.wall.filter((w) => w.kind === 'window');
-  const loungeP = placed.filter((x) => x.zone === 'lounge');
-  const reviewP = placed.filter((x) => x.zone === 'review');
-  const tx = L.reviewRows[0].tableX; const ty = L.tableY;
-  const personAt = (pl: Placed, i: number) => pl.pose === 'type'
-    ? <g key={pl.p.key}><Pix r={char2(pl.p.char, 'type', 0)} x={pl.x} y={pl.y} className="ofc-fa" /><Pix r={char2(pl.p.char, 'type', 1)} x={pl.x} y={pl.y} className="ofc-fb" /></g>
-    : <Pix key={pl.p.key + i} r={char2(pl.p.char, pl.pose)} x={pl.x} y={pl.y} className={pl.zone === 'desk' && pl.p.pose === 'wait' ? 'ofc-anim ofc-breathe' : undefined} />;
+  const sky = 'url(#ofc-sky)';
   return (
     <svg className="ofc-scene" viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" shapeRendering="crispEdges" role="img" aria-label="사무실: 직원들의 위치와 현재 상태">
       <defs>
@@ -204,84 +210,67 @@ export function Scene({ people, staff, layout: L, placed, mood, selected }: { pe
         <radialGradient id="glow-screen"><stop offset="0%" stopColor="#a6e8ff" stopOpacity={0.7} /><stop offset="100%" stopColor="#a6e8ff" stopOpacity={0} /></radialGradient>
       </defs>
       <style>{`.ofc-city{fill:${mood.city};transition:fill 1.6s ease}.ofc-citylights{opacity:${mood.cityLights};transition:opacity 1.6s ease}`}</style>
-      {/* 바닥(업무 공간 나무, 라운지 따뜻한 나무, 리뷰룸 타일) */}
-      <Pix r={planks(0, WALL, W, L.band - WALL, ['#c99a64', '#c4945f', '#cda06a'], '#ad8152')} x={0} y={0} />
-      <Pix r={planks(lounge.x, lounge.y, lounge.w + 4, lounge.h, ['#d4a874', '#cfa26e', '#d8ae7b'], '#b98a58', 48, 6)} x={0} y={0} />
-      <Pix r={tiles(review.x, review.y, review.w, review.h)} x={0} y={0} />
-      {/* 벽 */}
-      <rect x={0} y={0} width={W} height={WALL} fill="#efe4cd" />
-      <rect x={0} y={0} width={W} height={3} fill="#e0d2b4" />
-      <rect x={0} y={WALL - 5} width={W} height={5} fill="#b07a49" /><rect x={0} y={WALL - 5} width={W} height={1} fill="#d39b62" /><rect x={0} y={WALL} width={W} height={1} fill="#7d5532" />
-      {/* 창밖(하늘·건물) — 시간대 */}
+      {/* 바닥·벽 */}
+      <Floor x={0} y={WALL} w={W} h={L.band - WALL} kind="wood" />
+      <Floor x={lounge.x} y={lounge.y} w={lounge.w + 2} h={lounge.h} kind="warm" />
+      <Floor x={review.x} y={review.y} w={review.w} h={review.h} kind="tile" />
+      <rect x={0} y={0} width={W} height={WALL} fill="#f1e8d3" /><rect x={0} y={0} width={W} height={1} fill="#dccfb1" />
+      <rect x={0} y={WALL - 3} width={W} height={3} fill="#9a6538" /><rect x={0} y={WALL - 3} width={W} height={1} fill="#e2b07a" />
       {wins.map((w, i) => (
         <g key={i}>
-          <rect x={w.x + 1} y={7} width={w.w - 2} height={36} fill="url(#ofc-sky)" />
-          {[[3, 16], [12, 22], [22, 12], [31, 26], [42, 18], [51, 14]].filter(([bx]) => bx + 8 < w.w).map(([bx, bh], k) => <rect key={k} x={w.x + bx} y={43 - bh} width={8} height={bh} className="ofc-city" />)}
-          <g className="ofc-citylights">{[[3, 16], [12, 22], [22, 12], [31, 26], [42, 18], [51, 14]].filter(([bx]) => bx + 8 < w.w).map(([bx, bh], k) => <g key={k}><rect x={w.x + bx + 2} y={46 - bh} width={1} height={1} fill="#ffd77a" /><rect x={w.x + bx + 5} y={50 - bh} width={1} height={1} fill="#ffd77a" /></g>)}</g>
+          <rect x={w.x + 2} y={3} width={w.w - 4} height={20} fill={sky} />
+          {[[3, 8], [9, 12], [15, 6], [20, 13], [26, 9]].filter(([bx]) => bx + 5 < w.w - 2).map(([bx, bh], k) => <rect key={k} x={w.x + bx} y={23 - bh} width={4} height={bh} className="ofc-city" />)}
+          <g className="ofc-citylights">{[[3, 8], [9, 12], [15, 6], [20, 13], [26, 9]].filter(([bx]) => bx + 5 < w.w - 2).map(([bx, bh], k) => <rect key={k} x={w.x + bx + 1} y={25 - bh} width={1} height={1} fill="#ffd77a" />)}</g>
         </g>
       ))}
-      {/* 햇빛(창 아래 바닥) */}
       <g style={{ opacity: mood.sunOpacity * 0.7, ...tr }} pointerEvents="none">
-        {wins.map((w, i) => <polygon key={i} points={`${w.x + 4 + mood.sunShift * 0.2},${WALL} ${w.x + w.w - 4 + mood.sunShift * 0.2},${WALL} ${w.x + w.w - 4 + mood.sunShift},${WALL + 46} ${w.x + 4 + mood.sunShift},${WALL + 46}`} style={{ fill: mood.sunLight, ...tr }} />)}
+        {wins.map((w, i) => <polygon key={i} points={`${w.x + 2 + mood.sunShift * 0.1},${WALL} ${w.x + w.w - 2 + mood.sunShift * 0.1},${WALL} ${w.x + w.w - 2 + mood.sunShift * 0.5},${WALL + 26} ${w.x + 2 + mood.sunShift * 0.5},${WALL + 26}`} style={{ fill: mood.sunLight, ...tr }} />)}
       </g>
       <rect x={0} y={0} width={W} height={H} style={{ fill: mood.ambient, opacity: mood.ambientOpacity * 0.45, ...tr }} pointerEvents="none" />
-      {/* 벽 장식 */}
-      {L.wall.map((w, i) => w.kind === 'window' ? <Pix key={i} r={windowFrame(w.w, 38)} x={w.x - 1} y={5} />
-        : w.kind === 'shelf' ? <Pix key={i} r={bookshelf2(w.w - 2)} x={w.x} y={3} />
-        : w.kind === 'board' ? <Pix key={i} r={whiteboard(w.w - 2)} x={w.x} y={7} />
-        : w.kind === 'clock' ? <Pix key={i} r={wallClock()} x={w.x} y={12} />
-        : w.kind === 'plant' ? <g key={i}><rect x={w.x + 9} y={0} width={1} height={8} fill="#5e3a20" /><Pix r={plant2(false)} x={w.x} y={8} /></g>
-        : <g key={i}><Pix r={corkBoard(Math.min(off.length, 6))} x={w.x} y={6} />{off.slice(0, 6).map((p, k) => <Pix key={p.key} r={charHead(p.char)} x={w.x + 6 + k * BOARD_SLOT - 2} y={13} />)}</g>)}
-      {/* 책상(직원 한 명당 하나, 휴가 직원 제외): 의자 → 사람 → 책상 앞 순서로 그려 앉은 모습이 책상 뒤에 있게 */}
+      {L.wall.map((w, i) => w.kind === 'window' ? <Pix key={i} r={retroWindow()} x={w.x} y={1} />
+        : w.kind === 'shelf' ? <Pix key={i} r={retroShelf()} x={w.x} y={1} />
+        : w.kind === 'board' ? <Pix key={i} r={retroBoard()} x={w.x} y={4} />
+        : w.kind === 'clock' ? <Pix key={i} r={retroClock()} x={w.x} y={7} />
+        : w.kind === 'plant' ? <g key={i}><rect x={w.x + 6} y={0} width={1} height={5} fill="#5e3a20" /><Pix r={retroPlant()} x={w.x - 2} y={4} /></g>
+        : <g key={i}><Pix r={retroCork(Math.min(off.length, 6))} x={w.x} y={4} />{off.slice(0, 6).map((p, k) => <Pix key={p.key} r={retroHead(p.char)} x={w.x + 3 + k * 18} y={6} />)}</g>)}
+      {/* 책상: 의자 → 사람 → 책상 앞 */}
       {staff.map((p, i) => { const d = L.desks[i]; const at = deskPlaced.get(p.key); return (
         <g key={p.key}>
-          <Pix r={chairBack(!at)} x={d.x} y={d.y} />
-          {at && personAt(at, i)}
-          <Pix r={deskFront(screenOf(at ? p.pose : null), p.prop, i % 3 !== 1)} x={d.x} y={d.y} />
-          {at && p.pose === 'code' && <rect className="ofc-anim ofc-blink" x={d.x + 24} y={d.y + 21} width={2} height={1} fill="#e8fff0" />}
+          <Pix r={K.deskBack(!at)} x={d.x} y={d.y} />
+          {at && <Actor pl={at} waving={waving === p.key} still={still} />}
+          <Pix r={K.deskFront(screenOf(at ? p.pose : null), p.prop, i)} x={d.x} y={d.y} />
+          {at && p.pose === 'code' && <rect className="ofc-anim ofc-blink" x={d.x + 12} y={d.y + 11} width={1} height={1} fill="#e8fff0" />}
         </g>
       ); })}
-      {/* 업무 공간과 아래 띠 사이 낮은 칸막이·화분 */}
-      <rect x={0} y={L.band - 3} width={lounge.w + 4} height={3} fill="#9a6a3e" /><rect x={0} y={L.band - 3} width={lounge.w + 4} height={1} fill="#c99560" />
-      {/* 라운지: 러그·소파·안락의자·커피 탁자·커피 바·스탠드·화분 */}
-      {L.sofas.length > 0 && (() => { const x0 = L.sofas[0].x - 6; const x1 = Math.max(...L.sofas.map((s) => s.x + 14 + 3 * SOFA_SEAT), ...L.arms.map((a) => a.x + 46)) + 6; const y0 = L.sofas[0].y + 30; const y1 = Math.min(lounge.y + lounge.h - 6, (L.arms.length ? L.arms[0].y + 40 : y0 + 30)); return <g><rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} fill="#7f9e99" /><rect x={x0 + 3} y={y0 + 3} width={x1 - x0 - 6} height={y1 - y0 - 6} fill="none" stroke="#a8c2bd" strokeWidth={1} /></g>; })()}
-      {L.sofas.map((s, i) => <Pix key={`sb${i}`} r={sofaBack(s.seats)} x={s.x} y={s.y} />)}
-      {loungeP.filter((x) => x.seat?.kind === 'sofa').map((pl, i) => personAt(pl, i))}
-      {L.sofas.map((s, i) => <Pix key={`sf${i}`} r={sofaFront(s.seats)} x={s.x} y={s.y} />)}
-      {L.arms.map((a, i) => <Pix key={`ab${i}`} r={sofaBack(1, '#c8643c')} x={a.x} y={a.y} />)}
-      {loungeP.filter((x) => x.seat?.kind === 'arm').map((pl, i) => personAt(pl, i))}
-      {L.arms.map((a, i) => <Pix key={`af${i}`} r={sofaFront(1, '#c8643c')} x={a.x} y={a.y} />)}
-      {L.sofas.length > 0 && L.arms.length === 0 && <Pix r={coffeeTable()} x={L.sofas[0].x + 30} y={L.sofas[0].y + 40} />}
-      {L.arms.length > 0 && lounge.x + lounge.w - (L.bar ? 90 : 10) - (L.arms[L.arms.length - 1].x + 48) >= 50 && <Pix r={coffeeTable()} x={L.arms[L.arms.length - 1].x + 52} y={L.arms[0].y + 16} />}
-      {lounge.h >= 150 && <Pix r={plant2(true)} x={lounge.x + 6} y={lounge.y + lounge.h - 40} />}
-      {L.arms.length > 0 && lounge.y + lounge.h - (L.arms[0].y + 44) >= 56 && <g><Pix r={bookshelf2(42)} x={lounge.x + lounge.w - (L.bar ? 150 : 60)} y={lounge.y + lounge.h - 52} /><Pix r={plant2(true)} x={lounge.x + lounge.w - (L.bar ? 100 : 100)} y={lounge.y + lounge.h - 40} /></g>}
-      {L.bar && <Pix r={coffeeBar()} x={L.bar.x} y={L.bar.y} />}
-      {loungeP.filter((x) => x.seat?.kind === 'stand').map((pl, i) => personAt(pl, i))}
-      <Pix r={floorLamp()} x={lounge.x + 1} y={L.sofas.length ? L.sofas[0].y - 22 : lounge.y + 4} />
-      {/* 리뷰룸: 유리 벽, 의자, 앉은 사람, 탁자(앞), 검토 자료 */}
-      <rect x={review.x - 4} y={review.y - 3} width={4} height={review.h + 3} fill="#bcd9e4" /><rect x={review.x - 3} y={review.y - 3} width={1} height={review.h + 3} fill="#ffffff" opacity={0.8} />
-      <rect x={review.x - 4} y={review.y - 4} width={review.w + 4} height={4} fill="#bcd9e4" /><rect x={review.x - 4} y={review.y - 3} width={review.w + 4} height={1} fill="#ffffff" opacity={0.8} />
-      {/* 줄마다: 빈 의자(앉은 사람이 없으면) → 탁자 → 사람(팔이 탁자 위에 오게) → 자료·노트북 */}
-      {L.reviewRows.map((row, i) => {
-        const lp = reviewP.find((x) => x.x === row.left.x && x.y === row.left.y); const rp = reviewP.find((x) => x.x === row.right.x && x.y === row.right.y);
+      <rect x={0} y={L.band - 2} width={lounge.w + 2} height={2} fill="#9a6538" /><rect x={0} y={L.band - 2} width={lounge.w + 2} height={1} fill="#c99560" />
+      {/* 휴식 공간: 자리 묶음마다 가구 뒤 → 사람 → 가구 앞 */}
+      {plan.lounge.stations.map((st, i) => {
+        const inside = placed.filter((x) => x.zone === 'lounge' && x.x >= st.x - 2 && x.x < st.x + st.st.w && x.y >= st.y - 4 && x.y < st.y + st.st.h);
+        return <g key={`st${i}`}><Pieces ps={shiftP(st.st.back, st.x, st.y)} sky={sky} />{inside.map((pl) => <Actor key={pl.p.key} pl={pl} waving={waving === pl.p.key} still={still} />)}<Pieces ps={shiftP(st.st.front, st.x, st.y)} sky={sky} /></g>;
+      })}
+      {/* 리뷰룸: 유리 벽, 작업별 그룹(탁자·공유 화면·참여자) */}
+      <rect x={review.x - 2} y={review.y - 2} width={2} height={review.h + 2} fill="#c6e0ea" /><rect x={review.x - 2} y={review.y - 2} width={review.w + 2} height={2} fill="#c6e0ea" />
+      {plan.review.pods.length === 0 && (() => { const pod = K.pod(2, []); const x = review.x + Math.floor((review.w - pod.w) / 2); const y = review.y + Math.floor((review.h - pod.h) / 2); return <g opacity={0.9}><Pieces ps={shiftP(pod.back, x, y)} sky={sky} />{pod.reviewers.map((r, i) => <Pix key={i} r={K.deskBack(true)} x={x + r.x - 17} y={y + r.y + 2} />)}<Pieces ps={shiftP(pod.front, x, y)} sky={sky} /></g>; })()}
+      {plan.review.pods.map((pd) => {
+        const members = placed.filter((x) => x.group === pd.key);
+        const author = members.find((m) => m.p.key === pd.author);
         return (
-          <g key={`rr${i}`}>
-            <Pix r={pairTable(L.tableW)} x={row.tableX} y={row.tableY} />
-            <Pix r={lp ? charSide(lp.p.char, 'sit') : emptySide()} x={row.left.x} y={row.left.y} />
-            <Pix r={rp ? flipX(charSide(rp.p.char, 'review'), SIDE_W) : flipX(emptySide(), SIDE_W)} x={row.right.x} y={row.right.y} />
-            {lp && <g><rect x={row.tableX + 8} y={row.tableY + 2} width={12} height={3} fill="#fbf8f0" /><rect className="ofc-anim ofc-mark" x={row.tableX + 10} y={row.tableY + 3} width={6} height={1} fill="#c2413b" /></g>}
-            {rp?.p.external && <g><rect x={row.tableX + L.tableW - 20} y={row.tableY - 6} width={12} height={7} fill="#2b3350" /><rect x={row.tableX + L.tableW - 19} y={row.tableY - 5} width={10} height={5} fill="#7fd0c8" /></g>}
+          <g key={pd.key}>
+            <rect x={pd.x - 1} y={pd.y - 1} width={pd.pod.w + 2} height={pd.pod.h + 2} fill={selectedGroup === pd.key ? '#14b8a622' : '#00000008'} stroke={selectedGroup === pd.key ? '#14b8a6' : '#0000001a'} strokeWidth={1} style={{ cursor: 'pointer' }} onClick={() => onGroup(pd.key)}><title>리뷰 그룹 — 눌러서 작업·참여자·상태·결과물 보기</title></rect>
+            <Pieces ps={shiftP(pd.pod.back, pd.x, pd.y)} sky={sky} />
+            {members.filter((m) => m !== author).map((m) => <Actor key={m.p.key} pl={m} waving={waving === m.p.key} still={still} />)}
+            <Pieces ps={shiftP(pd.pod.front, pd.x, pd.y)} sky={sky} />
+            {pd.pod.laptops.map((l, i) => <Pix key={i} r={K.laptop()} x={pd.x + l.x} y={pd.y + l.y} />)}
+            {author && <Actor pl={author} waving={waving === author.p.key} still={still} />}
+            {author && <rect className="ofc-anim ofc-mark" x={pd.x + pd.pod.author.x + 22} y={pd.y + 21} width={4} height={1} fill="#c2413b" />}
           </g>
         );
       })}
-      <Pix r={plant2(true)} x={review.x + 4} y={review.y + review.h - 40} />
       {/* 선택 표시 */}
       {placed.filter((x) => x.p.key === selected).map(({ x, y, w, h }) => <rect key="sel" className="ofc-sel" x={x - 1} y={y - 1} width={w + 2} height={h + 2} fill="none" stroke="#14b8a6" strokeWidth={1} />)}
-      {/* 조명: 책상 스탠드·모니터·플로어 램프(저녁·밤에 은은하게) */}
+      {/* 조명(저녁·밤에 은은하게) */}
       <g style={{ opacity: mood.lamp, ...tr }} pointerEvents="none">
-        {staff.map((p, i) => { const d = L.desks[i]; return <g key={p.key}><circle cx={d.x + 87} cy={d.y + 14} r={20} fill="url(#glow-lamp)" opacity={0.5} />{deskPlaced.has(p.key) && <circle cx={d.x + 18} cy={d.y + 16} r={18} fill="url(#glow-screen)" opacity={0.3} />}</g>; })}
-        <circle cx={lounge.x + 10} cy={(L.sofas.length ? L.sofas[0].y - 22 : lounge.y + 4) + 6} r={28} fill="url(#glow-lamp)" opacity={0.55} />
-        <circle cx={tx + L.tableW / 2} cy={ty} r={40} fill="url(#glow-lamp)" opacity={0.3} />
+        {staff.map((p, i) => { const d = L.desks[i]; return <g key={p.key}><circle cx={d.x + 42} cy={d.y + 6} r={10} fill="url(#glow-lamp)" opacity={0.5} />{deskPlaced.has(p.key) && <circle cx={d.x + 10} cy={d.y + 8} r={9} fill="url(#glow-screen)" opacity={0.3} />}</g>; })}
       </g>
     </svg>
   );

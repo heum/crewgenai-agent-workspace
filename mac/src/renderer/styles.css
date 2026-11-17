@@ -1965,3 +1965,36 @@ textarea.input {
 @keyframes ofc-fb { 0% { opacity: 0; } 50% { opacity: 1; } }
 .ofc-still .ofc-fa { animation: none; opacity: 1; } .ofc-still .ofc-fb { animation: none; opacity: 0; }
 @media (prefers-reduced-motion: reduce) { .ofc .ofc-fa { animation: none; opacity: 1; } .ofc .ofc-fb { animation: none; opacity: 0; } }
+
+/* 디자인 비교(예시 상태) */
+.ofc-cmp { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; }
+.ofc-cmp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; background: var(--ofc-ivory, #fbf7ee); border: 1px solid #e6dcc7; border-radius: 10px; }
+.ofc-cmp-note { font-size: 13px; color: #6b5a3a; }
+.ofc-cmp-note b { color: #b45309; }
+.ofc-cmp-ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #6b7280; }
+.ofc-cmp-ctl button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid #ddd3bf; background: #fff; color: #374151; cursor: pointer; }
+.ofc-cmp-ctl button.is-on { background: #0f9488; border-color: #0b6f66; color: #fff; }
+.ofc-cmp-panels { display: flex; gap: 14px; align-items: flex-start; }
+.ofc-cmp-panel { flex: 1 1 0; min-width: 0; }
+.ofc-cmp-panel h4 { margin: 0 0 6px; font-size: 14px; }
+.ofc-cmp-stage { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+.ofc-cmp-stage svg { display: block; }
+.ofc-cmp-tag.is-author { background: #fff3e0; border-color: #f0b46a; color: #9a4b00; }
+.ofc-cmp-tag.is-reviewer { background: #e7f6f4; border-color: #7cc9bf; color: #0b6f66; }
+.ofc-cmp-tag.is-codex { background: #eef2ff; border-color: #a5b4fc; color: #3730a3; }
+.ofc-cmp-more { position: absolute; cursor: pointer; }
+.ofc-cmp-list { position: absolute; display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; background: #fff; border: 1px solid #ddd3bf; border-radius: 8px; padding: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.18); z-index: 3; }
+.ofc-cmp-list button { font: inherit; font-size: 12px; text-align: left; border: 0; background: none; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
+.ofc-cmp-list button:hover { background: #f3efe6; }
+.ofc-cmp-detail { padding: 10px 12px; border: 1px solid #e6dcc7; border-radius: 10px; background: #fff; min-height: 44px; }
+/* 작은 버릇(장식): 직원마다 주기·시작이 달라 동시에 움직이지 않는다 */
+.ofc-hab { opacity: 0; animation-iteration-count: infinite; animation-timing-function: step-end; }
+.ofc-hab-short { animation-name: ofc-hab-short; }
+.ofc-hab-long { animation-name: ofc-hab-long; }
+@keyframes ofc-hab-short { 0% { opacity: 0; } 95% { opacity: 1; } 98% { opacity: 0; } }
+@keyframes ofc-hab-long { 0% { opacity: 0; } 82% { opacity: 1; } 93% { opacity: 0; } }
+.ofc-wave { animation: ofc-hop .35s ease-out 3; }
+@keyframes ofc-hop { 50% { transform: translateY(-1px); } }
+.ofc-still .ofc-hab, .ofc-still .ofc-wave { animation: none !important; }
+.ofc-still .ofc-hab { display: none; }
+@media (prefers-reduced-motion: reduce) { .ofc .ofc-hab { display: none; } .ofc .ofc-wave { animation: none; } }

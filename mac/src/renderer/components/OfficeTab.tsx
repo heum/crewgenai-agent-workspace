@@ -7,11 +7,12 @@ import type { Attempt, LiveEvent, Mission, Project, WorkingItem } from '../../sh
 import { MISSION_STATUS_LABEL } from '../../shared/types';
 import { useAction, useLoad, ws } from '../api';
 import { characterOf, EXTERNAL, type CharDef } from '../characters';
-import { HEAD_H, HEAD_W } from '../art';
+import { RHEAD_H as HEAD_H, RHEAD_W as HEAD_W } from '../artRetro';
 import { CharSprite } from './CharacterArt';
 import { Banner, Loading, Modal } from './common';
 import { useFileOpener } from './fileOpen';
-import { layoutFor, MIN_W, pickScale, placePeople, propOf, Scene, WALL, type Person, type Pose, type State } from './officeScene';
+import { layoutFor, MIN_W, pickScale, placePeople, propOf, reviewGroups, Scene, WALL, type Group, type Person, type Pose, type State } from './officeScene';
+import OfficeCompare from './OfficeCompare';
 import ResultsPanel, { missionTitle } from './Results';
 import { moodFor, TIME_MODES, type TimeMode } from './officeTime';
 
@@ -70,10 +71,10 @@ export default function OfficeTab({ project }: { project: Project }) {
     const out: Person[] = sorted.map((a) => {
       const jobs = working.filter((w) => w.agentId === a.id);
       const received = working.filter((w) => w.reviewOf === a.id && w.agentId !== a.id);
-      let state: State; let pose: Pose; let task: string; let since: string | null = null;
+      let state: State; let pose: Pose; let task: string; let since: string | null = null; let reviewOf: string | null = null;
       if (jobs.length) { // 실제 실행 중인 일이 있으면 휴가 설정보다 우선한다(실행 기록과 화면이 어긋나지 않게)
         const j = jobs[0]; since = j.since;
-        if (j.kind === 'reviewer') { state = 'review'; pose = 'review'; } else { state = 'work'; pose = j.kind === 'operator' ? 'plan' : j.mode === 'doc' ? 'doc' : 'code'; }
+        if (j.kind === 'reviewer') { state = 'review'; pose = 'review'; reviewOf = j.reviewOf ?? null; } else { state = 'work'; pose = j.kind === 'operator' ? 'plan' : j.mode === 'doc' ? 'doc' : 'code'; }
         task = `${j.task}${jobs.length > 1 ? ` 외 ${jobs.length - 1}건` : ''}`;
       } else if (!a.active) { state = 'off'; pose = 'off'; task = '휴가 — 업무를 배정하지 않습니다'; }
       else if (received.length) { state = 'review'; pose = 'reviewed'; since = received[0].since; task = `${RECEIVE_LABEL[received[0].kind]}: ${received[0].task}`; }
@@ -82,11 +83,11 @@ export default function OfficeTab({ project }: { project: Project }) {
       else { state = 'rest'; pose = 'rest'; task = '진행 중인 미션이 없습니다'; }
       const mine = denials.filter((d) => d.agentId === a.id);
       const steps = blockers.filter((b) => b.step.includes(`(${a.code} `) || b.step.includes(`${a.code} ${a.name}`)).map((b) => `${b.step}: ${b.reason}`);
-      return { key: a.id, agent: a, code: a.code, name: a.name, role: a.role, char: characterOf(a), prop: propOf(a), state, pose, task, since, external: false, blocked: mine, blockedSteps: steps, asks: a.code === '00' && asks > 0 };
+      return { key: a.id, agent: a, code: a.code, name: a.name, role: a.role, char: characterOf(a), prop: propOf(a), state, pose, task, since, external: false, blocked: mine, blockedSteps: steps, asks: a.code === '00' && asks > 0, reviewOf };
     });
     working.filter((w) => w.kind === 'codex').forEach((w, i) => out.push({
       key: `codex-${i}`, agent: null, code: `CX${i + 1}`, name: `Codex 리뷰어 ${i + 1}`, role: '외부 검토자(Codex CLI) — 결과물을 읽기 전용으로 검토', char: EXTERNAL[i % EXTERNAL.length], prop: 'redpen',
-      state: 'review', pose: 'review', task: w.task, since: w.since, external: true, blocked: [], blockedSteps: [], asks: false,
+      state: 'review', pose: 'review', task: w.task, since: w.since, external: true, blocked: [], blockedSteps: [], asks: false, reviewOf: w.reviewOf ?? null,
     }));
     return out;
   }, [agents.data, working, liveCount, limited, current, asks]);
@@ -96,6 +97,7 @@ export default function OfficeTab({ project }: { project: Project }) {
   const externals = people.filter((p) => p.external);
   // 그림 배율: 그림 한 칸이 실제 화면 화소 정수 개가 되는 값 중(예: 보통 화면 2배, 레티나 1.5·2배) 장면 전체가 들어가는 가장 큰 값.
   // 장면의 칸 수는 무대 크기에서 계산하므로 옆·아래에 빈 여백이 남지 않는다(고정 그림을 늘리지 않음).
+  const [compare, setCompare] = useState(false); // 디자인 비교(예시 상태)
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stage, setStage] = useState<{ w: number; h: number; dpr: number }>({ w: 0, h: 0, dpr: 1 });
   useLayoutEffect(() => {
@@ -105,10 +107,18 @@ export default function OfficeTab({ project }: { project: Project }) {
     const ro = new ResizeObserver(fit); ro.observe(el);
     const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`); mq.addEventListener('change', fit);
     return () => { ro.disconnect(); mq.removeEventListener('change', fit); };
-  }, [agents.data]);
+  }, [agents.data, compare]); // 비교 화면을 닫으면 무대가 다시 생기므로 다시 관찰
   const offCount = internal.filter((p) => p.state === 'off').length;
-  const { scale, layout } = useMemo(() => (stage.w ? pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount) : { scale: 1, layout: layoutFor(staff.length, MIN_W, 300, offCount) }), [stage, staff.length, offCount]);
-  const { placed, overflow } = useMemo(() => placePeople(people, staff, layout), [people, staff, layout]);
+  const groupSizes = useMemo(() => reviewGroups(people).map((g) => g.reviewers.length), [people]);
+  const { scale, layout } = useMemo(() => (stage.w ? pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount, groupSizes) : { scale: 3, layout: layoutFor(staff.length, MIN_W, 300, offCount) }), [stage, staff.length, offCount, groupSizes.join()]);
+  const plan = useMemo(() => placePeople(people, staff, layout), [people, staff, layout]);
+  const { placed, overflow } = plan;
+  // 누르면 잠깐 손을 흔든다(장식). 상태·실행 기록은 바꾸지 않는다
+  const [waving, setWaving] = useState<string | null>(null);
+  const waveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (waveTimer.current) clearTimeout(waveTimer.current); }, []);
+  const [group, setGroup] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState<'lounge' | 'review' | null>(null);
   const count = (s: State) => internal.filter((p) => p.state === s).length;
   const order: State[] = ['work', 'review', 'wait', 'rest', 'off'];
 
@@ -117,6 +127,13 @@ export default function OfficeTab({ project }: { project: Project }) {
   const [ping, setPing] = useState(0);
   useEffect(() => { if (sel && !people.some((p) => p.key === sel)) setSel(null); }, [people, sel]);
   const selected = people.find((p) => p.key === sel) ?? null;
+  const pickPerson = (k: string) => {
+    setSel(k); setGroup(null); setTab('staff'); setMoreOpen(null);
+    if (still) return;
+    setWaving(k); if (waveTimer.current) clearTimeout(waveTimer.current);
+    waveTimer.current = setTimeout(() => setWaving(null), 1400);
+  };
+  const selGroup = plan.groups.find((g) => g.key === group) ?? null;
 
   // 상태가 바뀔 때만 잠깐 말풍선(첫 화면에서는 띄우지 않음)
   const prev = useRef<Map<string, Pose> | null>(null);
@@ -166,6 +183,7 @@ export default function OfficeTab({ project }: { project: Project }) {
             <select aria-label="시간대 분위기" value={timeMode} onChange={(e) => { const v = e.target.value as TimeMode; setTimeMode(v); store.set('crewgenai.office.time', v); }}>
               {TIME_MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
+            <button className={`btn btn-sm${compare ? ' btn-primary' : ''}`} onClick={() => setCompare((v) => !v)} title="같은 구역을 A안·B안으로 비교(예시 상태)">디자인 비교</button>
             <label className="ofc-still-toggle"><input type="checkbox" checked={still} onChange={(e) => { setStill(e.target.checked); store.set('crewgenai.office.still', e.target.checked ? '1' : '0'); }} /> 움직임 줄이기</label>
           </div>
         </div>
@@ -173,34 +191,35 @@ export default function OfficeTab({ project }: { project: Project }) {
       {agents.loading && !agents.data && <Loading />}
       {agents.error && <Banner>{agents.error}</Banner>}
       {agents.data && internal.length === 0 && <div className="ofc-empty">아직 직원이 없습니다. 직원 탭에서 기본 템플릿을 불러오세요.</div>}
-      {internal.length > 0 && (
+      {compare && <OfficeCompare still={still} onClose={() => setCompare(false)} />}
+      {!compare && internal.length > 0 && (
         <div className="ofc-body">
           <div className="ofc-left">
           <div className="ofc-stage" ref={stageRef}>
             <div className="ofc-canvas" style={{ width: layout.W * scale, height: layout.H * scale }} data-scale={scale}>
-              <Scene people={people} staff={staff} layout={layout} placed={placed} mood={mood} selected={sel} />
+              <Scene people={people} staff={staff} layout={layout} plan={plan} mood={mood} selected={sel} waving={waving} still={still} selectedGroup={group} onGroup={(k) => { setGroup(k); setSel(null); setTab('staff'); }} />
               <div className="ofc-overlay">
-                <span className="ofc-zone" style={{ left: 6 * scale, top: (WALL + 2) * scale }}>업무 공간</span>
-                <span className="ofc-zone" style={{ left: (layout.review.x + 4) * scale, top: (layout.review.y + 4) * scale }}>리뷰룸</span>
-                <span className="ofc-zone" style={{ left: (layout.lounge.x + 22) * scale, top: (layout.lounge.y + 4) * scale }}>라운지</span>
-                {count('off') > 0 && (() => { const c = layout.wall.find((w) => w.kind === 'cork'); return c ? <span className="ofc-zone ofc-zone-sm" style={{ left: (c.x + c.w / 2) * scale, top: 40 * scale, transform: 'translateX(-50%)' }}>휴가 {count('off')}명</span> : null; })()}
+                <span className="ofc-zone" style={{ left: 4 * scale, top: (WALL + 1) * scale }}>업무 공간</span>
+                <span className="ofc-zone" style={{ left: (layout.review.x + 2) * scale, top: (layout.review.y + 1) * scale }}>리뷰룸{plan.groups.length ? ` · ${plan.groups.length}건` : ''}</span>
+                <span className="ofc-zone" style={{ left: (layout.lounge.x + 2) * scale, top: (layout.lounge.y + 1) * scale }}>라운지</span>
+                {count('off') > 0 && (() => { const c = layout.wall.find((w) => w.kind === 'cork'); return c ? <span className="ofc-zone ofc-zone-sm" style={{ left: (c.x + c.w / 2) * scale, top: 22 * scale, transform: 'translateX(-50%)' }}>휴가 {count('off')}명</span> : null; })()}
                 {staff.map((p, i) => {
                   const d = layout.desks[i]; const at = placed.find((x) => x.p.key === p.key);
-                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 48) * scale} top={(d.y + 43) * scale} max={92 * scale} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
+                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 25) * scale} top={(d.y + 23) * scale} max={48 * scale} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => pickPerson(p.key)} />;
                 })}
-                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => {
-                  // 리뷰룸: 마주 앉은 두 사람 바깥쪽(왼쪽 사람은 왼쪽, 오른쪽 사람은 오른쪽)에 붙여 탁자를 가리지 않는다
-                  const isLeft = zone === 'review' && p.pose === 'reviewed';
-                  const align = zone === 'review' ? (isLeft ? 'end' : 'start') : 'center';
-                  const left = zone === 'review' ? (isLeft ? x + 1 : x + w - 1) * scale : (x + w / 2) * scale;
-                  const top = zone === 'review' ? (y + 4) * scale - 22 : (y + Math.min(h, 40) + 2) * scale;
-                  return <Tag key={`r${p.key}`} p={p} left={left} top={top} max={40 * scale} align={align} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />;
+                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone, group: gk }) => {
+                  const pd = zone === 'review' ? plan.review.pods.find((q) => q.key === gk) : null;
+                  const top = pd ? (pd.y + pd.pod.h + 1) * scale : (y + h + 1) * scale;
+                  return <Tag key={`r${p.key}`} p={p} left={(x + w / 2) * scale} top={top} max={44 * scale} on={sel === p.key} onPick={() => pickPerson(p.key)} small role={pd ? (pd.author === p.key ? 'author' : p.external ? 'codex' : 'reviewer') : undefined} />;
                 })}
-                {overflow.review > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: (layout.review.x + 50) * scale, top: (layout.review.y + 4) * scale }}>리뷰 +{overflow.review}명</span>}
-                {overflow.lounge > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: (layout.lounge.x + 70) * scale, top: (layout.lounge.y + 4) * scale }}>휴식 +{overflow.lounge}명(목록 참고)</span>}
+                {overflow.review.length > 0 && <button className="ofc-zone ofc-zone-sm ofc-more" style={{ right: (layout.W - layout.review.x - layout.review.w + 4) * scale, top: (layout.review.y + 1) * scale }} onClick={() => setMoreOpen(moreOpen === 'review' ? null : 'review')}>리뷰 자리 밖 {overflow.review.length}명 · 목록</button>}
+                {overflow.lounge.length > 0 && <button className="ofc-zone ofc-zone-sm ofc-more" style={{ left: (layout.lounge.x + layout.lounge.w - 4) * scale, top: (layout.H - 2) * scale, transform: 'translate(-100%, -100%)' }} onClick={() => setMoreOpen(moreOpen === 'lounge' ? null : 'lounge')}>휴식 자리 밖 {overflow.lounge.length}명 · 목록</button>}
+                {moreOpen && <div className="ofc-cmp-list" style={moreOpen === 'lounge' ? { left: (layout.lounge.x + layout.lounge.w - 4) * scale, top: (layout.H - 12) * scale, transform: 'translate(-100%, -100%)' } : { right: 8, top: (layout.review.y + 10) * scale }}>
+                  {(moreOpen === 'lounge' ? overflow.lounge : overflow.review).map((p) => <button key={p.key} onClick={() => pickPerson(p.key)}>{p.code} {p.name} · {POSE_LABEL[p.pose]}</button>)}
+                </div>}
                 {placed.map(({ p, x, y, w, h }) => (
                   <button key={`h${p.key}-${sel === p.key ? ping : 0}`} className={`ofc-hit${sel === p.key ? ' is-on' : ''}${sel === p.key && ping ? ' is-ping' : ''}`} style={{ left: x * scale, top: y * scale, width: w * scale, height: h * scale }}
-                    aria-label={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`} title={`${p.code} ${p.name}\n${POSE_LABEL[p.pose]}: ${p.task}`} onClick={() => { setSel(p.key); setTab('staff'); }} />
+                    aria-label={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`} title={`${p.code} ${p.name}\n${POSE_LABEL[p.pose]}: ${p.task}`} onClick={() => pickPerson(p.key)} />
                 ))}
                 {placed.map(({ p, x, y, w, zone }) => {
                   const flag = p.blocked.length || p.blockedSteps.length ? { cls: 'bad', text: '막힘' } : p.asks ? { cls: 'ask', text: '확인 필요' } : null;
@@ -241,7 +260,7 @@ export default function OfficeTab({ project }: { project: Project }) {
                     </li>
                   ))}
                 </ul>
-                {selected ? <Detail p={selected} mission={current} folder={project.plan.folder} /> : <div className="ofc-detail ofc-detail-empty muted small">지도에서 인물을 누르거나 목록에서 직원을 고르면 현재 작업·막힌 이유·최근 결과물을 보여 줍니다.</div>}
+                {selGroup ? <GroupCard g={selGroup} mission={current} onPick={pickPerson} onResults={() => setTab('results')} /> : selected ? <Detail p={selected} mission={current} folder={project.plan.folder} /> : <div className="ofc-detail ofc-detail-empty muted small">지도에서 인물을 누르거나 목록에서 직원을 고르면 현재 작업·막힌 이유·최근 결과물을 보여 줍니다.</div>}
                 {asks > 0 && <button className="ofc-ask-box" onClick={openDecisions}><span>🔔 확인 요청 <b>{asks}</b></span><span className="ofc-ask-cta">추천안 보기 ›</span></button>}
               </>
             ) : (
@@ -254,11 +273,11 @@ export default function OfficeTab({ project }: { project: Project }) {
   );
 }
 
-function Tag({ p, left, top, max, align = 'center', on, dim, small, onPick }: { p: Person; left: number; top: number; max: number; align?: 'start' | 'center' | 'end'; on: boolean; dim?: boolean; small?: boolean; onPick: () => void }) {
+function Tag({ p, left, top, max, align = 'center', on, dim, small, role, onPick }: { p: Person; left: number; top: number; max: number; align?: 'start' | 'center' | 'end'; on: boolean; dim?: boolean; small?: boolean; role?: 'author' | 'reviewer' | 'codex'; onPick: () => void }) {
   const tx = align === 'start' ? '0' : align === 'end' ? '-100%' : '-50%';
   return (
-    <button className={`ofc-tag ofc-tag-${p.state}${on ? ' is-on' : ''}${dim ? ' is-dim' : ''}${small ? ' is-sm' : ''}`} style={{ left, top, maxWidth: max, transform: `translate(${tx}, 0)` }} onClick={onPick} title={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`}>
-      <span className="ofc-tag-dot" aria-hidden="true" />{small ? p.code : `${p.code} ${shortName(p.name)}`}
+    <button className={`ofc-tag ofc-tag-${p.state}${on ? ' is-on' : ''}${dim ? ' is-dim' : ''}${small ? ' is-sm' : ''}${role ? ` ofc-cmp-tag is-${role}` : ''}`} style={{ left, top, maxWidth: max, transform: `translate(${tx}, 0)` }} onClick={onPick} title={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`}>
+      <span className="ofc-tag-dot" aria-hidden="true" />{role === 'author' ? '리뷰받음 ' : ''}{small ? p.code : `${p.code} ${shortName(p.name)}`}
     </button>
   );
 }
@@ -372,3 +391,20 @@ function Detail({ p, mission, folder }: { p: Person; mission: Mission | null; fo
   );
 }
 
+
+/** 리뷰 그룹 상세: 작업명·참여자(역할)·검토 상태·결과물 */
+function GroupCard({ g, mission, onPick, onResults }: { g: Group; mission: Mission | null; onPick: (k: string) => void; onResults: () => void }) {
+  const results = (mission?.results ?? []).filter((r) => g.task && (r.task?.includes(g.task) || g.task.includes(r.task ?? '\u0000') || r.title?.includes(g.task)));
+  const since = [g.author, ...g.reviewers].filter(Boolean).map((p) => p!.since).filter(Boolean).sort()[0];
+  return (
+    <section className="ofc-detail" aria-label="리뷰 그룹 상세">
+      <div className="ofc-detail-head"><span /><div className="ofc-detail-id"><div><strong>{g.task || '검토 작업'}</strong></div><div className="muted small">리뷰 그룹 · 참여 {(g.author ? 1 : 0) + g.reviewers.length}명</div></div><span className="ofc-state ofc-state-review">검토 중</span></div>
+      <dl className="ofc-dl">
+        <dt>리뷰받는 직원</dt><dd>{g.authorRef ? <button className="btn-link" onClick={() => onPick(g.authorRef!.key)}>{g.authorRef.code} {g.authorRef.name}{!g.author && <span className="muted small"> (다른 리뷰 탁자에 앉아 있음)</span>}</button> : <span className="muted small">실행 기록에 대상 직원이 없습니다</span>}</dd>
+        <dt>검토자</dt><dd>{g.reviewers.map((r) => <div key={r.key}><button className="btn-link" onClick={() => onPick(r.key)}>{r.code} {r.name}</button>{r.external && <span className="ofc-ext">외부</span>} <span className="muted small">{r.task}</span></div>)}</dd>
+        <dt>검토 상태</dt><dd>진행 중{since ? <span className="muted small"> · {hhmm(since)}부터</span> : null}</dd>
+        <dt>결과물</dt><dd>{results.length ? results.slice(0, 4).map((r, i) => <div key={i} className="small">{r.title}</div>) : <span className="muted small">이 작업의 결과물은 아직 없습니다.</span>} <button className="btn-link small" onClick={onResults}>결과물 탭</button></dd>
+      </dl>
+    </section>
+  );
+}

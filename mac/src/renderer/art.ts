@@ -5,13 +5,16 @@ import type { CharDef } from './characters';
 import { Grid, mix, shade, type Rect } from './pixel';
 
 const INK = '#2a2129';
-export type ArtPose = 'stand' | 'sit' | 'type' | 'review' | 'rest';
+export type ArtPose = 'stand' | 'sit' | 'type' | 'review' | 'rest' | 'cup' | 'read' | 'standcup' | 'stretch' | 'wave';
+/** 작은 동작(장식): 눈 깜빡임·곁눈질·한 모금·손 흔들기. 실제 상태와 무관 */
+export type ArtMod = '' | 'blink' | 'glanceL' | 'glanceR' | 'sip' | 'wave';
+export const STANDING_POSES: ArtPose[] = ['stand', 'standcup', 'stretch', 'wave'];
 export const CHAR2_W = 34; export const CHAR2_H = 48; export const CHAR2_SIT_H = 37;
 
 const cache = new Map<string, Rect[]>();
 /** 캐릭터 한 장면. 원점은 그림 왼쪽 위(테두리 포함 34×48). 앉은 자세는 책상에 가리는 아래쪽을 그리지 않는다. */
-export function char2(c: CharDef, pose: ArtPose, frame = 0): Rect[] {
-  const key = `${c.id}|${pose}|${frame}`;
+export function char2(c: CharDef, pose: ArtPose, frame = 0, mod: ArtMod = ''): Rect[] {
+  const key = `${c.id}|${pose}|${frame}|${mod}`;
   const hit = cache.get(key); if (hit) return hit;
   const g = new Grid(CHAR2_W, CHAR2_H);
   const o = 1; // 테두리 여유
@@ -20,7 +23,8 @@ export function char2(c: CharDef, pose: ArtPose, frame = 0): Rect[] {
   const E = (x: number, y: number, w: number, h: number, col: string, t: string | null = null) => g.ellipse(x + o, y + o, w, h, col, t);
   const P = (x: number, y: number, col: string, t: string | null = null) => g.set(x + o, y + o, col, t);
   const skin = c.skin; const hair = c.hair; const top = c.top; const inner = c.inner ?? '#f4f1ea';
-  const seated = pose !== 'stand';
+  const seated = !STANDING_POSES.includes(pose);
+  const waving = pose === 'wave' || mod === 'wave';
   const hs = c.hairStyle;
 
   // 1) 몸 뒤로 내려오는 머리
@@ -33,9 +37,15 @@ export function char2(c: CharDef, pose: ArtPose, frame = 0): Rect[] {
 
   // 2) 몸(옷)·팔·손
   RR(8, 21, 16, 15, 4, top, 'top');
-  const armsDown = pose === 'stand' || pose === 'rest';
-  if (armsDown) { RR(5, 22, 5, 12, 2, top, 'top'); RR(22, 22, 5, 12, 2, top, 'top'); E(5, 32, 5, 5, skin, 'hand'); E(22, 32, 5, 5, skin, 'hand'); }
-  else { RR(5, 22, 5, 9, 2, top, 'top'); RR(22, 22, 5, 9, 2, top, 'top'); }
+  const armsDown = pose === 'stand' || pose === 'rest' || pose === 'wave';
+  const leftDown = armsDown || pose === 'cup' || pose === 'standcup';
+  if (pose === 'stretch') { RR(4, 1, 5, 22, 2, top, 'top'); RR(23, 1, 5, 22, 2, top, 'top'); E(4, -1, 5, 5, skin, 'hand'); E(23, -1, 5, 5, skin, 'hand'); }
+  else {
+    if (leftDown) { RR(5, 22, 5, 12, 2, top, 'top'); E(5, 32, 5, 5, skin, 'hand'); } else RR(5, 22, 5, 9, 2, top, 'top');
+    if (waving) { RR(23, 9, 5, 15, 2, top, 'top'); E(23, 4, 6, 6, skin, 'hand'); }
+    else if (armsDown) { RR(22, 22, 5, 12, 2, top, 'top'); E(22, 32, 5, 5, skin, 'hand'); }
+    else RR(22, 22, 5, 9, 2, top, 'top');
+  }
   switch (c.topStyle) {
     case 'jacket': R(14, 21, 4, 14, inner, 'inner'); for (let j = 0; j < 6; j++) { P(13 + Math.floor(j / 2), 21 + j, shade(top, 0.65)); P(18 - Math.floor(j / 2), 21 + j, shade(top, 0.65)); } P(13, 29, shade(top, 0.6)); P(13, 32, shade(top, 0.6)); R(15, 23, 2, 6, shade(top, 0.9)); break;
     case 'hoodie': RR(10, 19, 12, 5, 2, shade(top, 0.82), 'hood'); R(13, 24, 1, 4, '#f4f1ea'); R(18, 24, 1, 4, '#f4f1ea'); RR(11, 29, 10, 5, 1, shade(top, 0.88), 'pocket'); break;
@@ -48,6 +58,12 @@ export function char2(c: CharDef, pose: ArtPose, frame = 0): Rect[] {
   // 앉은 자세의 손(타자 두 장면·검토 문서)
   if (pose === 'sit') { E(9, 29, 5, 4, skin, 'hand'); E(18, 29, 5, 4, skin, 'hand'); }
   if (pose === 'type') { E(9, frame ? 30 : 29, 5, 4, skin, 'hand'); E(18, frame ? 29 : 30, 5, 4, skin, 'hand'); }
+  if (pose === 'cup' || pose === 'standcup') {
+    const my = mod === 'sip' ? 15 : 25; // 한 모금: 컵을 입가로
+    RR(15, my, 7, 8, 1, '#f4f1ea', 'mug'); R(22, my + 2, 2, 3, '#f4f1ea', 'mug'); R(16, my + 1, 5, 1, '#8a5a3a');
+    E(19, my + 5, 5, 4, skin, 'hand');
+  }
+  if (pose === 'read') { RR(6, 25, 20, 11, 1, '#3d6fb0', 'book'); R(7, 26, 8, 9, '#fbf6ea', 'page'); R(17, 26, 8, 9, '#f3ecdc', 'page'); R(15, 25, 2, 11, '#2c5288'); for (let y = 28; y < 34; y += 2) { R(8, y, 6, 1, '#b7bcc6'); R(18, y, 6, 1, '#b7bcc6'); } E(5, 30, 5, 4, skin, 'hand'); E(22, 30, 5, 4, skin, 'hand'); }
   if (pose === 'review') { RR(17, 23, 12, 13, 1, '#fbf8f0', 'paper'); for (let y = 26; y < 34; y += 2) R(19, y, y % 4 ? 6 : 8, 1, '#a3a9b4'); R(25, 27, 2, 1, '#c2413b'); E(14, 28, 5, 4, skin, 'hand'); }
   // 3) 다리·신발(서 있을 때)
   if (!seated) { R(9, 35, 14, 7, c.pants, 'pants'); R(16, 37, 1, 5, shade(c.pants, 0.7)); RR(7, 41, 8, 4, 1, '#3a2a1e', 'shoe'); RR(17, 41, 8, 4, 1, '#3a2a1e', 'shoe'); }
@@ -75,13 +91,17 @@ export function char2(c: CharDef, pose: ArtPose, frame = 0): Rect[] {
   }
   // 얼굴: 눈(흰자·눈동자·빛), 눈썹, 코, 입, 볼
   const eyeY = 12;
-  if (pose === 'rest') { R(10, eyeY + 1, 4, 1, INK); R(18, eyeY + 1, 4, 1, INK); }
+  if (pose === 'stretch' || pose === 'wave' || mod === 'wave') { for (const ex of [10, 18]) { P(ex, eyeY + 1, INK); P(ex + 1, eyeY, INK); P(ex + 2, eyeY, INK); P(ex + 3, eyeY + 1, INK); } } // 웃는 눈
+  else if (pose === 'rest' || mod === 'blink') { R(10, eyeY + 1, 4, 1, INK); R(18, eyeY + 1, 4, 1, INK); }
   else {
-    for (const ex of [10, 18]) { R(ex, eyeY, 4, 3, '#ffffff', 'eye'); R(ex + 1, eyeY + 1, 2, 2, '#2b2333', 'eye'); P(ex + 1, eyeY + 1, '#8a96b0', 'eye'); R(ex, eyeY, 4, 1, shade(skin, 0.75)); }
+    const dx = mod === 'glanceL' ? -1 : mod === 'glanceR' ? 1 : 0;
+    for (const ex of [10, 18]) { R(ex, eyeY, 4, 3, '#ffffff', 'eye'); R(ex + 1 + dx, eyeY + 1, 2, 2, '#2b2333', 'eye'); P(ex + 1 + dx, eyeY + 1, '#8a96b0', 'eye'); R(ex, eyeY, 4, 1, shade(skin, 0.75)); }
   }
   if (hs !== 'afro' || true) { R(10, eyeY - 2, 4, 1, shade(hair === skin ? '#5a4632' : hair, 0.8)); R(18, eyeY - 2, 4, 1, shade(hair === skin ? '#5a4632' : hair, 0.8)); }
   P(16, 15, shade(skin, 0.8)); P(15, 16, shade(skin, 0.86));
-  R(14, 18, 4, 1, mix(shade(skin, 0.6), '#b14b52', 0.5));
+  if (pose === 'stretch') { R(15, 17, 2, 2, '#7a2f38'); } // 하품하듯 '오'
+  else if (pose === 'wave' || mod === 'wave') { R(13, 17, 6, 1, mix(shade(skin, 0.6), '#b14b52', 0.5)); R(14, 18, 4, 1, '#7a2f38'); }
+  else R(14, 18, 4, 1, mix(shade(skin, 0.6), '#b14b52', 0.5));
   P(9, 16, mix(skin, '#f08a8a', 0.35)); P(22, 16, mix(skin, '#f08a8a', 0.35));
   // 6) 소품
   for (const e of c.extras) {
@@ -97,7 +117,7 @@ export function char2(c: CharDef, pose: ArtPose, frame = 0): Rect[] {
   }
   // 7) 빛·그늘, 머리와 얼굴 경계, 바깥 테두리
   g.light('top', 0.78, 1.1); g.light('inner', 0.88, 1.04); g.light('skin', 0.9, 1.04); g.light('hair', 0.72, 1.18); g.light('pants', 0.78, 1.08);
-  g.light('hand', 0.88, 1.04); g.light('shoe', 0.7, 1.2); g.light('hood', 0.85, 1.05); g.light('paper', 0.9, 1);
+  g.light('hand', 0.88, 1.04); g.light('shoe', 0.7, 1.2); g.light('hood', 0.85, 1.05); g.light('paper', 0.9, 1); g.light('mug', 0.85, 1); g.light('book', 0.8, 1.1);
   g.seam('hair', 'skin', shade(hair, 0.62));
   g.outline(INK);
   const rects = g.toRects(seated ? CHAR2_SIT_H : CHAR2_H);
@@ -390,4 +410,42 @@ export function pairTable(w: number): Rect[] {
 /** 빈 의자(옆모습) */
 export function emptySide(): Rect[] {
   return memo('emptyside', () => { const g = new Grid(SIDE_W, SIDE_H); g.rrect(2, 15, 6, 23, 2, '#3b4a7a', 'chair'); g.rrect(4, 33, 20, 5, 2, '#46578c', 'seat'); g.rect(12, 38, 3, 8, '#2a3150'); g.rect(7, 45, 13, 2, '#2a3150'); g.light('chair', 0.75, 1.12); g.light('seat', 0.8, 1.1); g.outline(INK); return g.toRects(); });
+}
+
+// ───── 휴식·리뷰 장면용 추가 가구(B안) ─────
+/** 빈백(뒤 덩어리·앞 테두리) */
+export function beanbag(color: string, part: 'back' | 'front'): Rect[] {
+  return memo(`bean|${color}|${part}`, () => {
+    const g = new Grid(42, 30);
+    if (part === 'back') { g.ellipse(1, 1, 40, 26, color, 'bb'); g.ellipse(8, 6, 26, 12, shade(color, 1.12), 'bb2'); g.light('bb', 0.75, 1.1); }
+    else { g.ellipse(2, 14, 38, 14, shade(color, 0.92), 'bf'); g.light('bf', 0.78, 1.08); }
+    g.outline(INK); return g.toRects();
+  });
+}
+/** 검토 그룹 탁자(앞에서 본 모습, 폭 w) */
+export function podTable(w: number): Rect[] {
+  return memo(`pod|${w}`, () => {
+    const g = new Grid(w + 2, 26);
+    g.rrect(1, 1, w, 9, 2, W.top, 'top'); g.hline(2, 1, w - 2, W.hi);
+    for (let x = 8; x < w - 10; x += 23) g.hline(x, 4 + (Math.floor(x / 23) % 3), 9, W.grain);
+    g.rect(2, 10, w - 2, 8, W.front, 'front'); g.rect(4, 18, 4, 7, W.leg); g.rect(w - 7, 18, 4, 7, W.leg);
+    g.light('top', 0.9, 1.05); g.light('front', 0.82, 1.06);
+    g.outline(INK); return g.toRects();
+  });
+}
+/** 공유 화면(받침대 위 큰 모니터): 검토 중인 결과물 */
+export function sharedScreen(): Rect[] {
+  return memo('shscreen', () => {
+    const g = new Grid(46, 58);
+    g.rrect(1, 1, 44, 30, 2, '#262d40', 'bezel'); g.rect(4, 4, 38, 24, '#f3eee3', 'scr');
+    g.rect(6, 6, 16, 3, '#3d6fb0'); for (let i = 0; i < 5; i++) g.hline(6, 11 + i * 3, i % 2 ? 22 : 30, '#9aa1ad');
+    g.rect(30, 6, 10, 8, '#9ad3a8'); g.rect(32, 17, 7, 1, '#c2413b'); g.rect(32, 20, 5, 1, '#c2413b');
+    g.rect(21, 31, 4, 20, '#3a4256', 'pole'); g.rrect(10, 50, 26, 5, 2, '#3a4256', 'foot');
+    g.light('bezel', 0.75, 1.3); g.light('pole', 0.8, 1.2); g.light('foot', 0.8, 1.15);
+    g.outline(INK); return g.toRects();
+  });
+}
+/** 노트북(Codex 검토자 앞) */
+export function laptop(): Rect[] {
+  return memo('laptop', () => { const g = new Grid(20, 14); g.rrect(3, 1, 14, 9, 1, '#2b3350', 'lid'); g.rect(5, 3, 10, 5, '#7fd0c8'); g.rect(1, 10, 18, 3, '#9aa1ad', 'base'); g.light('lid', 0.8, 1.2); g.outline(INK); return g.toRects(); });
 }
