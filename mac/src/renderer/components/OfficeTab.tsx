@@ -186,7 +186,7 @@ export default function OfficeTab({ project }: { project: Project }) {
                 {count('off') > 0 && (() => { const c = layout.wall.find((w) => w.kind === 'cork'); return c ? <span className="ofc-zone ofc-zone-sm" style={{ left: (c.x + c.w / 2) * scale, top: 40 * scale, transform: 'translateX(-50%)' }}>휴가 {count('off')}명</span> : null; })()}
                 {staff.map((p, i) => {
                   const d = layout.desks[i]; const at = placed.find((x) => x.p.key === p.key);
-                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 64) * scale} top={(d.y + 43) * scale} max={60 * scale} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
+                  return <Tag key={`t${p.key}`} p={p} left={(d.x + 48) * scale} top={(d.y + 43) * scale} max={92 * scale} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
                 })}
                 {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => (
                   <Tag key={`r${p.key}`} p={p} left={(x + w / 2) * scale} top={(zone === 'review' ? layout.tableY + 11 : y + Math.min(h, 40) + 2) * scale} max={40 * scale} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />
