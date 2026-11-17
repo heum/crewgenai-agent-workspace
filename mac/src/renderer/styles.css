@@ -1998,3 +1998,21 @@ textarea.input {
 .ofc-still .ofc-hab, .ofc-still .ofc-wave { animation: none !important; }
 .ofc-still .ofc-hab { display: none; }
 @media (prefers-reduced-motion: reduce) { .ofc .ofc-hab { display: none; } .ofc .ofc-wave { animation: none; } }
+
+/* 검토 지점(미션 화면 맨 위): 결과·시연·확인 순서·검증 범위·가정·결정·묶은 피드백을 한곳에 */
+.review-cp { border: 2px solid #0f9488; display: flex; flex-direction: column; gap: 14px; }
+.review-cp-head h3 { margin: 4px 0 0; font-size: 18px; }
+.review-cp-eyebrow { font-size: 12px; font-weight: 700; color: #0b6f66; }
+.review-cp-sec h4 { margin: 0 0 6px; font-size: 13px; color: #374151; }
+.review-cp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.review-cp-feats, .review-cp-assume { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.review-cp-feats { list-style: none; padding-left: 0; }
+.review-cp-dec { padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 10px; margin-bottom: 8px; }
+.review-cp-q { font-weight: 600; margin-bottom: 8px; }
+.review-cp-choices { display: flex; flex-direction: column; gap: 6px; }
+.review-cp-choice { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.review-cp-choice.is-on { background: #e7f6f4; }
+.review-cp-why { display: block; color: #0b6f66; margin-top: 2px; }
+.review-cp-actions { align-items: center; }
+.decision-batch { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; border-radius: 8px; background: #f5f6f8; }
+@media (max-width: 900px) { .review-cp-grid { grid-template-columns: 1fr; } }

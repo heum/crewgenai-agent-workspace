@@ -160,6 +160,11 @@ async function main() {
     const optGap = { doc: '기능 대조표.md', issue: '항목 A가 화면 시안과 제품에서 다르다', need: '어느 쪽을 기준으로 할지', explain: '기능 대조표 2줄에는 버튼이 위에 있다고 적혀 있지만 제품에는 본문에 있습니다. 어느 쪽을 맞출지 정해야 화면 작업을 시작할 수 있습니다.', refs: [{ path: 'docs/기능 대조표.md', line: 2 }], options: ['HTML 기준 유지 — 제품을 HTML에 맞춘다', '제품 기준 승인 — HTML을 제품에 맞춘다'] };
     if (!ask && user.includes('[[mock:gaps-options]]') && !decided) plan.gaps = [optGap];
     if (!ask && user.includes('[[mock:gaps-options-only]]') && !decided) { plan.tasks = []; plan.question = ''; plan.gaps = [optGap]; }
+    // 되돌리기 쉬운 세부는 가정(assume), 사람이 정할 것은 결정(decide, 진행은 계속)
+    if (!ask && user.includes('[[mock:assume]]')) plan.gaps = [
+      { doc: '화면 기획.md', issue: '저장 버튼 위치가 문서에 없다', need: '', kind: 'assume', assumption: '저장 버튼은 화면 오른쪽 위에 둔다' },
+      ...(decided ? [] : [{ ...optGap, kind: 'decide', blocking: false }]),
+    ];
     if (user.includes('[[mock:ask-options]]') && !answered) { plan.tasks = []; plan.gaps = []; plan.question = '어느 기준으로 진행할까요?'; plan.questionOptions = ['HTML 기준', '제품 기준']; }
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(plan), structured_output: plan, permission_denials: [] });
     process.exit(0);
@@ -170,6 +175,12 @@ async function main() {
     const dec = failed ? { decision: 'ask_user', summary: '실행 실패', question: '실패를 어떻게 처리할까요?', nextFocus: '' }
       : cyc >= 2 ? { decision: 'done', summary: '두 사이클로 목표 충족', question: '', nextFocus: '' }
       : { decision: 'continue', summary: '1차 결과 확인, 보완 필요', question: '', nextFocus: '보완' };
+    // 큰 결과가 준비되면 검토 지점(review): 기능·시연 순서·검증 범위·결정(최대 3)·가정을 한곳에
+    if (prompt.includes('[[mock:review]]') && !failed) {
+      const reviewed = prompt.includes('검토 지점 결정') || prompt.includes('[검토 피드백');
+      if (!reviewed) Object.assign(dec, { decision: 'review', summary: '전체 화면과 핵심 흐름 준비', nextFocus: '피드백 반영', checkpoint: { title: '회사 관리 전체 흐름', steps: '1. 목록 열기 → 2. 회사 선택 → 3. 메모 저장 → 다시 열어 저장값 확인', verified: '목록·상세·저장을 시연 환경에서 실제로 실행', unverified: '권한별 화면은 준비 중', features: [{ name: '회사 목록·상세', changed: '실제 API 연결', status: 'reviewable' }], decisions: [{ question: '삭제 기능을 1차에 넣을까요?', choices: [{ label: '넣는다', effect: '삭제 버튼과 확인 창을 만든다', recommended: false, why: '' }, { label: '2차로 미룬다', effect: '이번에는 숨긴다', recommended: true, why: '정책이 아직 없음' }] }], assumptions: ['메모는 최대 500자로 가정'] } });
+      else Object.assign(dec, { decision: 'done', summary: '피드백 반영 완료', question: '', nextFocus: '' });
+    }
     if (prompt.includes('[[mock:commit-request]]') && !prompt.includes('## 커밋 요청(최근)')) dec.commitRequests = [{ repo: '', files: ['pending.txt'], message: '대기 변경 커밋', why: '다음 작업에 필요' }];
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(dec), structured_output: dec, permission_denials: [] });
     process.exit(0);

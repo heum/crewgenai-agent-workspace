@@ -68,9 +68,9 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
 
   // 고른 안의 설명(고르면 달라지는 것)도 함께 넘겨 다음 계획이 사용자가 승인한 내용 그대로 따르게 한다
   // 권한 보류: 허용이면 그 직원(또는 기획 참고 자료)에만 넣고, 그 미션에 남은 권한 항목이 없으면 다시 시도한다
-  const resolvePermission = async (allow: boolean) => {
-    if (!cur?.denial) return;
-    const d = cur.denial;
+  const resolvePermissionFor = async (it: PendingDecision, allow: boolean) => {
+    if (!it.denial) return;
+    const d = it.denial; const cur = it;
     if (allow && d.kind === 'command' && d.suggestion) {
       const a = (await ws().listAgents(cur.projectId)).find((x) => x.id === d.agentId);
       if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
@@ -83,10 +83,26 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       if (!pr) throw new Error('프로젝트를 찾을 수 없습니다.');
       if (!pr.plan.referenceDocs.includes(d.suggestion)) await ws().updatePlan(pr.id, { ...pr.plan, referenceDocs: [...pr.plan.referenceDocs, d.suggestion] });
     }
-    handled.current.add(cur.key);
-    const left = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !handled.current.has(x.key));
-    if (!left.length) await ws().retryParked(cur.missionId); // 그 미션의 권한 항목을 모두 정했으면 보류를 풀고 다음 계획부터 다시 시도
+    handled.current.add(it.key);
   };
+  const resolvePermission = async (allow: boolean) => {
+    if (!cur?.denial) return;
+    await resolvePermissionFor(cur, allow);
+    const left = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !handled.current.has(x.key));
+    if (!left.length) await ws().retryParked(cur.missionId, items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && x.denial).map((x) => x.denial!.sig)); // 그 미션의 권한 항목을 모두 정했으면 그 항목만 풀고 다음 계획부터 다시 시도
+  };
+  // 같은 미션의 권한 항목을 한 번에: 보여 준 목록 그대로 각 직원에게만 허용하고, 다 정하면 보류한 업무를 다시 시도한다
+  const allowAll = () => act.run(async () => {
+    if (!cur) return;
+    const mine = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !!x.denial?.suggestion && x.denial.kind !== 'other');
+    for (const it of mine) await resolvePermissionFor(it, true);
+    await ws().retryParked(cur.missionId, mine.map((x) => x.denial!.sig)); // 허용한 항목만 푼다(다른 보류·결정은 그대로)
+    const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+    for (const d of list) seen.current.add(d.key);
+    setItems(list); setIdx(0);
+    setDone(`권한 ${mine.length}건을 허용했습니다. 보류한 업무를 다음 계획부터 다시 시도합니다.`);
+    if (!list.length) setTimeout(() => setOpen(false), 1800);
+  });
   const choose = (label: string, action?: 'stop', effect?: string) => act.run(async () => {
     if (!cur) return;
     if (cur.kind === 'permission') {
@@ -167,6 +183,19 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                     </div>
                   </div>
                 )}
+                {cur.kind === 'checkpoint' && (
+                  <div className="row gap">
+                    <button className="btn btn-primary" onClick={() => { onOpenMission(cur.projectId, cur.missionId); setOpen(false); }}>검토 화면 열기</button>
+                    <span className="muted small">시연·확인 순서·미검증 범위·정할 것을 한 화면에서 보고 피드백을 한 번에 보냅니다.</span>
+                  </div>
+                )}
+                {cur.kind === 'permission' && items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !!x.denial?.suggestion && x.denial.kind !== 'other').length > 1 && (
+                  <div className="decision-batch small">
+                    <span>이 미션의 권한 항목 {items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId).length}건: </span>
+                    {items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId).map((x) => <span key={x.key} className="mono">{x.denial?.suggestion ?? x.denial?.target} </span>)}
+                    <button className="btn btn-sm" disabled={act.busy} onClick={() => void allowAll()}>모두 허용(각 직원에게만)</button>
+                  </div>
+                )}
                 {rec && <div className="decision-rec small"><span className="badge badge-info">추천</span> {rec.label}{rec.why ? ` — ${rec.why}` : ''} <span className="muted">(자동으로 고르지 않습니다)</span></div>}
                 <ul className="decision-choices">
                   {cur.choices.map((c, i) => (
@@ -178,8 +207,8 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                     </li>
                   ))}
                 </ul>
-                {cur.choices.length === 0 && cur.kind !== 'commit' && <div className="muted small">고를 선택지가 없는 질문입니다. 아래에 답을 적어 보내면 미션이 그 답으로 이어서 진행합니다.</div>}
-                {cur.kind !== 'permission' && cur.kind !== 'commit' && <div className="row gap decision-own">
+                {cur.choices.length === 0 && cur.kind !== 'commit' && cur.kind !== 'checkpoint' && <div className="muted small">고를 선택지가 없는 질문입니다. 아래에 답을 적어 보내면 미션이 그 답으로 이어서 진행합니다.</div>}
+                {cur.kind !== 'permission' && cur.kind !== 'commit' && cur.kind !== 'checkpoint' && <div className="row gap decision-own">
                   <input className="input" value={own} placeholder={cur.choices.length ? '다른 답을 직접 적기' : '답을 적어 주세요'} onChange={(e) => setOwn(e.target.value)} />
                   <button className="btn" disabled={act.busy || !own.trim()} onClick={() => void choose(own)}>이 답으로 정하기</button>
                 </div>}

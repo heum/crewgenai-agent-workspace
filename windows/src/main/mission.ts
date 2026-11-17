@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { MissionCheckpoint, ResultStatus } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
@@ -46,6 +47,26 @@ function demoRule(plan: PlanFields): string {
     `- 시연을 마련한 직원은 직접 서비스를 띄워(허용된 명령으로) 상태 확인 경로와 주요 동작을 확인하고 그 결과를 보고한다. 띄워 보지 못했으면 미검증으로 쓴다.`,
   ].join('\n');
 }
+/** 운영 흐름: 큰 기능을 먼저 만들고, 사람의 검토는 의미 있는 결과가 준비된 지점에 모은다 */
+const FLOW_RULE = [
+  '- 운영 흐름: 문서·기존 합의 파악 → 실행 준비 → 전체 화면과 큰 기능 구현 → 직접 시연·검증 → 사용자 검토(묶어서 한 번에) → 피드백 반영·같은 시연으로 재검증 → 다음 큰 단계. 작업 순서는 사용자가 확인할 수 있는 큰 기능·업무 흐름 기준으로 잡는다. 내부 작업을 작게 나눠도 그것을 사용자 승인 단계로 만들지 않는다.',
+  '- 첫 검토 지점에서는 전체 화면 구조와 주요 사용자 흐름이 보이고, 대표 핵심 흐름 하나는 처음부터 끝까지 실제로 동작해야 한다. 아직 안 된 화면·기능은 화면에 "준비 중"으로 분명히 표시한다. 세부를 완벽하게 만들려고 큰 결과 전달을 미루지 않는다.',
+  '- 합의된 범위의 일반 구현·로컬 실행·시험·오류 수정·화면 조정·문서 보완은 묻지 않고 진행한다.',
+  '- 사이클 상한·연장·자동 진행 횟수는 앱이 관리한다. 질문·선택지·보고에 사이클 상한이나 연장을 쓰지 않는다.',
+].join('\n');
+/** 문서가 부족한 부분: 되돌리기 쉬운 세부는 가정하고 진행, 사람이 정할 것만 결정으로 모은다 */
+const ASSUME_RULE = '- gaps.kind: 되돌리기 쉬운 세부(배치·문구·표현·구현 방식·작은 데이터 형식·기준 문서끼리의 작은 차이)는 kind=assume으로 쓰고 assumption에 무엇으로 가정해 진행하는지 한 문장으로 쓴다. 이 항목은 묻지 않고 그 가정대로 작업을 계획하며, 앱이 검토 지점에서 사용자에게 알린다. 제품 방향·중요한 업무 정책·범위·비용·외부 공개처럼 사람이 정해야 하는 것만 kind=decide. decide라도 그것 없이 할 수 있는 작업이 있으면 진행하고 검토 지점에서 묻는다(blocking=false). 이 결정 없이는 아무 작업도 할 수 없을 때만 blocking=true. 이미 사용자 결정·가정 목록에 있는 항목은 다시 쓰지 않는다.';
+/** 판단: 검토 지점·결과 상태 */
+const CHECKPOINT_RULE = [
+  '- review: 사용자가 직접 보고 판단할 만한 큰 결과(전체 화면 흐름, 큰 기능의 시연)가 준비됐을 때 고른다. checkpoint에 title(이번에 검토할 큰 기능), features(name·changed·status), steps(사용자가 눌러 볼 순서와 예상 결과), verified(실제로 확인한 범위), unverified(미완성·미검증), decisions(사용자 판단이 필요한 핵심, 최대 3개, 각 choices 2~4개와 추천 하나), assumptions(가정하고 진행한 세부)를 쓴다. 작은 판단마다 review·ask_user를 고르지 않는다.',
+  '- ask_user는 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만 고른다. 진행할 수 있는 일이 남아 있으면 continue하고 결정은 다음 검토 지점(checkpoint.decisions)에 모은다.',
+  '- results의 status: implemented(코드·파일만 있음), ran(실행해 봄), verified(실제 기능을 동작시켜 확인), reviewable(사용자가 시연으로 볼 수 있게 준비됨), feedback_applied(사용자 피드백을 반영하고 같은 시연으로 다시 확인). 파일 존재나 일부 단위 시험 통과만으로 verified·reviewable을 쓰지 않는다. 실행하지 못한 시험·연결되지 않은 기능은 remaining에 범위를 쓴다.',
+].join('\n');
+const RESULT_STATUSES = ['implemented', 'ran', 'verified', 'reviewable', 'feedback_applied'] as const;
+const CHECKPOINT_SCHEMA = { type: 'object', properties: { title: { type: 'string' }, steps: { type: 'string' }, verified: { type: 'string' }, unverified: { type: 'string' },
+  features: { type: 'array', items: { type: 'object', required: ['name', 'changed'], properties: { name: { type: 'string' }, changed: { type: 'string' }, status: { type: 'string', enum: [...RESULT_STATUSES] } } } },
+  decisions: { type: 'array', items: { type: 'object', required: ['question'], properties: { question: { type: 'string' }, choices: CHOICE_ITEMS } } },
+  assumptions: { type: 'array', items: { type: 'string' } } } };
 /** 진전 없는 사이클이 이만큼 이어지면 멈추고 묻는다 */
 const IDLE_LIMIT = 2;
 const COMMIT_RULE = [
@@ -69,7 +90,7 @@ const PLAN_SCHEMA = {
   type: 'object', required: ['summary', 'question', 'gaps', 'tasks'],
   properties: {
     summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS,
-    gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, choices: CHOICE_ITEMS, explain: { type: 'string' },
+    gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, choices: CHOICE_ITEMS, explain: { type: 'string' }, kind: { type: 'string', enum: ['decide', 'assume'] }, assumption: { type: 'string' }, blocking: { type: 'boolean' },
       refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
       properties: { title: { type: 'string' }, agentCode: { type: 'string' }, instructions: { type: 'string' }, writeScope: { type: 'array', items: { type: 'string' } },
@@ -80,17 +101,18 @@ const PLAN_SCHEMA = {
 };
 const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
-  properties: { decision: { type: 'string', enum: ['continue', 'ask_user', 'done'] }, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
-    results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' },
+  properties: { decision: { type: 'string', enum: ['continue', 'review', 'ask_user', 'done'] }, checkpoint: CHECKPOINT_SCHEMA, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
+    results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' }, status: { type: 'string', enum: [...RESULT_STATUSES] },
       demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } },
     commitRequests: { type: 'array', items: { type: 'object', required: ['repo', 'files', 'message', 'why'], properties: { repo: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, message: { type: 'string' }, why: { type: 'string' }, task: { type: 'string' } } } } },
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
 interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
-interface RawResult { task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
+interface RawResult { status?: string; task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
-interface Judge { commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+interface RawCheckpoint { title?: string; steps?: string; verified?: string; unverified?: string; features?: { name?: string; changed?: string; status?: string }[]; decisions?: { question?: string; choices?: unknown }[]; assumptions?: string[] }
+interface Judge { checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터의 커밋 요청 정리: 형식이 맞는 것만, 이미 대기·승인된 같은 요청은 빼고, 대기 요청은 최대 5개 */
 export function cleanCommitRequests(raw: unknown, existing: MissionCommitRequest[], cycle: number): MissionCommitRequest[] {
@@ -362,14 +384,56 @@ export class MissionRunner {
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
+    const next = this.set(id, { checkpoint: null, pauseKind: null, sinceReview: 0, status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
     void this.loop(id);
     return next;
   }
 
-  /** 보류한 업무를 사용자가 해결함(권한 허용·환경 수정 등): 보류를 풀어 다음 계획부터 다시 시도할 수 있게 한다 */
-  retryParked(id: string): Mission {
+  /** 검토 지점 없이 자동으로 진행할 사이클 수(설정). 비용·시간 한도 역할을 한다. */
+  reviewBudget(): number { return Math.max(1, this.d.maxCycles()); }
+
+  /**
+   * 검토 지점 답변: 고른 결정은 미션 결정으로 쌓아 다시 묻지 않고, 피드백은 다음 사이클의 최우선 지시로 넘긴 뒤 이어서 진행한다.
+   * 고르지 않은 결정은 남겨 다음 검토 지점에 다시 보여 준다(침묵·닫기를 승인으로 보지 않음).
+   */
+  review(id: string, picks: { doc?: string; question: string; choice: string }[], feedback: string, action: 'continue' | 'stop'): Mission {
     const m = this.get(id);
+    if (m.status !== 'waiting_user' || !m.checkpoint) throw new Error('지금 열린 검토 지점이 없습니다.');
+    const at = now();
+    const cp = m.checkpoint;
+    // 검토 카드에 보여 준 항목(doc+질문)과 정확히 같은 것만 결정으로 기록한다(원래 항목의 식별자를 그대로 써서 다시 묻지 않게)
+    const shown = new Map(cp.decisions.map((d) => [`${d.doc}|${d.question}`, d]));
+    const made: MissionDecision[] = [];
+    for (const p of Array.isArray(picks) ? picks : []) {
+      const key = `${String(p?.doc ?? '검토 지점')}|${String(p?.question ?? '')}`; const choice = redact(String(p?.choice ?? '').trim()).slice(0, 600);
+      const d = shown.get(key); if (!d || !choice) continue;
+      made.push({ doc: d.doc, issue: d.question, choice, at });
+    }
+    if (made.length) this.event(m, 'answer', `검토 지점 결정:\n${made.map((d) => `- ${d.issue} → ${d.choice}`).join('\n')}`, { decisions: made });
+    const fb = redact(String(feedback ?? '').trim()).slice(0, 4000);
+    if (fb) this.event(m, 'directive', `[검토 피드백 · 사이클 ${cp.cycle}] ${fb}`);
+    const answered = new Set(made.map((d) => gapKey(d)));
+    // 고르지 않은 결정은 미결 항목으로 남겨 다음 검토 지점에 다시 보여 준다(침묵·닫기를 승인으로 보지 않음)
+    const leftGaps = (m.gaps ?? []).filter((g) => !answered.has(gapKey(g)));
+    for (const d of cp.decisions) {
+      const g: MissionGap = { doc: d.doc, issue: d.question, need: '', kind: 'decide', ...(d.choices.length ? { choices: d.choices, options: d.choices.map((c) => c.label) } : {}) };
+      if (!answered.has(gapKey(g)) && !leftGaps.some((x) => gapKey(x) === gapKey(g))) leftGaps.push(g);
+    }
+    this.set(id, { decisions: [...(m.decisions ?? []), ...made] });
+    return this.answer(id, '', action, { gaps: leftGaps.length ? leftGaps.slice(0, 12) : null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] });
+  }
+
+  /** 보류한 업무를 사용자가 해결함(권한 허용·환경 수정 등): 보류를 풀어 다음 계획부터 다시 시도할 수 있게 한다 */
+  retryParked(id: string, sigs?: string[]): Mission {
+    const m = this.get(id);
+    if (Array.isArray(sigs) && sigs.length) {
+      // 사용자가 정한 권한 항목만 푼다(다른 보류·결정 항목은 그대로)
+      const set = new Set(sigs.map(String));
+      const denials = (m.denials ?? []).filter((d) => !set.has(d.sig));
+      if (denials.length === (m.denials ?? []).length) return m;
+      this.event(m, 'answer', `보류한 업무 ${(m.denials ?? []).length - denials.length}건의 권한을 정했습니다. 다음 계획부터 다시 시도하세요.`);
+      return this.set(id, { denials: denials.length ? denials : null, parkedSigs: (m.parkedSigs ?? []).filter((x) => !set.has(x)), denialSigs: (m.denialSigs ?? []).filter((x) => !set.has(x)) });
+    }
     if (!m.denials?.length && !m.blockers?.length && !m.gaps?.length && !m.parkedSigs?.length) return m;
     this.event(m, 'answer', '보류한 업무를 해결했습니다. 다음 계획부터 다시 시도하세요.');
     return this.set(id, { denials: null, blockers: null, gaps: null, parkedSigs: [], denialSigs: [], failSigs: [] });
@@ -733,8 +797,9 @@ export class MissionRunner {
     for (const r of this.d.store.db.prepare('SELECT data FROM missions').all() as Row[]) {
       const m = JSON.parse(String(r.data)) as Mission;
       if (['planning', 'running', 'evaluating'].includes(m.status)) {
-        this.save({ ...m, limitUntil: null, status: 'waiting_user', stage: 'ask_user', question: '앱이 다시 시작되어 미션이 멈췄습니다. 이어서 진행할까요? (진행 중이던 실행은 실행 화면에서 재개 방법을 고를 수 있습니다)' });
-        this.event(m, 'question', '앱 재시작으로 멈춤 — 계속 여부 확인');
+        // 사용자 결정이 필요한 일이 아니므로 팝업으로 묻지 않고, 미션 화면에 '이어서 진행' 알림으로 둔다
+        this.save({ ...m, limitUntil: null, status: 'waiting_user', stage: 'ask_user', pauseKind: 'restart', question: '앱이 다시 시작되어 미션이 잠시 멈췄습니다. 미션 화면에서 이어서 진행할 수 있습니다.' });
+        this.event(m, 'system', '앱 재시작으로 잠시 멈춤 — 미션 화면에서 이어서 진행(팝업으로 묻지 않음)');
       }
     }
   }
@@ -776,16 +841,32 @@ export class MissionRunner {
             const pc = pickChoices((g as { choices?: unknown }).choices, g.options); const o = pc.opts; const explain = String(g.explain ?? '').trim().slice(0, 1200);
             const refs = (Array.isArray(g.refs) ? g.refs : []).filter((r) => r && String(r.path ?? '').trim()).slice(0, 4)
               .map((r) => ({ path: String(r.path).trim().slice(0, 500), line: Number.isInteger(r.line) && Number(r.line) > 0 ? Number(r.line) : null }));
-            return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), ...(o.length ? { options: o } : {}), ...(pc.choices.length ? { choices: pc.choices } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
+            const kind = g.kind === 'assume' ? 'assume' as const : 'decide' as const; const assumption = String(g.assumption ?? '').trim().slice(0, 400);
+            return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), kind, ...(assumption ? { assumption } : {}), ...(g.blocking === true ? { blocking: true } : {}), ...(o.length ? { options: o } : {}), ...(pc.choices.length ? { choices: pc.choices } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
           })
           .filter((g) => !(this.get(id).decisions ?? []).some((d) => gapKey(d) === gapKey(g))); // 이미 결정한 항목은 다시 묻지 않는다(계획 중에 고른 결정 포함)
         // 사용자가 '나중에'로 남긴 항목은 새 계획이 다른 항목을 내도 결정·해결 전까지 유지한다
         { const cur = this.get(id); const kept = (cur.gaps ?? []).filter((g) => !(cur.decisions ?? []).some((d) => gapKey(d) === gapKey(g)));
           const fresh = gaps.filter((g) => !kept.some((k) => gapKey(k) === gapKey(g)));
           gaps.splice(0, gaps.length, ...kept, ...fresh.slice(0, Math.max(0, 12 - kept.length))); }
+        // 되돌리기 쉬운 세부는 묻지 않고 가정하고 진행한다(검토 지점에서 알림). 사람이 정할 결정만 남긴다.
+        { const as = gaps.filter((g) => g.kind === 'assume');
+          if (as.length) {
+            const cur = this.get(id); const prev = cur.assumptions ?? [];
+            const add = as.map((g) => ({ cycle: m.cycle, doc: g.doc, text: (g.assumption || g.issue).slice(0, 400) })).filter((a) => !prev.some((p) => p.text === a.text));
+            if (add.length) { this.set(id, { assumptions: [...prev, ...add].slice(-40) }); this.event(m, 'system', `문서가 부족한 세부는 가정하고 진행합니다(검토 때 알려 드립니다).\n${add.map((a) => `- ${a.text}`).join('\n')}`, { assumptions: add }); }
+          }
+          const rest = gaps.filter((g) => g.kind !== 'assume'); gaps.splice(0, gaps.length, ...rest);
+          // 작업이 있으면 오퍼레이터 질문도 멈추지 않고 다음 검토 지점의 결정으로 모은다
+          if (plan.tasks.length && plan.question.trim()) {
+            const pq = pickChoices(plan.questionChoices, plan.questionOptions);
+            const g: MissionGap = { doc: '오퍼레이터 질문', issue: plan.question.trim().slice(0, 600), need: '', kind: 'decide', ...(pq.opts.length ? { options: pq.opts } : {}), ...(pq.choices.length ? { choices: pq.choices } : {}) };
+            if (!gaps.some((x) => gapKey(x) === gapKey(g)) && !(this.get(id).decisions ?? []).some((d) => gapKey(d) === gapKey(g))) gaps.push(g);
+            plan.question = '';
+          } }
         if (gaps.length && plan.tasks.length) {
           // 근거가 부족한 부분이 있어도 기존 문서·결과물로 할 수 있는 일은 진행한다. 부족한 부분은 확인 필요로만 남긴다.
-          this.event(m, 'system', `근거가 부족한 부분은 확인 필요로 남기고, 할 수 있는 작업부터 진행합니다.\n${gaps.map((g) => `- [${g.doc || '문서 미지정'}] ${g.issue}`).join('\n')}`, { gaps });
+          this.event(m, 'system', `사람이 정할 결정 ${gaps.length}건은 다음 검토 지점에 모아 묻고, 할 수 있는 작업부터 진행합니다.\n${gaps.map((g) => `- [${g.doc || '문서 미지정'}] ${g.issue}`).join('\n')}`, { gaps });
           this.set(id, { gaps });
         } else if (gaps.length) {
           // 근거가 없어 시작할 수 있는 작업이 하나도 없음: 채워야 할 부분을 알려 주고 멈춘다(문서를 보완한 뒤 이어서 진행)
@@ -911,13 +992,21 @@ export class MissionRunner {
           void this.learn(id);
           return;
         }
+        // 검토 지점: 큰 결과가 준비됐거나(review), 결정 없이는 진행할 수 없거나(ask_user), 자동 진행 한도에 닿았을 때 한곳에 모아 보여 준다
+        const openCheckpoint = (reason: 'ready' | 'budget', extra: { question: string; choices: MissionChoice[] }[] = []) => {
+          const cur = this.get(id);
+          const raw: RawCheckpoint = { ...(judge.checkpoint ?? {}), decisions: [...extra, ...(judge.checkpoint?.decisions ?? [])] };
+          const cp = buildCheckpoint(raw, m.cycle, cur.results ?? [], cur.gaps ?? [], (cur.assumptions ?? []).filter((a) => a.cycle > (cur.checkpoint?.cycle ?? 0) || !cur.checkpoint).map((a) => a.text), reason, judge.nextFocus || judge.summary.split('\n')[0].slice(0, 120));
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, checkpoint: cp, question: `검토 준비됨: ${cp.title}`, questionOptions: null, questionChoices: null, sinceReview: 0, idleCycles: 0 });
+          this.event(m, 'question', `검토 지점(${reason === 'ready' ? '결과 준비됨' : '자동 진행 한도'}): ${cp.title} — 결정 ${cp.decisions.length}건, 가정 ${cp.assumptions.length}건`, { checkpoint: true });
+        };
+        if (judge.decision === 'review') { openCheckpoint('ready'); return; }
         if (judge.decision === 'ask_user') {
-          const jq = judge.question ? pickChoices(judge.questionChoices, judge.questionOptions) : { opts: [], choices: [] }; const opts = jq.opts;
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: judge.question || judge.summary, questionOptions: opts, questionChoices: jq.choices.length ? jq.choices : null });
-          this.event(m, 'question', judge.question || judge.summary);
+          const jq = judge.question ? pickChoices(judge.questionChoices, judge.questionOptions) : { opts: [], choices: [] };
+          openCheckpoint('ready', judge.question ? [{ question: judge.question, choices: jq.choices.length ? jq.choices : jq.opts.map((label) => ({ label, effect: '', recommended: false, why: '' })) }] : []);
           return;
         }
-        // 진전 없는 사이클(직원이 실제 프로젝트에 반영한 변경이 없음)은 상한을 쓰지 않는다. 두 번 이어지면 같은 자리를 도는 것이므로 멈추고 묻는다.
+        // 진전 없는 사이클(직원이 실제 프로젝트에 반영한 변경이 없음)은 자동 진행 횟수에 넣지 않는다. 두 번 이어지면 같은 자리를 도는 것이므로 멈추고 묻는다.
         const progressed = this.d.store.runAttempts(run.id).some((a) => a.role === 'author' && a.changedFiles.length > 0);
         const idle = progressed ? 0 : (this.get(id).idleCycles ?? 0) + 1;
         if (idle >= IDLE_LIMIT) {
@@ -926,18 +1015,10 @@ export class MissionRunner {
           this.event(m, 'question', q, { idle });
           return;
         }
-        if (!progressed) { m = this.set(id, { idleCycles: idle, maxCycles: m.maxCycles + 1 }); this.event(m, 'system', `사이클 ${m.cycle}은 반영된 변경이 없어 사이클 상한에 넣지 않습니다(상한 ${m.maxCycles}).`); }
-        else m = this.set(id, { idleCycles: 0 });
-        if (m.cycle >= m.maxCycles) {
-          const q = `사이클 ${m.cycle}회를 진행했습니다(설정 상한). 오퍼레이터 판단: ${judge.summary}. 다음 초점: ${judge.nextFocus}. 계속 진행할까요?`;
-          const capChoices: MissionChoice[] = [
-            { label: '계속 진행', effect: `사이클 상한을 늘려 다음 초점(${judge.nextFocus.slice(0, 120)})부터 이어서 진행합니다.`, recommended: true, why: '오퍼레이터가 남은 일이 분명하고 사용자 확인 없이 진행할 수 있다고 판단했습니다.' },
-            { label: '여기서 종료', effect: '미션을 종료합니다. 지금까지의 결과물과 기록은 그대로 남고, 나중에 이어서 다시 시작할 수 있습니다.', recommended: false, why: '', action: 'stop' },
-          ];
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, question: q, questionOptions: capChoices.map((c) => c.label), questionChoices: capChoices });
-          this.event(m, 'question', q, { cap: true });
-          return;
-        }
+        const since = (this.get(id).sinceReview ?? 0) + (progressed ? 1 : 0);
+        m = this.set(id, { idleCycles: idle, sinceReview: since, maxCycles: Math.max(m.maxCycles, m.cycle + 1) });
+        if (!progressed) this.event(m, 'system', `사이클 ${m.cycle}은 반영된 변경이 없어 자동 진행 횟수에 넣지 않습니다.`);
+        if (since >= this.reviewBudget()) { openCheckpoint('budget'); return; }
         this.set(id, { cycle: m.cycle + 1, summary: judge.summary, status: 'planning', stage: 'plan' });
       }
     } catch (e) {
@@ -1065,7 +1146,7 @@ export class MissionRunner {
       '당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. 사용자 지시를 이번 사이클의 작업으로 나누고, 기능에 맞는 담당 직원을 배정한다. 파일은 수정하지 않는다(읽기만).', '',
       '## 사용자 지시', m.prompt, '',
       ...this.learnedSection(m.projectId),
-      `## 사이클: ${m.cycle} / 상한 ${m.maxCycles}`, '',
+      `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회)`, '',
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
       '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}`), '',
@@ -1079,14 +1160,14 @@ export class MissionRunner {
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 유지·되돌림, 범위·우선순위 등)이면 choices에 2~4개의 선택지를 쓴다: label(예: 'HTML 기준 유지'), effect(고르면 무엇이 달라지는지 쉬운 한 문장, 예: '제품 화면을 HTML에 맞춰 고친다'), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장). 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 선택지로 내지 않는다. '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
-      ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, RESULT_RULE, demoRule(plan), ...this.demoSection(plan), ...this.commitSection(m),
+      FLOW_RULE, ASSUME_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, RESULT_RULE, demoRule(plan), ...this.demoSection(plan), ...this.commitSection(m), ...this.assumptionsSection(m),
       '- gaps 항목마다 explain에 이 문서들을 읽지 않은 사용자도 바로 이해하도록 쉬운 말로 3~5문장을 쓴다: 무엇이 문제인지(문서에 실제로 적힌 내용·서로 다른 두 내용을 짧게 옮겨 보여 줌), 왜 진행에 영향이 있는지, 각 선택지를 고르면 무엇이 달라지는지. 내부 약어·업무 ID(예: 문서 코드, W-00-15)는 그대로 쓰지 말고 무엇인지 풀어 쓴다. refs에는 근거 위치를 프로젝트 폴더 기준 경로(폴더 밖 참고 문서는 절대 경로)와 줄 번호로 적는다(사용자가 바로 열어 본다). 아직 없는 문서는 refs에 넣지 않는다.',
       '- 사용자 결정(위)에 있는 항목은 gaps에 다시 쓰지 않고, 그 결정을 그대로 따른다. 관련 작업 지시에는 해당 결정을 그대로 옮겨 적는다.',
       `- 할 일 목록: 자동 수정 허용 경로 아래에 할 일 목록 파일(예: ${plan.outputDir || 'docs'}/WORK_LIST.md)이 있으면 그 항목을 기준으로 작업을 만들고, 작업 지시에 항목 ID와 근거 문서 위치(파일·절)를 그대로 적는다. 목록이 없고 기존 문서·결과물이 있으면 첫 작업 하나로 기획 문서·기존 결과물에서 할 일 목록을 정리한다(항목·근거 위치·상태만 한 번에 정리, 전수 대조·완벽한 표를 목표로 하지 않는다). 문서에 없는 기능·결정은 목록에 만들지 않고 '확인 필요'로 표시한다.`,
       ...(this.d.autoAssist?.() ? [`- 자동 처리(앱이 함): 직원 변경은 dev·main에 커밋하지 않고 작업 브랜치 ${workBranchName(m.id)}에 커밋된다(push·PR·병합은 사용자). 따라서 저장소가 dev·main이라는 이유로 작업을 보류하거나 브랜치 생성을 확인 필요로 올리지 않는다. Bash를 가진 직원에게는 저장소에 있는 시험 명령(scripts/gradle.sh·scripts/check.sh·npm check)이 자동 허용된다(네트워크 없음).`] : []),
       '- needs: 작업에 Bash 명령이 필요하면 commands에 실제 실행할 명령을, 프로젝트 폴더 밖에서 읽어야 하는 파일·폴더가 있으면 readPaths에 절대 경로를 쓴다. 담당 직원에게 허용되지 않은 것이 있으면 그 작업은 실행하지 않고 사용자 확인으로 돌린다. 필요 없으면 빈 배열.',
       '- 이 PC(Windows판)에서는 직원이 Bash 명령을 쓸 수 없다. 명령이 꼭 필요한 일은 needs.commands에 적어 사용자에게 맡긴다.',
-      '- 진행에 꼭 필요한 정보가 없거나 사용자 결정이 필요하면 tasks를 비우고 question에 한 가지 질문만 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만). 그렇지 않으면 question은 빈 문자열.',
+      '- question: 그 정보·결정 없이는 어떤 작업도 할 수 없을 때만 tasks를 비우고 한 가지 질문을 쓴다(작업이 있으면 질문은 다음 검토 지점에 모인다). 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만). 그렇지 않으면 question은 빈 문자열.',
       '- 이전 사이클의 결과·판단을 이어받아 남은 일만 계획한다. 작업은 1~4개로 작게 나눈다.',
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),
@@ -1140,6 +1221,13 @@ export class MissionRunner {
     return ['## 직원 제안 기록(다시 제안하지 말 것)', ...ps.map((p) => `- [${p.status === 'pending' ? '사용자 확인 대기' : '사용자가 무시함'}] ${p.kind === 'add' ? `새 직원 '${p.name}'` : `${p.agentCode} 역할·지시 변경`}`), ''];
   }
 
+  /** 가정하고 진행한 세부: 다시 묻지 않고, 사용자가 검토 때 바꾸면 그 결정을 따른다 */
+  private assumptionsSection(m: Mission): string[] {
+    const as = (m.assumptions ?? []).slice(-20);
+    if (!as.length) return [];
+    return ['## 가정하고 진행 중인 세부(다시 묻지 말 것 — 사용자 결정이 다르면 결정을 따른다)', ...as.map((a) => `- [사이클 ${a.cycle}] ${a.text}`), ''];
+  }
+
   /** 사용자가 확인 필요 항목에 고른 결정: 오퍼레이터·직원이 추측하지 않고 그대로 따른다 */
   private decisionsSection(m: Mission): string[] {
     const ds = m.decisions ?? [];
@@ -1177,7 +1265,7 @@ export class MissionRunner {
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
       ...this.learnedSection(m.projectId),
-      '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} / 상한 ${m.maxCycles}`, '',
+      '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회, 검토 없이 ${this.reviewBudget()}회까지 진행)`, '',
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
       `## 실행 결과: ${d.run.status}${d.run.reason ? ` — ${d.run.reason}` : ''}`, ...(failed.length ? ['### 실패 단계', ...failed.map((f) => `- ${f}`)] : []), '',
       '## 리뷰 기록', ...(reviews.length ? reviews : ['- (없음)']), '',
@@ -1187,8 +1275,9 @@ export class MissionRunner {
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
       '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다.',
-      '- ask_user: 사용자 결정·검토가 꼭 필요하거나, 같은 실패가 반복되거나, 추가 정보가 없으면 진행할 수 없을 때. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
-      '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때. nextFocus에 다음 사이클의 초점을 쓴다.',
+      FLOW_RULE, CHECKPOINT_RULE, ...this.assumptionsSection(m),
+      '- ask_user: 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
+      '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때(작은 판단·세부는 가정하고 진행). nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
       REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, ...this.commitSection(m), RESULTS_RULE, demoRule(plan), '- results의 demo: 실행 가능한 기능의 결과물이면 시연 목록의 service id와, 화면이면 path(예: /operator/companies), API면 api(apis 항목 id), steps(사용자가 눌러 볼 순서), expected(예상 결과), data(api+db·screen-only·mock)를 쓴다. 시연 목록에 없는 서비스는 쓰지 않는다. 문서만 만든 작업은 demo를 비운다.', ...this.demoSection(plan),
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
@@ -1281,13 +1370,38 @@ function cleanDemo(d: RawResult['demo']): ResultDemo | null {
 const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i;
 
 /** 판단이 적은 결과물을 확인한다: 화면 주소는 이 컴퓨터(localhost)만, 파일은 프로젝트 폴더 안(링크를 푼 실제 경로 기준)만. */
+/** 결과 상태 정리: 실제로 확인하지 않은 결과를 '검증됨·검토 가능'으로 올리지 않는다 */
+export function resultStatus(r: { status?: string; verified?: string; demo?: unknown }): ResultStatus {
+  const st = (RESULT_STATUSES as readonly string[]).includes(String(r.status)) ? (r.status as ResultStatus) : 'implemented';
+  const v = String(r.verified ?? '').trim();
+  const unverified = !v || /^미검증|미실행|실행하지 못|확인하지 못/.test(v);
+  if (unverified && ['verified', 'reviewable', 'feedback_applied'].includes(st)) return 'implemented';
+  return st;
+}
+
+/** 검토 지점 정리: 결정은 최대 3개(미결 '결정' 항목을 합쳐서), 가정은 이번 것과 누적한 것을 함께 */
+export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, results: MissionResult[], openGaps: MissionGap[], assumptions: string[], reason: 'ready' | 'budget', fallbackTitle: string): MissionCheckpoint {
+  const t = (v: unknown, n: number) => redact(String(v ?? '').trim()).slice(0, n);
+  // 기능 상태도 실제 확인 기록(검토 지점의 verified)이 없으면 올리지 않는다
+  const features = (Array.isArray(raw?.features) ? raw!.features! : []).filter((f) => t(f?.name, 200)).slice(0, 8)
+    .map((f) => ({ name: t(f.name, 200), changed: t(f.changed, 400), status: resultStatus({ status: f.status, verified: raw?.verified }) }));
+  const feats = features.length ? features : results.slice(0, 8).map((r) => ({ name: r.title, changed: r.changed, status: r.status ?? 'implemented' }));
+  const fromJudge = (Array.isArray(raw?.decisions) ? raw!.decisions! : []).filter((d) => t(d?.question, 400))
+    .map((d) => ({ doc: '검토 지점', question: t(d.question, 400), choices: cleanChoices(d.choices) }));
+  const fromGaps = openGaps.filter((g) => g.kind !== 'assume').map((g) => ({ doc: g.doc, question: g.issue, choices: g.choices?.length ? g.choices : (g.options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' })) }));
+  const seen = new Set<string>(); const decisions: MissionCheckpoint['decisions'] = [];
+  for (const d of [...fromJudge, ...fromGaps]) { const k = `${d.doc}|${d.question}`; if (seen.has(k)) continue; seen.add(k); decisions.push(d); if (decisions.length >= 3) break; }
+  const as = [...new Set([...(Array.isArray(raw?.assumptions) ? raw!.assumptions!.map((a) => t(a, 300)) : []), ...assumptions])].filter(Boolean).slice(0, 12);
+  return { cycle, at: now(), title: t(raw?.title, 200) || fallbackTitle, features: feats, steps: t(raw?.steps, 1500), verified: t(raw?.verified, 800), unverified: t(raw?.unverified, 800), decisions, assumptions: as, reason };
+}
+
 export function resolveResults(folder: string, raw: unknown): MissionResult[] {
   const out: MissionResult[] = [];
   let root = folder; try { root = realpathSync(folder); } catch { /* 폴더 없음 */ }
   for (const r of (Array.isArray(raw) ? raw : []).slice(0, 20) as RawResult[]) {
     const p = String(r?.path ?? '').trim();
     if (!p) continue;
-    const base = { task: String(r.task ?? '').slice(0, 200), title: String(r.title ?? '').slice(0, 200) || p.slice(0, 200), changed: redact(String(r.changed ?? '')).slice(0, 600), check: redact(String(r.check ?? '')).slice(0, 600), verified: redact(String(r.verified ?? '')).slice(0, 400), remaining: redact(String(r.remaining ?? '')).slice(0, 400), demo: cleanDemo(r.demo) };
+    const base = { task: String(r.task ?? '').slice(0, 200), title: String(r.title ?? '').slice(0, 200) || p.slice(0, 200), changed: redact(String(r.changed ?? '')).slice(0, 600), check: redact(String(r.check ?? '')).slice(0, 600), verified: redact(String(r.verified ?? '')).slice(0, 400), remaining: redact(String(r.remaining ?? '')).slice(0, 400), demo: cleanDemo(r.demo), status: resultStatus(r) };
     if (/^[a-z]+:\/\//i.test(p)) {
       if (LOCAL_URL.test(p)) out.push({ ...base, kind: 'url', path: p, relPath: p, exists: true });
       continue; // 외부 주소는 넣지 않는다

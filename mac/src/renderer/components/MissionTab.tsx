@@ -10,6 +10,7 @@ import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Collapsible, Empty, Loading, Modal } from './common';
 import { Markdown } from '../markdown';
 import ResultsPanel from './Results';
+import ReviewCheckpoint from './ReviewCheckpoint';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './flowShared';
 import { runTone } from './RunTab';
 
@@ -331,7 +332,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           <Badge tone={missionTone(m.status)}>{MISSION_STATUS_LABEL[m.status]}</Badge>
           <Badge tone="info">{MISSION_STAGE_LABEL[m.stage]}</Badge>
           <span className="muted small">
-            사이클 {m.cycle} / {m.maxCycles} · 시작 {fmtDate(m.createdAt)} · 갱신 {fmtDate(m.updatedAt)}
+            사이클 {m.cycle} · 지난 검토 이후 자동 {m.sinceReview ?? 0}회 · 시작 {fmtDate(m.createdAt)} · 갱신 {fmtDate(m.updatedAt)}
           </span>
         </div>
         <div className="row gap">
@@ -342,7 +343,15 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           )}
         </div>
       </div>
-      {(m.results || m.resultsHistory?.length) && <ResultsCard mission={m} />}
+      {m.status === 'waiting_user' && m.checkpoint && <ReviewCheckpoint mission={m} onChanged={async () => { await detail.reload(); onChanged(); }} />}
+      {m.status === 'waiting_user' && m.pauseKind === 'restart' && !m.checkpoint && (
+        <div className="limit-card" role="status">
+          <strong>앱이 다시 시작되어 잠시 멈췄습니다</strong>
+          <div className="muted small">사용자 결정이 필요한 멈춤이 아니어서 팝업으로 묻지 않았습니다. 이어서 진행하면 같은 사이클부터 다시 계획합니다.</div>
+          <div className="row gap"><button className="btn btn-primary" disabled={act.busy} onClick={() => void act.run(async () => { await ws().answerMission(m.id, '', 'continue', true); await detail.reload(); })}>이어서 진행</button></div>
+        </div>
+      )}
+      {!m.checkpoint && (m.results || m.resultsHistory?.length) && <ResultsCard mission={m} />}
       {m.summary && (
         <div className="card report-card">
           <div className="report-head"><strong>진행 보고</strong><span className="muted small">사이클 {m.resultsCycle ?? m.cycle} · 오퍼레이터 판단</span></div>
@@ -364,7 +373,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           </div>
         </div>
       )}
-      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
+      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && !m.checkpoint && m.pauseKind !== 'restart' && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'waiting_user' && m.status !== 'stopped' && m.status !== 'failed' && <ParkedCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'stopped' && m.status !== 'failed' && <StaffProposalCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />

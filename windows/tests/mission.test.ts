@@ -59,17 +59,58 @@ describe('오퍼레이터 루프', () => {
     svc.close();
   });
 
-  it('사이클 상한에 도달하면 계속 여부를 묻고, 승인하면 다음 사이클로 간다', async () => {
+  it('자동 진행 한도에 닿으면 단독 질문 대신 검토 지점(결과·결정 묶음)으로 멈추고, 팝업은 한 건이며, 확인하면 이어서 진행한다', async () => {
     const { svc, p } = setup();
     svc.saveSettings({ missionMaxCycles: 1 });
     const m0 = await svc.startMission(p.id, '문서를 정리하라');
     const w = await waitMission(svc, m0.id, ['waiting_user', 'done']);
     expect(w.status).toBe('waiting_user');
-    expect(w.question).toContain('계속 진행할까요');
-    svc.missions.answer(w.id, '', 'continue');
+    expect(w.checkpoint?.reason).toBe('budget');
+    expect(w.question).toContain('검토 준비됨');
+    const pend = svc.pendingDecisions().filter((d) => d.missionId === w.id);
+    expect(pend.map((d) => d.kind)).toEqual(['checkpoint']); // 상한 질문·근거 부족 항목을 따로 띄우지 않는다
+    svc.missions.review(w.id, [], '', 'continue');
     const m = await waitMission(svc, w.id, ['done', 'waiting_user']);
     expect(m.status).toBe('done');
     expect(m.cycle).toBe(2);
+    svc.close();
+  });
+
+  it('검토 지점: 결과·시연 순서·검증 범위·결정·가정을 한곳에 두고, 고른 결정은 미션 결정으로 남아 다시 묻지 않으며 피드백은 다음 사이클 지시가 된다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:review]] 회사 관리 화면을 만들어라');
+    const w = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(w.checkpoint?.reason).toBe('ready');
+    expect(w.checkpoint?.features[0].status).toBe('reviewable');
+    expect(w.checkpoint?.decisions.length).toBe(1);
+    expect(w.checkpoint?.assumptions).toContain('메모는 최대 500자로 가정');
+    // 결정을 고르지 않고 확인만 하면 그 결정은 미결로 남아 다음 검토 지점에 다시 나온다
+    svc.missions.review(w.id, [], '', 'continue');
+    expect(svc.missions.get(w.id).gaps?.some((g) => g.issue === '삭제 기능을 1차에 넣을까요?')).toBe(true);
+    const w2 = await waitMission(svc, w.id, ['waiting_user', 'done', 'failed']);
+    if (w2.status === 'waiting_user' && w2.checkpoint) {
+      svc.missions.review(w2.id, [{ doc: w2.checkpoint.decisions[0].doc, question: w2.checkpoint.decisions[0].question, choice: '2차로 미룬다' }], '목록 맨 위에 검색창을 두세요', 'continue');
+      const m = await waitMission(svc, w2.id, ['done', 'failed']);
+      expect(m.status).toBe('done');
+      expect(m.decisions?.some((d) => d.doc === '검토 지점' && d.choice === '2차로 미룬다')).toBe(true);
+      expect(svc.missions.events(m.id).some((e) => e.kind === 'directive' && e.text.includes('검색창'))).toBe(true);
+    }
+    svc.close();
+  });
+
+  it('되돌리기 쉬운 세부는 묻지 않고 가정하고 진행하며, 사람이 정할 결정은 진행 중 팝업으로 띄우지 않는다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:assume]] [[mock:hang]] 화면을 만들어라');
+    for (let i = 0; i < 400 && svc.missions.get(m0.id).status === 'planning'; i++) await sleep(25);
+    const m = svc.missions.get(m0.id);
+    expect(m.assumptions?.map((a) => a.text)).toContain('저장 버튼은 화면 오른쪽 위에 둔다');
+    expect(m.gaps?.length).toBe(1); // 결정 항목은 남겨 두고
+    expect(svc.pendingDecisions().filter((d) => d.missionId === m.id && d.kind === 'gap')).toEqual([]); // 진행 중에는 띄우지 않는다
+    let runId: string | null = null;
+    for (let i = 0; i < 400 && !runId; i++) { await sleep(25); const x = svc.missions.get(m.id); if (x.currentRunId && svc.store.runAttempts(x.currentRunId).some((t) => t.pid)) runId = x.currentRunId; }
+    await svc.missions.stop(m.id);
+    for (let i = 0; i < 200 && runId && svc.engine.isActive(runId); i++) await sleep(25);
+    await sleep(300);
     svc.close();
   });
 
@@ -98,6 +139,8 @@ describe('오퍼레이터 루프', () => {
     const re = new Service({ dbFile: file, mockScript: MOCK, emit: () => {} });
     re.missions.recoverOnStartup();
     expect(re.missions.get(m0.id).status).toBe('waiting_user');
+    expect(re.missions.get(m0.id).pauseKind).toBe('restart');
+    expect(re.pendingDecisions().filter((d) => d.missionId === m0.id)).toEqual([]); // 사용자 결정이 아니므로 팝업으로 묻지 않는다
     re.close();
   });
 });

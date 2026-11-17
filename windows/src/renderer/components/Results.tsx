@@ -1,7 +1,7 @@
 // 작업별 결과물(미션 화면·사무실 공용): 어떤 미션·회차·작업의 결과인지, 달라진 점, 확인할 것, 실제 검증 여부와 남은 사항, 열기.
 // 회차가 넘어가도 직전 회차 결과물을 골라 볼 수 있다. 피드백은 다음 사이클 계획에 반영된다.
 import { useEffect, useState } from 'react';
-import type { Mission, MissionResult } from '../../shared/types';
+import { RESULT_STATUS_LABEL, type Mission, type MissionResult, type ResultStatus } from '../../shared/types';
 import { useAction, ws } from '../api';
 import { Badge, Banner } from './common';
 import { openDefaultApp, useFileOpener } from './fileOpen';
@@ -65,6 +65,7 @@ export default function ResultsPanel({ mission: m, feedback = true, showMission 
           <li key={i}>
             <div className="results-row-head">
               <strong className="results-title">{r.title}</strong>
+              {r.status && <StatusBadge s={r.status} />}
               {!r.exists && <Badge tone="bad">파일 없음</Badge>}
               {r.kind === 'file' && r.exists && <button className="btn-link small" disabled={act.busy} onClick={() => void act.run(() => openDefaultApp(r.path))}>기본 앱</button>}
             </div>
@@ -94,4 +95,10 @@ export default function ResultsPanel({ mission: m, feedback = true, showMission 
       {opener.viewer}
     </div>
   );
+}
+
+/** 결과 상태: 구현됨 → 실행됨 → 실제 기능 검증됨 → 사용자 검토 가능 → 피드백 반영됨 */
+export function StatusBadge({ s }: { s: ResultStatus }) {
+  const tone = s === 'implemented' ? 'neutral' : s === 'ran' ? 'info' : s === 'verified' ? 'ok' : s === 'reviewable' ? 'ok' : 'ok';
+  return <Badge tone={tone}>{RESULT_STATUS_LABEL[s]}</Badge>;
 }

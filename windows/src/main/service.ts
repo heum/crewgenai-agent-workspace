@@ -149,10 +149,17 @@ export class Service {
       items.push({ key: 'claude', label: 'Claude CLI', ok: st.ready, detail: st.ready ? `준비됨 ${st.version ?? ''}` : `${st.problem ?? ''} ${st.fix ?? ''}`.trim(), tab: 'settings' });
       items.push({ key: 'codex', label: 'Codex CLI', ok: cx.ready, detail: cx.ready ? `준비됨 ${cx.version ?? ''}` : `${cx.problem ?? ''} ${cx.fix ?? ''}`.trim(), tab: 'settings' });
     }
+    // 실행 준비(참고): 큰 작업 전에 미리 확인할 실행 환경. 부족해도 지시는 받되, 무엇이 막힐지 미리 보여 준다
+    const st = this.settings();
+    const shellAgents = agents.filter((a) => a.tools.includes('Bash') || (st.commandLevel && st.commandLevel !== 'low' && (a.tools.includes('Edit') || a.tools.includes('Write'))));
+    let demo = { services: 0, apis: 0, errors: [] as string[] };
+    try { const man = readManifest(p); demo = { services: man.services.length, apis: man.apis.length, errors: man.errors }; } catch { /* 목록 없음 */ }
+    items.push({ key: 'exec', label: '실행 준비 · 명령', ok: true, info: true, detail: `명령 허용 범위 ${st.commandLevel === 'high' ? '높음' : st.commandLevel === 'medium' ? '중간' : '낮음'} · 명령을 실행할 수 있는 직원 ${shellAgents.length}명 · 로컬 포트 열기 ${st.testLocalSockets ? '허용' : '꺼짐(서버 시험·시연 불가)'}`, tab: 'settings' });
+    items.push({ key: 'demo', label: '실행 준비 · 시연 환경', ok: true, info: true, detail: demo.services ? `시연 서비스 ${demo.services}개 · API 예시 ${demo.apis}개${demo.errors.length ? ` · 목록 오류 ${demo.errors.length}건` : ''}` : '시연 목록이 아직 없습니다. 첫 큰 기능을 만들 때 직원이 시연 환경을 함께 준비합니다.', tab: null });
     const b = this.missions.blocking(projectId);
     const activeMission = b ? { id: b.id, projectId: b.projectId, projectName: this.store.getProject(b.projectId).plan.name, status: b.status, sameProject: b.projectId === projectId } : null;
     if (b) items.push({ key: 'single', label: '작동 중인 미션 없음', ok: false, detail: b.projectId === projectId ? '이 프로젝트에 열려 있는 미션이 있습니다. 그 미션에 추가 지시하거나 종료하세요.' : `다른 프로젝트(${activeMission!.projectName})에서 미션이 작동 중입니다. 미션은 한 번에 하나만 작동합니다.`, tab: null });
-    return { ready: items.every((i) => i.ok), items, activeMission };
+    return { ready: items.every((i) => i.ok || i.info), items, activeMission };
   }
 
   /** 필수 항목이 하나라도 빠지면 지시를 받지 않는다(화면 우회 불가). */
@@ -358,7 +365,13 @@ export class Service {
         }
         if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정(근거 부족 항목)은 보여 준다
         // 미션이 기다리는 질문은 선택지가 없어도 보여 준다(직접 적어 답한다)
-        if (m.status === 'waiting_user' && m.question && !(m.gaps?.length && !(m.questionOptions?.length))) {
+        // 검토 지점: 결과·시연·결정을 한곳(미션 화면 검토 카드)에서 보도록 팝업은 한 건으로 묶는다
+        if (m.status === 'waiting_user' && m.checkpoint) {
+          const c = m.checkpoint;
+          out.push({ ...base, key: `${m.id}|cp|${c.cycle}|${c.at}`, kind: 'checkpoint', task: `검토 지점 · 사이클 ${c.cycle}`, question: c.title, explain: `${c.features.length}개 기능 결과와 시연이 준비됐습니다.${c.decisions.length ? ` 정할 것 ${c.decisions.length}건.` : ''}${c.assumptions.length ? ` 가정하고 진행한 세부 ${c.assumptions.length}건.` : ''} 미션 화면의 검토 카드에서 시연을 열어 보고 피드백·결정을 한 번에 보내세요.`, doc: '', issue: '', choices: [], waiting: true });
+        }
+        // 앱 재시작으로 잠시 멈춘 것은 사용자 결정이 아니므로 팝업으로 띄우지 않는다(미션 화면 알림)
+        if (m.status === 'waiting_user' && m.question && !m.checkpoint && m.pauseKind !== 'restart' && !(m.gaps?.length && !(m.questionOptions?.length))) {
           out.push({ ...base, key: `${m.id}|q|${m.cycle}|${m.question.slice(0, 200)}`, kind: 'question', task: `오퍼레이터 질문 · 사이클 ${m.cycle}`, question: m.question, explain: '', doc: '', issue: '', choices: asChoices(m.questionChoices, m.questionOptions), waiting: true });
         }
         // 권한 때문에 보류한 업무: 허용하면 그 직원에게만 허용하고 다시 시도한다(허용 안 하면 보류 유지)
@@ -369,6 +382,8 @@ export class Service {
         }
         for (const g of m.gaps ?? []) {
           if (!g.options?.length) continue;
+          // 사람이 정할 결정은 검토 지점에 모아 보여 준다. 진행 중에는 그 결정 없이는 아무것도 못 할 때만 바로 묻는다.
+          if (m.checkpoint || m.pauseKind === 'restart' || (['planning', 'running', 'evaluating'].includes(m.status) && !g.blocking)) continue;
           out.push({ ...base, key: `${m.id}|g|${g.doc}|${g.issue}`, kind: 'gap', task: g.doc || '문서 미지정', question: g.issue, explain: g.explain ?? g.need ?? '', doc: g.doc, issue: g.issue, choices: asChoices(g.choices, g.options), waiting: m.status === 'waiting_user' });
         }
       }

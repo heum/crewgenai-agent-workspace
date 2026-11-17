@@ -435,6 +435,8 @@ export interface WorkspaceApi {
   missionDetail(missionId: ID): Promise<MissionDetail>;
   /** keepPending: 질문에만 답하고 보류한 업무·근거 부족 항목은 그대로 둔다(선택지 버튼) */
   answerMission(missionId: ID, text: string, action: 'continue' | 'stop', keepPending?: boolean): Promise<Mission>;
+  /** 검토 지점 답변: 고른 결정과 묶은 피드백을 한 번에 보내고 이어서 진행(또는 종료) */
+  reviewMission(missionId: ID, picks: { doc: string; question: string; choice: string }[], feedback: string, action: 'continue' | 'stop'): Promise<Mission>;
   /** 진행 중인 미션에 추가 지시: next = 다음 사이클 계획에 반영, now = 진행 중인 작업을 멈추고 바로 다시 계획 */
   addDirective(missionId: ID, text: string, mode: 'next' | 'now'): Promise<Mission>;
   listPromptTemplates(): Promise<PromptTemplate[]>;
@@ -447,7 +449,7 @@ export interface WorkspaceApi {
   uploadProjectDoc(projectId: ID, docId: string): Promise<ProjectDoc[] | null>;
   stopMission(missionId: ID): Promise<Mission>;
   /** 보류한 업무를 사용자가 해결함: 다음 계획부터 다시 시도할 수 있게 보류를 푼다 */
-  retryParked(missionId: ID): Promise<Mission>;
+  retryParked(missionId: ID, sigs?: string[]): Promise<Mission>;
   /** 확인 필요 항목에 선택한 결정을 반영한다. resume이면(확인 대기 중일 때) 바로 이어서 진행 */
   decideMission(missionId: ID, picks: MissionPick[], resume: boolean): Promise<Mission>;
   /** 확인 필요 항목의 근거 위치를 읽기 전용으로 미리 본다(프로젝트 폴더·참고 자료 안의 텍스트 파일만) */
@@ -516,6 +518,22 @@ export interface MissionResult {
   verified?: string; // 실제로 실행해 확인한 것과 결과, 또는 '미검증 — 이유'
   remaining?: string; // 남은 사항
   demo?: ResultDemo | null; // 실행 가능한 기능의 시연(없으면 문서·파일 보기)
+  /** 어디까지 됐는지: 구현됨 → 실행됨 → 실제 기능 검증됨 → 사용자 검토 가능 → 사용자 피드백 반영됨 */
+  status?: ResultStatus;
+}
+export type ResultStatus = 'implemented' | 'ran' | 'verified' | 'reviewable' | 'feedback_applied';
+export const RESULT_STATUS_LABEL: Record<ResultStatus, string> = { implemented: '구현됨', ran: '실행됨', verified: '실제 기능 검증됨', reviewable: '사용자 검토 가능', feedback_applied: '피드백 반영됨' };
+/** 검토 지점: 의미 있는 결과가 준비됐을 때 사용자가 한곳에서 보고 판단한다 */
+export interface MissionCheckpoint {
+  cycle: number; at: string;
+  title: string; // 이번에 검토할 큰 기능·흐름
+  features: { name: string; changed: string; status: ResultStatus }[];
+  steps: string; // 사용자가 눌러 볼 순서와 예상 결과
+  verified: string; // 실제로 확인한 범위
+  unverified: string; // 미완성·미검증 부분
+  decisions: { doc: string; question: string; choices: MissionChoice[] }[]; // 사용자 판단이 필요한 핵심(최대 3). doc+question이 원래 항목의 식별자
+  assumptions: string[]; // 문서가 부족해 가정하고 진행한 세부(되돌리기 쉬운 것)
+  reason: 'ready' | 'budget'; // 결과가 준비돼서 / 자동 진행 한도에 닿아서
 }
 /** 결과물의 시연: 시연 목록의 서비스 화면 경로 또는 API 항목으로 바로 연다 */
 export interface ResultDemo { service: string; path: string; api: string; steps: string; expected: string; data: DemoData }
@@ -544,6 +562,14 @@ export interface Mission {
   gaps?: MissionGap[] | null;
   /** 사용자가 확인 필요 항목에 고른 결정(누적) */
   decisions?: MissionDecision[];
+  /** 문서가 부족해 가정하고 진행한 세부(누적, 검토 지점에서 보여 줌) */
+  assumptions?: { cycle: number; doc: string; text: string }[];
+  /** 지금 열려 있는 검토 지점(있으면 미션 화면 맨 위에 검토 카드) */
+  checkpoint?: MissionCheckpoint | null;
+  /** 지난 검토 이후 자동으로 진행한 사이클 수 */
+  sinceReview?: number;
+  /** 멈춘 이유가 사용자 결정이 아닌 경우(앱 재시작 등): 팝업 대신 미션 화면 알림 */
+  pauseKind?: 'restart' | null;
   /** 오퍼레이터의 직원 제안(적용·무시한 것도 기록으로 남김) */
   staffProposals?: StaffProposal[];
   /** 오퍼레이터가 직접 물은 질문이면 배열(선택형이면 선택지, 아니면 빈 배열). 앱이 만든 안내 문구면 null */
@@ -575,6 +601,9 @@ export interface MissionGap {
   /** 선택지 설명(options와 같은 순서) */ choices?: MissionChoice[];
   /** 문서를 읽지 않은 사용자도 알 수 있게 쓴 쉬운 설명(배경·왜 중요한지·고르면 어떻게 되는지) */ explain?: string;
   /** 근거 위치: 프로젝트 폴더 기준 경로(또는 참고 문서 절대 경로)와 줄 번호 */ refs?: MissionRef[];
+  /** decide: 사람이 정해야 하는 제품·정책 결정(검토 지점에 모아 묻는다). assume: 되돌리기 쉬운 세부라 가정하고 진행(검토 때 알림) */ kind?: 'decide' | 'assume';
+  /** assume일 때 무엇으로 가정했는지 */ assumption?: string;
+  /** decide 중 이것 없이는 아무 작업도 진행할 수 없는 경우만 true(즉시 묻는다) */ blocking?: boolean;
 }
 /** 사용자 승인 커밋 요청 한 건 */
 export interface MissionCommitRequest {
@@ -672,7 +701,7 @@ export const MISSION_STAGE_LABEL: Record<MissionStage, string> = {
 };
 
 /** 운영 지시 전 필수 준비 항목. 하나라도 빠지면 지시할 수 없다(서버에서도 같은 기준으로 막는다). */
-export interface ReadinessItem { key: string; label: string; ok: boolean; detail: string; tab: 'plan' | 'agents' | 'settings' | null }
+export interface ReadinessItem { key: string; label: string; ok: boolean; detail: string; tab: 'plan' | 'agents' | 'settings' | null; /** 참고 항목(부족해도 지시는 받음) */ info?: boolean }
 export interface MissionReadiness {
   ready: boolean;
   items: ReadinessItem[];
@@ -731,7 +760,7 @@ export interface PendingDecision {
   key: string;
   projectId: ID; projectName: string;
   missionId: ID; missionTitle: string; cycle: number;
-  kind: 'question' | 'gap' | 'permission' | 'commit';
+  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint';
   task: string; // 어떤 작업·문서의 결정인지
   question: string; // 무엇을 정해야 하는지
   explain: string; // 쉬운 설명(있을 때)
