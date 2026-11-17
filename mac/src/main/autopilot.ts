@@ -230,7 +230,8 @@ export function levelAllows(level: CommandLevel, cmd: string, prefixes: string[]
   const parts = splitCommand(cmd);
   if (!parts) return false;
   const byPrefix = (c: string) => prefixes.some((p) => startsWith(c, p));
-  if (level === 'high') return parts.every((c) => !HIGH_DENY.some((d) => startsWith(unwrap(c), d)));
+  // 높음: 차단 목록 중 사용자가 그 직원에게 직접 허용한 명령(예: curl)은 실행 때(highDenyRules)와 같게 허용으로 본다
+  if (level === 'high') return parts.every((c) => !HIGH_DENY.some((d) => startsWith(unwrap(c), d) && !prefixes.some((a) => startsWith(d, a))));
   if (level === 'medium' && parts.length > 1 && parts.some((c) => startsWith(c, 'cd'))) return false;
   return parts.every((c) => byPrefix(c) || (level === 'medium' && MEDIUM_COMMANDS.some((m) => startsWith(c, m))));
 }

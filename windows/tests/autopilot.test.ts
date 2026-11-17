@@ -150,6 +150,11 @@ describe('자동 처리: 저장소 시험 명령·스킬·문서 저장소', () 
     for (const c of ['rm -rf build', 'python3 x.py', 'curl http://x', 'git push origin dev', 'npx some-pkg', 'git commit -m x']) expect(levelAllows('medium', c)).toBe(false);
     for (const c of ['rm -rf build', 'python3 x.py', 'node a.js', 'sed -i s/a/b/ f']) expect(levelAllows('high', c)).toBe(true);
     for (const c of ['git push origin dev', 'sudo ls', 'open .', 'curl http://x', 'ssh host', 'kill 1', 'osascript -e x', 'security find-generic-password']) expect(levelAllows('high', c)).toBe(false);
+    // 직원에게 직접 허용한 명령은 높음의 차단 목록보다 우선(실행 때 규칙과 같게), 그 명령 전체를 허용한 경우만
+    expect(levelAllows('high', 'curl -s http://127.0.0.1:8083/health', ['curl'])).toBe(true);
+    expect(levelAllows('high', 'kill -TERM 123', ['kill'])).toBe(true);
+    expect(levelAllows('high', 'kill -TERM 123', ['kill -TERM'])).toBe(false); // 'kill' 일부만 허용하면 차단 유지
+    expect(levelAllows('high', 'git push origin dev', ['curl'])).toBe(false);
     expect(levelAllows('low', 'ls')).toBe(false);
     // 묶은 명령은 부분마다 본다
     expect(levelAllows('medium', 'ls -la | head -3')).toBe(true);
