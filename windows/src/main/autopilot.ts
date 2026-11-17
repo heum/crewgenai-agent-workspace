@@ -193,9 +193,10 @@ function unwrap(c: string): string {
   return t.join(' ');
 }
 /** 높음의 CLI 거부 규칙: 이름 그대로, 흔한 경로·감싸는 명령 형태까지(최선 노력. 실제 보호는 OS 격리) */
-export function highDenyRules(): string[] {
+/** allowed: 사용자가 그 직원에게 직접 허용한 명령. 그 명령으로 시작하는 위험 명령은 차단 목록에서 뺀다(사용자 허용이 우선). */
+export function highDenyRules(allowed: string[] = []): string[] {
   const forms = (d: string) => [d, ...['/bin/', '/usr/bin/', '/usr/sbin/', '/sbin/', '/usr/local/bin/', '/opt/homebrew/bin/'].map((p) => p + d), ...['env', 'command', 'exec', 'nohup', 'xargs'].map((w) => `${w} ${d}`)];
-  return HIGH_DENY.flatMap((d) => forms(d).flatMap((f) => [`Bash(${f})`, `Bash(${f} *)`]));
+  return HIGH_DENY.filter((d) => !allowed.some((a) => startsWith(d, a))).flatMap((d) => forms(d).flatMap((f) => [`Bash(${f})`, `Bash(${f} *)`]));
 }
 const startsWith = (cmd: string, prefix: string) => { const p = toks(prefix); const t = toks(cmd); return p.length > 0 && p.every((x, i) => t[i] === x); };
 

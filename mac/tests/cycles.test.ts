@@ -123,3 +123,15 @@ describe('직원 캐릭터', () => {
     svc.close();
   });
 });
+
+describe('사용자가 직접 허용한 명령', () => {
+  it('범위 높음의 차단 목록보다 직원별 허용이 우선한다(그 명령만 차단에서 빠짐)', async () => {
+    const { highDenyRules } = await import('../src/main/autopilot');
+    const all = highDenyRules();
+    const some = highDenyRules(['curl', 'kill -TERM']);
+    expect(all).toContain('Bash(curl *)'); expect(all).toContain('Bash(kill *)');
+    expect(some).not.toContain('Bash(curl *)'); expect(some).not.toContain('Bash(/usr/bin/curl *)');
+    expect(some).toContain('Bash(kill *)'); // 'kill -TERM'은 'kill' 전체를 풀지 않는다
+    expect(some).toContain('Bash(sudo *)');
+  });
+});

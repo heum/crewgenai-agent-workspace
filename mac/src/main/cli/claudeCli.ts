@@ -155,7 +155,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   if (tools.includes('Bash') && spec.commandLevel === 'medium') for (const c of MEDIUM_COMMANDS) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'high') allow.push('Bash');
   const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'].flatMap((r) => absRules(r, spec.cwd));
-  if (tools.includes('Bash') && spec.commandLevel === 'high') deny.push(...highDenyRules());
+  if (tools.includes('Bash') && spec.commandLevel === 'high') deny.push(...highDenyRules(spec.allowedCommands));
   const settings = {
     permissions: { allow, deny, defaultMode: 'dontAsk' },
     disableAllHooks: true, // 스킬·플러그인이 훅으로 권한 통제 밖에서 명령을 실행하지 못하게

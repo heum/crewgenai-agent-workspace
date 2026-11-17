@@ -712,11 +712,12 @@ export interface PendingDecision {
   key: string;
   projectId: ID; projectName: string;
   missionId: ID; missionTitle: string; cycle: number;
-  kind: 'question' | 'gap';
+  kind: 'question' | 'gap' | 'permission';
   task: string; // 어떤 작업·문서의 결정인지
   question: string; // 무엇을 정해야 하는지
   explain: string; // 쉬운 설명(있을 때)
   doc: string; issue: string; // 근거 부족 항목 결정용
   choices: MissionChoice[];
   waiting: boolean; // 미션이 이 결정을 기다리며 멈춰 있는가
+  denial?: MissionDenial; // 권한 보류 항목(허용하면 그 직원 설정에 넣고 다시 시도)
 }

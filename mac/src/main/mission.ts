@@ -132,6 +132,7 @@ export interface MissionDeps {
   learnEnabled?: () => boolean;
   autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
   commandLevel?: () => CommandLevel; // 명령 허용 범위
+  testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
@@ -1166,8 +1167,10 @@ export class MissionRunner {
   /** 계획·판단에 알려 줄 지금 시연 목록(서비스·API·목록 오류) */
   private demoSection(plan: PlanFields): string[] {
     const man = readManifest(plan);
-    if (!man.exists) return ['- 지금 시연 목록 파일은 아직 없다. 실행 가능한 기능을 만드는 작업에서 직원이 만든다.'];
+    const setting = `- 지금 앱 설정(사용자가 정한 것, 다시 묻지 않는다): 명령 허용 범위 ${this.d.commandLevel?.() ?? 'low'}, 로컬 포트 열기(시험·시연 서버 기동) ${this.d.testLocalSockets?.() ? '허용됨' : '꺼짐'}.`;
+    if (!man.exists) return [setting, '- 지금 시연 목록 파일은 아직 없다. 실행 가능한 기능을 만드는 작업에서 직원이 만든다.'];
     return [
+      setting,
       `- 지금 시연 목록: 서비스 ${man.services.map((x) => `${x.id}(${x.kind}${x.port ? `, 포트 ${x.port}` : ''}, ${x.data})`).join(', ') || '없음'} / API ${man.apis.length}개${man.apis.length ? ` (${man.apis.slice(0, 12).map((a) => `${a.service}:${a.id}`).join(', ')})` : ''}`,
       ...(man.errors.length ? [`- 시연 목록 오류(고칠 것): ${man.errors.slice(0, 5).join(' / ')}`] : []),
     ];

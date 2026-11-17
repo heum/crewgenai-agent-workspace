@@ -33,7 +33,7 @@ export function CharacterPicker({ value, who, onApply, onClose }: { value: strin
               <span className="char-id">{c.id}</span>
               {sel === c.id && <span className="char-badge">✓ 선택됨</span>}
               {sel !== c.id && value === c.id && <span className="char-badge char-badge-cur">지금 캐릭터</span>}
-              <CharSprite def={c} size={92} />
+              <CharSprite def={c} size={108} />
               <span className="char-name">{c.name}</span>
             </button>
           ))}

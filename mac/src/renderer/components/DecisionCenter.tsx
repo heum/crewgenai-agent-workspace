@@ -12,12 +12,14 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const [own, setOwn] = useState('');
   const [done, setDone] = useState<string | null>(null);
   const seen = useRef<Set<string>>(new Set()); // 이미 팝업으로 보여 준 결정(닫으면 같은 결정으로 다시 띄우지 않음)
+  const handled = useRef<Set<string>>(new Set()); // 이번에 정한 권한 항목(보류 유지 포함) — 다시 묻지 않음
   const act = useAction();
 
   useEffect(() => {
     let t: ReturnType<typeof setTimeout> | null = null;
     const load = () => {
-      ws().pendingDecisions().then((list) => {
+      ws().pendingDecisions().then((all) => {
+        const list = all.filter((x) => !handled.current.has(x.key));
         setItems(list);
         const fresh = list.filter((d) => !seen.current.has(d.key));
         if (fresh.length) { for (const d of fresh) seen.current.add(d.key); setIdx(Math.max(0, list.findIndex((d) => d.key === fresh[0].key))); setDone(null); setOpen(true); }
@@ -26,7 +28,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     load();
     const off = ws().onLive((e: LiveEvent) => { if (e.type === 'mission') { if (t) clearTimeout(t); t = setTimeout(load, 400); } });
     // 다른 화면(사무실의 '확인 필요' 등)에서 결정 팝업을 연다
-    const openNow = () => { ws().pendingDecisions().then((list) => { for (const d of list) seen.current.add(d.key); setItems(list); setIdx(0); setDone(null); setOpen(true); }).catch(() => {}); };
+    const openNow = () => { ws().pendingDecisions().then((all) => { const list = all.filter((x) => !handled.current.has(x.key)); for (const d of list) seen.current.add(d.key); setItems(list); setIdx(0); setDone(null); setOpen(true); }).catch(() => {}); };
     window.addEventListener('crewgenai:open-decisions', openNow);
     return () => { off(); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); };
   }, []);
@@ -36,14 +38,44 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const rec = useMemo(() => cur?.choices.find((c) => c.recommended) ?? null, [cur]);
 
   // 고른 안의 설명(고르면 달라지는 것)도 함께 넘겨 다음 계획이 사용자가 승인한 내용 그대로 따르게 한다
+  // 권한 보류: 허용이면 그 직원(또는 기획 참고 자료)에만 넣고, 그 미션에 남은 권한 항목이 없으면 다시 시도한다
+  const resolvePermission = async (allow: boolean) => {
+    if (!cur?.denial) return;
+    const d = cur.denial;
+    if (allow && d.kind === 'command' && d.suggestion) {
+      const a = (await ws().listAgents(cur.projectId)).find((x) => x.id === d.agentId);
+      if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
+      const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a;
+      const tools = fields.tools.includes('Bash') ? fields.tools : [...fields.tools, 'Bash' as const];
+      const allowedCommands = fields.allowedCommands.includes(d.suggestion) ? fields.allowedCommands : [...fields.allowedCommands, d.suggestion];
+      await ws().saveAgent(cur.projectId, a.id, { ...fields, tools, allowedCommands });
+    } else if (allow && d.kind === 'path' && d.suggestion) {
+      const pr = (await ws().listProjects()).find((x) => x.id === cur.projectId);
+      if (!pr) throw new Error('프로젝트를 찾을 수 없습니다.');
+      if (!pr.plan.referenceDocs.includes(d.suggestion)) await ws().updatePlan(pr.id, { ...pr.plan, referenceDocs: [...pr.plan.referenceDocs, d.suggestion] });
+    }
+    handled.current.add(cur.key);
+    const left = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !handled.current.has(x.key));
+    if (!left.length) await ws().retryParked(cur.missionId); // 그 미션의 권한 항목을 모두 정했으면 보류를 풀고 다음 계획부터 다시 시도
+  };
   const choose = (label: string, action?: 'stop', effect?: string) => act.run(async () => {
     if (!cur) return;
+    if (cur.kind === 'permission') {
+      const allow = !label.startsWith('허용하지 않');
+      await resolvePermission(allow);
+      const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+      for (const d of list) seen.current.add(d.key);
+      setItems(list); setIdx(0);
+      setDone(allow ? `허용했습니다. ${list.some((x) => x.kind === 'permission' && x.missionId === cur.missionId) ? '남은 권한 항목을 정하면 보류한 업무를 다시 시도합니다.' : '보류한 업무를 다음 계획부터 다시 시도합니다.'}` : '보류를 유지합니다. 나머지 작업은 계속 진행합니다.');
+      if (!list.length) setTimeout(() => setOpen(false), 1800);
+      return;
+    }
     const choice = (effect?.trim() ? `${label.trim()} — ${effect.trim()}` : label.trim()).slice(0, 600);
     if (!choice) throw new Error('고를 내용을 입력하세요.');
     if (action === 'stop') await ws().answerMission(cur.missionId, '', 'stop');
     else if (cur.kind === 'question') await ws().answerMission(cur.missionId, choice, 'continue', true);
     else await ws().decideMission(cur.missionId, [{ doc: cur.doc, issue: cur.issue, choice }], cur.waiting);
-    const list = await ws().pendingDecisions();
+    const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
     for (const d of list) seen.current.add(d.key);
     setItems(list);
     setDone(action === 'stop' ? `'${label.trim()}' — 미션을 종료했습니다.` : `'${label.trim()}'로 정했습니다. ${cur.kind === 'question' || cur.waiting ? '미션이 이 결정으로 이어서 진행합니다.' : '다음 계획부터 이 결정을 따릅니다.'}`);
@@ -88,10 +120,11 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                     </li>
                   ))}
                 </ul>
-                <div className="row gap decision-own">
-                  <input className="input" value={own} placeholder="다른 답을 직접 적기" onChange={(e) => setOwn(e.target.value)} />
+                {cur.choices.length === 0 && <div className="muted small">고를 선택지가 없는 질문입니다. 아래에 답을 적어 보내면 미션이 그 답으로 이어서 진행합니다.</div>}
+                {cur.kind !== 'permission' && <div className="row gap decision-own">
+                  <input className="input" value={own} placeholder={cur.choices.length ? '다른 답을 직접 적기' : '답을 적어 주세요'} onChange={(e) => setOwn(e.target.value)} />
                   <button className="btn" disabled={act.busy || !own.trim()} onClick={() => void choose(own)}>이 답으로 정하기</button>
-                </div>
+                </div>}
                 {act.error && <Banner>{act.error}</Banner>}
               </div>
               <div className="decision-foot">
