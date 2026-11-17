@@ -136,7 +136,15 @@ export class DemoManager {
     if (seen.has(id)) return; seen.add(id);
     for (const n of s.needs) await this.start(projectId, all, n, seen, recheck);
     if (!this.approved(projectId, s)) throw new Error(`'${s.name}' 실행 승인이 필요합니다.`);
-    if (await this.health(s)) return;
+    if (await this.health(s)) {
+      // 이미 응답하는 서버가 직원 임시 복사본에서 띄운 것이면 실제 저장소 코드가 아니므로 끄고 새로 켠다(사용자가 띄운 서버는 그대로)
+      const ours = this.procs.get(this.key(projectId, s.id)); const own = s.port && !(ours && ours.exited === null) ? portOwner(s.port) : null;
+      if (!own || !staleCopyServer(own.cwd) || !s.port) return;
+      const port = s.port;
+      try { process.kill(own.pid, 'SIGTERM'); } catch { /* 이미 끝남 */ }
+      for (let i = 0; i < 20 && portOwner(port); i++) await new Promise((r) => setTimeout(r, 500));
+      if (portOwner(port)) { try { process.kill(own.pid, 'SIGKILL'); } catch { /* 끝남 */ } await new Promise((r) => setTimeout(r, 800)); }
+    }
     const k = this.key(projectId, s.id);
     const cur = this.procs.get(k); if (cur && cur.exited === null) return;
     // 실행 직전에 목록을 다시 읽어 검사한다(기다리는 사이 명령·스크립트가 바뀌었으면 실행하지 않음)
@@ -230,15 +238,11 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
   const out: string[] = [];
   const up = new Set<string>();
   for (const s of man.services) {
-    // 직원 세션이 임시 복사본에서 띄워 둔 서버가 포트를 잡고 있으면 실제 저장소 코드가 아니므로 끄고 다시 켠다(사용자가 띄운 서버는 건드리지 않음)
+    // 직원 세션이 임시 복사본에서 띄워 둔 서버가 포트를 잡고 있으면 실제 저장소 코드가 아니므로 start()가 끄고 다시 켠다(사용자가 띄운 서버는 건드리지 않음)
     if (s.port && mgr.approved(projectId, s) && !(await mgr.state(projectId, s)).ours) {
       const own = portOwner(s.port);
-      if (own && staleCopyServer(own.cwd)) {
-        try { process.kill(own.pid, 'SIGTERM'); } catch { /* 이미 끝남 */ }
-        for (let i = 0; i < 20 && portOwner(s.port); i++) await new Promise((r) => setTimeout(r, 500));
-        if (portOwner(s.port)) { try { process.kill(own.pid, 'SIGKILL'); } catch { /* 끝남 */ } await new Promise((r) => setTimeout(r, 800)); }
-        out.push(`- ${s.name}(${s.id}): 직원 임시 복사본에서 띄운 이전 서버를 끄고 실제 저장소 코드로 다시 켭니다`);
-      } else if (own) out.push(`- ${s.name}(${s.id}): 다른 프로세스가 이미 포트 ${s.port}를 쓰고 있어 그대로 둡니다(최신 코드인지 확인하지 못함)`);
+      if (own && staleCopyServer(own.cwd)) out.push(`- ${s.name}(${s.id}): 직원 임시 복사본에서 띄운 이전 서버를 끄고 실제 저장소 코드로 다시 켭니다`);
+      else if (own) out.push(`- ${s.name}(${s.id}): 다른 프로세스가 이미 포트 ${s.port}를 쓰고 있어 그대로 둡니다(최신 코드인지 확인하지 못함)`);
     }
     if (!mgr.approved(projectId, s)) { out.push(`- ${s.name}(${s.id}): 실행 승인 필요 — 사용자가 시연 열기에서 처음 한 번 승인해야 앱이 켤 수 있음(켜지 않음)`); continue; }
     try { await mgr.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services); up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상`); }
