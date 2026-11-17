@@ -70,6 +70,7 @@ describe('오퍼레이터 루프', () => {
     const pend = svc.pendingDecisions().filter((d) => d.missionId === w.id);
     expect(pend.map((d) => d.kind)).toEqual(['checkpoint']); // 상한 질문·근거 부족 항목을 따로 띄우지 않는다
     svc.missions.review(w.id, [], '', 'continue');
+    expect(svc.missions.events(w.id).some((e) => e.kind === 'answer' && e.text.includes('검토 지점 확인'))).toBe(true); // 피드백 없이 넘겨도 사용자 확인 기록이 남는다
     const m = await waitMission(svc, w.id, ['done', 'waiting_user']);
     expect(m.status).toBe('done');
     expect(m.cycle).toBe(2);

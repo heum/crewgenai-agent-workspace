@@ -415,6 +415,8 @@ export class MissionRunner {
     if (made.length) this.event(m, 'answer', `검토 지점 결정:\n${made.map((d) => `- ${d.issue} → ${d.choice}`).join('\n')}`, { decisions: made });
     const fb = redact(String(feedback ?? '').trim()).slice(0, 4000);
     if (fb) this.event(m, 'directive', `[검토 피드백 · 사이클 ${cp.cycle}] ${fb}`);
+    // 결정·피드백 없이 넘겨도 사용자가 직접 확인했다는 기록을 남긴다(자동 진행과 구분)
+    if (!made.length && !fb) this.event(m, 'answer', action === 'stop' ? `검토 지점 확인(사이클 ${cp.cycle}): 여기서 종료` : `검토 지점 확인(사이클 ${cp.cycle}): 피드백 없이 이어서 진행`);
     const answered = new Set(made.map((d) => gapKey(d)));
     // 고르지 않은 결정은 미결 항목으로 남겨 다음 검토 지점에 다시 보여 준다(침묵·닫기를 승인으로 보지 않음)
     // 같은 내용을 다른 문서 이름으로 다시 묻지 않게: 답한 결정과 같은 대상(따옴표로 인용한 문구가 같음)인 미결 항목도 닫는다
@@ -1004,7 +1006,7 @@ export class MissionRunner {
         const openCheckpoint = (reason: 'ready' | 'budget', extra: { question: string; choices: MissionChoice[] }[] = []) => {
           const cur = this.get(id);
           const raw: RawCheckpoint = { ...(judge.checkpoint ?? {}), decisions: [...extra, ...(judge.checkpoint?.decisions ?? [])] };
-          const cp = buildCheckpoint(raw, m.cycle, cur.results ?? [], cur.gaps ?? [], (cur.assumptions ?? []).filter((a) => a.cycle > (cur.checkpoint?.cycle ?? 0) || !cur.checkpoint).map((a) => a.text), reason, judge.nextFocus || judge.summary.split('\n')[0].slice(0, 120));
+          const cp = buildCheckpoint(raw, m.cycle, cur.results ?? [], cur.gaps ?? [], (cur.assumptions ?? []).filter((a) => a.cycle > (cur.checkpoint?.cycle ?? 0) || !cur.checkpoint).map((a) => a.text), reason, summaryTitle(judge.summary) || judge.nextFocus.slice(0, 120), this.demoChecks.get(id) ?? []);
           this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, checkpoint: cp, question: `검토 준비됨: ${cp.title}`, questionOptions: null, questionChoices: null, sinceReview: 0, idleCycles: 0 });
           this.event(m, 'question', `검토 지점(${reason === 'ready' ? '결과 준비됨' : '자동 진행 한도'}): ${cp.title} — 결정 ${cp.decisions.length}건, 가정 ${cp.assumptions.length}건`, { checkpoint: true });
         };
@@ -1395,7 +1397,13 @@ export function resultStatus(r: { status?: string; verified?: string; demo?: unk
 }
 
 /** 검토 지점 정리: 결정은 최대 3개(미결 '결정' 항목을 합쳐서), 가정은 이번 것과 누적한 것을 함께 */
-export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, results: MissionResult[], openGaps: MissionGap[], assumptions: string[], reason: 'ready' | 'budget', fallbackTitle: string): MissionCheckpoint {
+/** 판단 요약 첫 줄을 검토 지점 제목으로(굵은 '한 줄 요약:' 머리말은 뺀다). 다음 계획이 아니라 이번에 한 일을 제목으로 쓴다. */
+export function summaryTitle(summary: string): string {
+  const line = String(summary ?? '').split('\n').map((l) => l.replace(/\*\*/g, '').replace(/^\s*한\s*줄\s*요약\s*[:：]\s*/, '').trim()).find(Boolean) ?? '';
+  return redact(line).slice(0, 160);
+}
+
+export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, results: MissionResult[], openGaps: MissionGap[], assumptions: string[], reason: 'ready' | 'budget', fallbackTitle: string, demo: string[] = []): MissionCheckpoint {
   const t = (v: unknown, n: number) => redact(String(v ?? '').trim()).slice(0, n);
   // 기능 상태도 실제 확인 기록(검토 지점의 verified)이 없으면 올리지 않는다
   const features = (Array.isArray(raw?.features) ? raw!.features! : []).filter((f) => t(f?.name, 200)).slice(0, 8)
@@ -1406,8 +1414,17 @@ export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, r
   const fromGaps = openGaps.filter((g) => g.kind !== 'assume').map((g) => ({ doc: g.doc, question: g.issue, choices: g.choices?.length ? g.choices : (g.options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' })) }));
   const seen = new Set<string>(); const decisions: MissionCheckpoint['decisions'] = [];
   for (const d of [...fromJudge, ...fromGaps]) { const k = `${d.doc}|${d.question}`; if (seen.has(k) || decisions.some((x) => sameSubject(x.question, d.question))) continue; seen.add(k); decisions.push(d); if (decisions.length >= 3) break; }
+  // 오퍼레이터가 확인 범위를 적지 않았으면(자동 진행 한도 등) 앱이 판단 직전에 직접 확인한 시연 결과로 채운다
+  const demoLines = demo.map((l) => String(l).trim()).filter((l) => l.startsWith('- '));
+  const okLine = (l: string) => {
+    const api = /^- API .*?: (\d{3})(?: \(기대: (.*)\))?$/.exec(l);
+    if (api) return api[2] ? api[2].includes(api[1]) : api[1].startsWith('2'); // 기대 응답이 있으면 그 코드와 같아야 확인된 것
+    return /응답 정상$/.test(l);
+  };
+  const demoOk = demoLines.filter(okLine).map((l) => `${l} (앱이 직접 확인)`);
+  const demoNot = demoLines.filter((l) => !okLine(l));
   const as = [...new Set([...(Array.isArray(raw?.assumptions) ? raw!.assumptions!.map((a) => t(a, 300)) : []), ...assumptions])].filter(Boolean).slice(0, 12);
-  return { cycle, at: now(), title: t(raw?.title, 200) || fallbackTitle, features: feats, steps: t(raw?.steps, 1500), verified: t(raw?.verified, 800), unverified: t(raw?.unverified, 800), decisions, assumptions: as, reason };
+  return { cycle, at: now(), title: t(raw?.title, 200) || fallbackTitle, features: feats, steps: t(raw?.steps, 1500), verified: t(raw?.verified, 800) || t(demoOk.join('\n'), 800), unverified: t(raw?.unverified, 800) || t(demoNot.join('\n'), 800), decisions, assumptions: as, reason };
 }
 
 export function resolveResults(folder: string, raw: unknown): MissionResult[] {
