@@ -2,9 +2,10 @@
 // 앱이 직접 켜고 끄며 상태(실행 중·시작 중·중지됨·준비 필요)를 보여 준다. 사용자는 결과물 카드의 '시연 열기'로 바로 써 본다.
 // 보안: 시연 명령은 격리(샌드박스) 밖에서 이 PC 권한으로 돈다. 그래서 서비스마다 처음 한 번(명령·폴더·환경값이 바뀌면 다시) 사용자 승인을 받는다.
 // 명령은 저장소 안의 실행 파일(링크 아님) 또는 정해진 실행기(npm·node 등)만, 주소는 이 컴퓨터(127.0.0.1)만, 환경값에 비밀값 이름은 받지 않는다.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { DemoApi, DemoData, DemoInfo, DemoResponse, DemoService, DemoState, PlanFields } from '../shared/types';
@@ -228,6 +229,16 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
   const out: string[] = [];
   const up = new Set<string>();
   for (const s of man.services) {
+    // 직원 세션이 임시 복사본에서 띄워 둔 서버가 포트를 잡고 있으면 실제 저장소 코드가 아니므로 끄고 다시 켠다(사용자가 띄운 서버는 건드리지 않음)
+    if (s.port && mgr.approved(projectId, s) && !(await mgr.state(projectId, s)).ours) {
+      const own = portOwner(s.port);
+      if (own && staleCopyServer(own.cwd)) {
+        try { process.kill(own.pid, 'SIGTERM'); } catch { /* 이미 끝남 */ }
+        for (let i = 0; i < 20 && portOwner(s.port); i++) await new Promise((r) => setTimeout(r, 500));
+        if (portOwner(s.port)) { try { process.kill(own.pid, 'SIGKILL'); } catch { /* 끝남 */ } await new Promise((r) => setTimeout(r, 800)); }
+        out.push(`- ${s.name}(${s.id}): 직원 임시 복사본에서 띄운 이전 서버를 끄고 실제 저장소 코드로 다시 켭니다`);
+      } else if (own) out.push(`- ${s.name}(${s.id}): 다른 프로세스가 이미 포트 ${s.port}를 쓰고 있어 그대로 둡니다(최신 코드인지 확인하지 못함)`);
+    }
     if (!mgr.approved(projectId, s)) { out.push(`- ${s.name}(${s.id}): 실행 승인 필요 — 사용자가 시연 열기에서 처음 한 번 승인해야 앱이 켤 수 있음(켜지 않음)`); continue; }
     try { await mgr.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services); up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상`); }
     catch (e) { out.push(`- ${s.name}(${s.id}): 켜지 못함 — ${redact((e as Error).message).slice(0, 200)}`); }
@@ -243,4 +254,23 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
     } catch (e) { out.push(`- API ${a.id} ${a.method} ${a.path}: 요청 실패 — ${redact((e as Error).message).slice(0, 160)}`); }
   }
   return out.slice(0, 40);
+}
+
+/** 포트를 듣는 프로세스와 그 작업 폴더(맥·리눅스). 못 찾으면 null */
+export function portOwner(port: number): { pid: number; cwd: string } | null {
+  if (process.platform === 'win32') return null;
+  try {
+    const pid = Number(execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8', timeout: 3000 }).split('\n')[0]);
+    if (!pid) return null;
+    const out = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000 });
+    return { pid, cwd: out.split('\n').find((l) => l.startsWith('n'))?.slice(1) ?? '' };
+  } catch { return null; }
+}
+/** 임시 폴더(앱 격리 복사본·직원 세션 임시 폴더)에서 실행 중인 서버인가: 실제 저장소 코드가 아니다 */
+export function staleCopyServer(cwd: string): boolean {
+  if (!cwd) return false;
+  const real = (x: string) => { try { return realpathSync(x); } catch { return resolve(x); } };
+  const cs = [real(cwd), resolve(cwd)];
+  const roots = [real(tmpdir()), resolve(tmpdir()), real('/tmp'), '/tmp', '/private/tmp'];
+  return cs.some((c) => roots.some((r) => c === r || c.startsWith(r + sep)));
 }

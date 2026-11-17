@@ -418,7 +418,8 @@ export class MissionRunner {
     if (fb) this.event(m, 'directive', `[검토 피드백 · 사이클 ${cp.cycle}] ${fb}`);
     const answered = new Set(made.map((d) => gapKey(d)));
     // 고르지 않은 결정은 미결 항목으로 남겨 다음 검토 지점에 다시 보여 준다(침묵·닫기를 승인으로 보지 않음)
-    const leftGaps = (m.gaps ?? []).filter((g) => !answered.has(gapKey(g)));
+    // 같은 내용을 다른 문서 이름으로 다시 묻지 않게: 답한 결정과 같은 대상(따옴표로 인용한 문구가 같음)인 미결 항목도 닫는다
+    const leftGaps = (m.gaps ?? []).filter((g) => !answered.has(gapKey(g)) && !made.some((d) => sameSubject(d.issue, g.issue)));
     for (const d of cp.decisions) {
       const g: MissionGap = { doc: d.doc, issue: d.question, need: '', kind: 'decide', ...(d.choices.length ? { choices: d.choices, options: d.choices.map((c) => c.label) } : {}) };
       if (!answered.has(gapKey(g)) && !leftGaps.some((x) => gapKey(x) === gapKey(g))) leftGaps.push(g);
@@ -1380,6 +1381,13 @@ function cleanDemo(d: RawResult['demo']): ResultDemo | null {
 const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i;
 
 /** 판단이 적은 결과물을 확인한다: 화면 주소는 이 컴퓨터(localhost)만, 파일은 프로젝트 폴더 안(링크를 푼 실제 경로 기준)만. */
+/** 두 질문이 같은 대상을 묻는가: 따옴표·백틱으로 인용한 문구(6자 이상)가 겹치면 같은 대상으로 본다 */
+export function sameSubject(a: string, b: string): boolean {
+  const quoted = (t: string) => new Set([...t.matchAll(/['‘“"`]([^'’”"`]{6,120})['’”"`]/g)].map((x) => x[1].replace(/\s+/g, ' ').trim()));
+  const qa = quoted(a); for (const q of quoted(b)) if (qa.has(q)) return true;
+  return false;
+}
+
 /** 결과 상태 정리: 실제로 확인하지 않은 결과를 '검증됨·검토 가능'으로 올리지 않는다 */
 export function resultStatus(r: { status?: string; verified?: string; demo?: unknown }): ResultStatus {
   const st = (RESULT_STATUSES as readonly string[]).includes(String(r.status)) ? (r.status as ResultStatus) : 'implemented';
@@ -1400,7 +1408,7 @@ export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, r
     .map((d) => ({ doc: '검토 지점', question: t(d.question, 400), choices: cleanChoices(d.choices) }));
   const fromGaps = openGaps.filter((g) => g.kind !== 'assume').map((g) => ({ doc: g.doc, question: g.issue, choices: g.choices?.length ? g.choices : (g.options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' })) }));
   const seen = new Set<string>(); const decisions: MissionCheckpoint['decisions'] = [];
-  for (const d of [...fromJudge, ...fromGaps]) { const k = `${d.doc}|${d.question}`; if (seen.has(k)) continue; seen.add(k); decisions.push(d); if (decisions.length >= 3) break; }
+  for (const d of [...fromJudge, ...fromGaps]) { const k = `${d.doc}|${d.question}`; if (seen.has(k) || decisions.some((x) => sameSubject(x.question, d.question))) continue; seen.add(k); decisions.push(d); if (decisions.length >= 3) break; }
   const as = [...new Set([...(Array.isArray(raw?.assumptions) ? raw!.assumptions!.map((a) => t(a, 300)) : []), ...assumptions])].filter(Boolean).slice(0, 12);
   return { cycle, at: now(), title: t(raw?.title, 200) || fallbackTitle, features: feats, steps: t(raw?.steps, 1500), verified: t(raw?.verified, 800), unverified: t(raw?.unverified, 800), decisions, assumptions: as, reason };
 }
