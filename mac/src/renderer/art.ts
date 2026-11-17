@@ -281,21 +281,6 @@ export function floorLamp(): Rect[] {
     g.light('shade', 0.82, 1.08); g.outline(INK); return g.toRects();
   });
 }
-/** 리뷰 탁자(길이 w): 상판·앞판·다리 */
-export function reviewTable(w: number): Rect[] {
-  return memo(`rtable|${w}`, () => {
-    const g = new Grid(w + 2, 26);
-    g.rrect(1, 1, w, 9, 2, W.top, 'top'); g.hline(2, 1, w - 2, W.hi);
-    for (let x = 10; x < w - 10; x += 29) g.hline(x, 4 + (Math.floor(x / 29) % 3), 10, W.grain);
-    g.rect(2, 10, w - 2, 8, W.front, 'front'); g.rect(4, 18, 4, 7, W.leg); g.rect(w - 7, 18, 4, 7, W.leg);
-    g.light('top', 0.9, 1.05); g.light('front', 0.82, 1.06);
-    g.outline(INK); return g.toRects();
-  });
-}
-/** 리뷰룸 의자 등받이 */
-export function smallChair(): Rect[] {
-  return memo('schair', () => { const g = new Grid(30, 28); const c = '#3b4a7a'; g.rrect(2, 1, 26, 25, 5, c, 'chair'); g.rrect(5, 4, 20, 17, 4, shade(c, 1.15), 'cush'); g.light('chair', 0.75, 1.12); g.light('cush', 0.85, 1.1); g.outline(INK); return g.toRects(); });
-}
 /** 화이트보드(포스트잇·글줄) */
 export function whiteboard(w = 60): Rect[] {
   return memo(`wb|${w}`, () => {
@@ -333,3 +318,76 @@ export function charHead(c: CharDef): Rect[] {
   cache.set(k, out); return out;
 }
 export const HEAD_W = 30; export const HEAD_H = 23;
+
+// ───── 옆모습(리뷰룸에서 마주 보고 앉기) ─────
+/** 좌우 뒤집기(그림 너비 w 기준) */
+export function flipX(r: Rect[], w: number): Rect[] { return r.map(([x, y, rw, rh, c]) => [w - x - rw, y, rw, rh, c] as Rect); }
+export const SIDE_W = 36; export const SIDE_H = 48;
+/** 의자에 앉아 오른쪽을 보는 옆모습. 'review'는 검토 자료를 들고, 'sit'은 두 손을 탁자에 둔다. 왼쪽 자리는 그대로, 오른쪽 자리는 flipX로 뒤집어 쓴다. */
+export function charSide(c: CharDef, pose: 'sit' | 'review'): Rect[] {
+  const key = `side|${c.id}|${pose}`; const hit = cache.get(key); if (hit) return hit;
+  const g = new Grid(SIDE_W, SIDE_H);
+  const skin = c.skin; const hair = c.hair; const top = c.top; const hs = c.hairStyle;
+  // 의자(등받이·방석·다리)
+  g.rrect(2, 15, 6, 23, 2, '#3b4a7a', 'chair'); g.rrect(4, 33, 20, 5, 2, '#46578c', 'seat'); g.rect(12, 38, 3, 8, '#2a3150'); g.rect(7, 45, 13, 2, '#2a3150');
+  // 몸 뒤 머리
+  if (hs === 'long' || hs === 'wavy' || hs === 'braid') g.rrect(7, 8, 8, hs === 'braid' ? 20 : 17, 3, hair, 'hair');
+  if (hs === 'ponytail') { g.ellipse(4, 6, 6, 6, hair, 'hair'); g.rrect(4, 10, 5, 12, 2, hair, 'hair'); }
+  if (hs === 'bun' || hs === 'curlbun') g.ellipse(6, 1, 8, 7, hair, 'hair');
+  if (hs === 'afro') g.ellipse(5, 0, 24, 21, hair, 'hair');
+  // 다리(허벅지는 앞으로, 정강이는 아래로)·신발
+  g.rect(11, 32, 15, 6, c.pants, 'pants'); g.rect(21, 36, 6, 9, c.pants, 'pants'); g.rrect(21, 43, 9, 4, 1, '#3a2a1e', 'shoe');
+  // 몸통·옷 특징
+  g.rrect(9, 20, 14, 16, 4, top, 'top');
+  if (c.topStyle === 'jacket' || c.topStyle === 'cardigan') { g.rect(20, 21, 3, 13, c.inner ?? '#f4f1ea', 'inner'); g.vline(19, 21, 13, shade(top, 0.65)); }
+  if (c.topStyle === 'hoodie') g.rrect(9, 18, 8, 5, 2, shade(top, 0.82), 'hood');
+  if (c.topStyle === 'vest') { g.rect(19, 21, 4, 13, c.inner ?? '#f4f1ea', 'inner'); }
+  if (c.topStyle === 'shirt' || c.topStyle === 'blouse') g.rect(18, 20, 4, 2, shade(top, 1.2), 'collar');
+  // 목·머리
+  g.rect(15, 17, 6, 5, shade(skin, 0.86), 'neck');
+  g.ellipse(9, 3, 16, 17, skin, 'skin');
+  g.rect(24, 11, 2, 3, skin, 'skin'); // 코
+  // 머리카락(앞머리는 이마 쪽, 뒤쪽은 뒤통수를 덮는다)
+  if (hs !== 'bald' && hs !== 'afro') { g.ellipse(8, 1, 17, 10, hair, 'hair'); g.rrect(8, 5, 7, hs === 'long' || hs === 'wavy' || hs === 'bob' ? 15 : 10, 3, hair, 'hair'); g.rect(17, 5, 7, 3, hair, 'hair'); }
+  if (hs === 'afro') { g.rect(8, 5, 8, 10, hair, 'hair'); g.rect(16, 4, 8, 3, hair, 'hair'); }
+  if (hs === 'bald') { g.rect(9, 9, 4, 5, hair, 'hair'); }
+  if (hs === 'spiky') for (const x of [10, 13, 16, 19]) g.rect(x, 0, 2, 3, hair, 'hair');
+  if (hs === 'messy' || hs === 'curly') for (const x of [11, 15, 19]) g.ellipse(x, 0, 4, 4, hair, 'hair');
+  if (hs === 'sidepart') g.rect(18, 7, 6, 1, hair, 'hair');
+  if (hs === 'ponytail') g.ellipse(5, 5, 4, 4, shade(hair, 0.6), 'tie');
+  // 귀·눈·눈썹·입·볼
+  g.ellipse(13, 10, 4, 5, shade(skin, 0.92), 'ear');
+  g.rect(19, 10, 3, 3, '#ffffff'); g.rect(20, 11, 2, 2, '#2b2333'); g.rect(19, 10, 3, 1, shade(skin, 0.75));
+  g.rect(19, 8, 4, 1, shade(hair === skin ? '#5a4632' : hair, 0.8));
+  g.rect(21, 16, 3, 1, mix(shade(skin, 0.6), '#b14b52', 0.5)); g.set(19, 14, mix(skin, '#f08a8a', 0.35));
+  for (const e of c.extras) {
+    if (e === 'glassesRound' || e === 'glassesSquare') { const fc = e === 'glassesSquare' ? '#1d1d26' : '#6b4f33'; g.rect(18, 9, 6, 1, fc); g.rect(18, 13, 6, 1, fc); g.rect(23, 9, 1, 5, fc); g.rect(14, 10, 4, 1, fc); }
+    if (e === 'headset') { g.rect(10, 1, 12, 2, '#2b2f38'); g.ellipse(12, 8, 6, 8, '#1fb0a3', 'cup'); g.rect(17, 14, 5, 1, '#2b2f38'); }
+    if (e === 'beard') { g.ellipse(15, 12, 11, 9, hair, 'hair'); g.rect(21, 16, 3, 1, mix(shade(skin, 0.6), '#b14b52', 0.5)); }
+    if (e === 'mustache') g.rect(20, 15, 5, 1, hair, 'hair');
+    if (e === 'clip') g.rect(17, 5, 3, 1, '#f2c94c');
+  }
+  // 팔: 앞으로 뻗어 탁자 위에(검토하는 쪽은 자료를 든다)
+  g.rrect(13, 22, 6, 9, 2, shade(top, 0.92), 'arm'); g.rrect(15, 27, 13, 5, 2, shade(top, 0.92), 'arm');
+  if (pose === 'review') { g.rrect(26, 17, 9, 12, 1, '#fbf8f0', 'paper'); for (let y = 20; y < 27; y += 2) g.hline(28, y, y % 4 ? 4 : 6, '#a3a9b4'); g.set(31, 24, '#c2413b'); g.ellipse(26, 25, 5, 5, skin, 'hand'); }
+  else g.ellipse(27, 27, 5, 5, skin, 'hand');
+  g.light('top', 0.78, 1.1); g.light('arm', 0.8, 1.08); g.light('hair', 0.72, 1.18); g.light('skin', 0.9, 1.04); g.light('pants', 0.78, 1.08);
+  g.light('shoe', 0.7, 1.2); g.light('chair', 0.75, 1.12); g.light('seat', 0.8, 1.1); g.light('paper', 0.9, 1); g.light('hand', 0.88, 1.04);
+  g.seam('hair', 'skin', shade(hair, 0.62));
+  g.outline(INK);
+  const r = g.toRects(); cache.set(key, r); return r;
+}
+/** 마주 앉는 작은 탁자(옆에서 본 모습): 상판·앞판·다리, 폭 w */
+export function pairTable(w: number): Rect[] {
+  return memo(`ptable|${w}`, () => {
+    const g = new Grid(w + 2, 22);
+    g.rrect(1, 1, w, 6, 2, W.top, 'top'); g.hline(2, 1, w - 2, W.hi);
+    g.rect(2, 7, w - 2, 4, W.front, 'front'); g.rect(Math.floor(w / 2) - 1, 11, 4, 9, W.leg); g.rect(Math.floor(w / 2) - 6, 19, 14, 2, W.leg);
+    g.light('top', 0.9, 1.05); g.light('front', 0.82, 1.06);
+    g.outline(INK); return g.toRects();
+  });
+}
+/** 빈 의자(옆모습) */
+export function emptySide(): Rect[] {
+  return memo('emptyside', () => { const g = new Grid(SIDE_W, SIDE_H); g.rrect(2, 15, 6, 23, 2, '#3b4a7a', 'chair'); g.rrect(4, 33, 20, 5, 2, '#46578c', 'seat'); g.rect(12, 38, 3, 8, '#2a3150'); g.rect(7, 45, 13, 2, '#2a3150'); g.light('chair', 0.75, 1.12); g.light('seat', 0.8, 1.1); g.outline(INK); return g.toRects(); });
+}

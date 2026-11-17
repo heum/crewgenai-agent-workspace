@@ -188,9 +188,14 @@ export default function OfficeTab({ project }: { project: Project }) {
                   const d = layout.desks[i]; const at = placed.find((x) => x.p.key === p.key);
                   return <Tag key={`t${p.key}`} p={p} left={(d.x + 48) * scale} top={(d.y + 43) * scale} max={92 * scale} on={sel === p.key} dim={at?.zone !== 'desk'} onPick={() => { setSel(p.key); setTab('staff'); }} />;
                 })}
-                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => (
-                  <Tag key={`r${p.key}`} p={p} left={(x + w / 2) * scale} top={(zone === 'review' ? layout.tableY + 11 : y + Math.min(h, 40) + 2) * scale} max={40 * scale} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />
-                ))}
+                {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone }) => {
+                  // 리뷰룸: 마주 앉은 두 사람 바깥쪽(왼쪽 사람은 왼쪽, 오른쪽 사람은 오른쪽)에 붙여 탁자를 가리지 않는다
+                  const isLeft = zone === 'review' && p.pose === 'reviewed';
+                  const align = zone === 'review' ? (isLeft ? 'end' : 'start') : 'center';
+                  const left = zone === 'review' ? (isLeft ? x + 1 : x + w - 1) * scale : (x + w / 2) * scale;
+                  const top = zone === 'review' ? (y + 4) * scale - 22 : (y + Math.min(h, 40) + 2) * scale;
+                  return <Tag key={`r${p.key}`} p={p} left={left} top={top} max={40 * scale} align={align} on={sel === p.key} onPick={() => { setSel(p.key); setTab('staff'); }} small />;
+                })}
                 {overflow.review > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: (layout.review.x + 50) * scale, top: (layout.review.y + 4) * scale }}>리뷰 +{overflow.review}명</span>}
                 {overflow.lounge > 0 && <span className="ofc-zone ofc-zone-sm" style={{ left: (layout.lounge.x + 70) * scale, top: (layout.lounge.y + 4) * scale }}>휴식 +{overflow.lounge}명(목록 참고)</span>}
                 {placed.map(({ p, x, y, w, h }) => (

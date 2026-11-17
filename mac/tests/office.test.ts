@@ -52,6 +52,18 @@ describe('사무실 그림 출력', () => {
     for (const p of placed) { expect(Number.isInteger(p.x)).toBe(true); expect(Number.isInteger(p.y)).toBe(true); }
   });
 
+  it('리뷰룸: 리뷰 받는 사람(왼쪽)과 검토하는 사람(오른쪽)이 같은 줄에서 탁자를 사이에 두고 마주 앉는다', () => {
+    const ps = people(['reviewed', 'review', 'rest']);
+    const { layout } = pickScale(1226, 740, 1, 3, 0);
+    const { placed } = placePeople(ps, ps, layout);
+    const a = placed.find((p) => p.p.key === 'k0')!; const b = placed.find((p) => p.p.key === 'k1')!;
+    expect(a.zone).toBe('review'); expect(b.zone).toBe('review');
+    expect(a.y).toBe(b.y);
+    const row = layout.reviewRows[0];
+    expect(a.x).toBeLessThan(row.tableX); expect(b.x + b.w).toBeGreaterThan(row.tableX + layout.tableW);
+    for (const r of layout.reviewRows) { expect(r.right.x).toBeGreaterThan(r.left.x); expect(r.right.x + 36).toBeLessThanOrEqual(layout.review.x + layout.review.w); }
+  });
+
   it('그림 자산 좌표는 모두 정수(가장자리가 고르게)', () => {
     for (const r of [...char2(CHARACTERS[0], 'type'), ...deskFront('code', 'clipboard', true)]) for (const v of r.slice(0, 4)) expect(Number.isInteger(v)).toBe(true);
   });

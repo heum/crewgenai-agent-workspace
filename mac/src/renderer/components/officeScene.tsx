@@ -8,7 +8,7 @@ import type { Agent, MissionDenial } from '../../shared/types';
 import { type CharDef } from '../characters';
 import {
   BOARD_SLOT, bookshelf2, chairBack, char2, CHAR2_H, CHAR2_W, charHead, coffeeBar, coffeeTable, corkBoard, deskFront, floorLamp, plant2,
-  reviewTable, SEAT_X, SEAT_Y, smallChair, SOFA_SEAT, sofaBack, sofaFront, STATION_H, STATION_W, wallClock, whiteboard, windowFrame, type ArtPose, type DeskProp, type Screen,
+  charSide, emptySide, flipX, pairTable, SEAT_X, SEAT_Y, SIDE_H, SIDE_W, SOFA_SEAT, sofaBack, sofaFront, STATION_H, STATION_W, wallClock, whiteboard, windowFrame, type ArtPose, type DeskProp, type Screen,
 } from '../art';
 import { toPaths, type Rect } from '../pixel';
 import type { Mood } from './officeTime';
@@ -40,7 +40,7 @@ export type Box = { x: number; y: number; w: number; h: number };
 export type Seat = { x: number; y: number; pose: ArtPose; kind: 'sofa' | 'arm' | 'stand' };
 export type Layout = {
   W: number; H: number; fits: boolean; cols: number; rows: number; desks: { x: number; y: number }[];
-  band: number; tableY: number; lounge: Box; review: Box; loungeSeats: Seat[]; reviewSeats: { left: { x: number; y: number }[]; right: { x: number; y: number }[] }; tableW: number;
+  band: number; tableY: number; lounge: Box; review: Box; loungeSeats: Seat[]; reviewSeats: { left: { x: number; y: number }[]; right: { x: number; y: number }[] }; reviewRows: { y: number; tableX: number; tableY: number; left: { x: number; y: number }; right: { x: number; y: number } }[]; tableW: number;
   sofas: { x: number; y: number; seats: number }[]; arms: { x: number; y: number }[]; bar: { x: number; y: number } | null; wall: WallItem[];
 };
 export type WallItem = { kind: 'window' | 'shelf' | 'board' | 'clock' | 'cork' | 'plant'; x: number; w: number };
@@ -88,14 +88,17 @@ export function layoutFor(staff: number, Wavail: number, Havail: number, offCoun
   }
   const bar = hasBar ? { x: lounge.x + lounge.w - barW - 6, y: sy - 20 } : null;
   if (bar) for (const dx of [6, 36]) seats.push({ x: bar.x + dx, y: bar.y + 42, pose: 'stand', kind: 'stand' });
-  // 리뷰룸: 긴 탁자 뒤에 앉는다. 왼쪽 절반은 리뷰 받는 직원, 오른쪽 절반은 검토하는 쪽
-  const tableW = Math.min(review.w - 28, 6 * 32 + 20);
-  const tx = review.x + Math.floor((review.w - tableW) / 2);
-  const ty = review.y + 56 + Math.min(140, Math.floor(bandExtra * 0.4));
-  const per = Math.max(1, Math.min(3, Math.floor((tableW - 16) / 2 / 32)));
-  const left = Array.from({ length: per }, (_, i) => ({ x: tx + 4 + i * 32, y: ty - 32 }));
-  const right = Array.from({ length: per }, (_, i) => ({ x: tx + tableW - 4 - 34 - i * 32, y: ty - 32 }));
-  return { W, H, fits: need <= Math.floor(Havail), cols, rows, desks, band, tableY: ty, lounge, review, loungeSeats: seats, reviewSeats: { left, right }, tableW, sofas, arms, bar, wall: wallItems(W, offCount) };
+  // 리뷰룸: 리뷰 받는 직원(왼쪽)과 검토하는 쪽(오른쪽)이 작은 탁자를 사이에 두고 마주 앉는다. 한 줄에 한 쌍, 최대 3줄.
+  const tableW = Math.max(28, Math.min(60, review.w - 2 * SIDE_W - 70));
+  const per = Math.max(1, Math.min(3, Math.floor((review.h - 22 - SIDE_H) / 34) + 1));
+  const PITCH = per > 1 ? Math.min(52, Math.floor((review.h - 22 - SIDE_H) / (per - 1))) : 34; // 자리가 넉넉하면 줄 사이를 띄운다
+  const blockH = (per - 1) * PITCH + SIDE_H;
+  const y0 = review.y + 18 + Math.max(0, Math.floor((review.h - 22 - blockH) / 2));
+  const rx0 = review.x + Math.floor((review.w - (24 + tableW - 12 + SIDE_W)) / 2);
+  const reviewRows = Array.from({ length: per }, (_, i) => { const y = y0 + i * PITCH; const tableX = rx0 + 24; return { y, tableX, tableY: y + 26, left: { x: rx0, y }, right: { x: tableX + tableW - 12, y } }; });
+  const left = reviewRows.map((r) => r.left); const right = reviewRows.map((r) => r.right);
+  const ty = reviewRows[0].tableY;
+  return { W, H, fits: need <= Math.floor(Havail), cols, rows, desks, band, tableY: ty, lounge, review, loungeSeats: seats, reviewSeats: { left, right }, reviewRows, tableW, sofas, arms, bar, wall: wallItems(W, offCount) };
 }
 
 /** 그림 배율: 그림 한 칸이 화면의 실제 화소 정수 개(scale×dpr이 정수)가 되는 값 중 장면이 무대에 다 들어가는 가장 큰 값(최대 3배).
@@ -140,8 +143,8 @@ export function placePeople(people: Person[], staff: Person[], L: Layout): { pla
   const left = people.filter((p) => p.pose === 'reviewed');
   const right = people.filter((p) => p.pose === 'review');
   const per = L.reviewSeats.left.length;
-  left.slice(0, per).forEach((p, i) => out.push({ p, zone: 'review', ...L.reviewSeats.left[i], w: CHAR2_W, h: 40, pose: 'sit' }));
-  right.slice(0, per).forEach((p, i) => out.push({ p, zone: 'review', ...L.reviewSeats.right[i], w: CHAR2_W, h: 40, pose: 'review' }));
+  left.slice(0, per).forEach((p, i) => out.push({ p, zone: 'review', ...L.reviewSeats.left[i], w: SIDE_W, h: SIDE_H - 2, pose: 'sit' }));
+  right.slice(0, per).forEach((p, i) => out.push({ p, zone: 'review', ...L.reviewSeats.right[i], w: SIDE_W, h: SIDE_H - 2, pose: 'review' }));
   const rest = people.filter((p) => p.pose === 'rest');
   const seats = L.loungeSeats;
   rest.slice(0, seats.length).forEach((p, i) => { const s = seats[i]; out.push({ p, zone: 'lounge', x: s.x, y: s.y, w: CHAR2_W, h: s.pose === 'stand' ? CHAR2_H : 40, pose: s.pose, seat: s }); });
@@ -189,7 +192,7 @@ export function Scene({ people, staff, layout: L, placed, mood, selected }: { pe
   const wins = L.wall.filter((w) => w.kind === 'window');
   const loungeP = placed.filter((x) => x.zone === 'lounge');
   const reviewP = placed.filter((x) => x.zone === 'review');
-  const tx = review.x + Math.floor((review.w - L.tableW) / 2); const ty = L.tableY;
+  const tx = L.reviewRows[0].tableX; const ty = L.tableY;
   const personAt = (pl: Placed, i: number) => pl.pose === 'type'
     ? <g key={pl.p.key}><Pix r={char2(pl.p.char, 'type', 0)} x={pl.x} y={pl.y} className="ofc-fa" /><Pix r={char2(pl.p.char, 'type', 1)} x={pl.x} y={pl.y} className="ofc-fb" /></g>
     : <Pix key={pl.p.key + i} r={char2(pl.p.char, pl.pose)} x={pl.x} y={pl.y} className={pl.zone === 'desk' && pl.p.pose === 'wait' ? 'ofc-anim ofc-breathe' : undefined} />;
@@ -258,12 +261,19 @@ export function Scene({ people, staff, layout: L, placed, mood, selected }: { pe
       {/* 리뷰룸: 유리 벽, 의자, 앉은 사람, 탁자(앞), 검토 자료 */}
       <rect x={review.x - 4} y={review.y - 3} width={4} height={review.h + 3} fill="#bcd9e4" /><rect x={review.x - 3} y={review.y - 3} width={1} height={review.h + 3} fill="#ffffff" opacity={0.8} />
       <rect x={review.x - 4} y={review.y - 4} width={review.w + 4} height={4} fill="#bcd9e4" /><rect x={review.x - 4} y={review.y - 3} width={review.w + 4} height={1} fill="#ffffff" opacity={0.8} />
-      <Pix r={whiteboard(56)} x={review.x + review.w - 66} y={review.y + 4} />
-      {[...L.reviewSeats.left, ...L.reviewSeats.right].map((s, i) => <Pix key={`rc${i}`} r={smallChair()} x={s.x + 2} y={s.y + 6} />)}
-      {reviewP.map((pl, i) => personAt(pl, i))}
-      <Pix r={reviewTable(L.tableW)} x={tx} y={ty} />
-      {reviewP.map((pl) => <g key={`pp${pl.p.key}`}><rect x={pl.x + 9} y={ty + 2} width={16} height={6} fill="#fbf8f0" /><rect x={pl.x + 11} y={ty + 4} width={10} height={1} fill="#a3a9b4" />{pl.p.pose === 'reviewed' && <rect className="ofc-anim ofc-mark" x={pl.x + 11} y={ty + 6} width={6} height={1} fill="#c2413b" />}</g>)}
-      {reviewP.some((x) => x.p.external) && <g><rect x={tx + L.tableW - 30} y={ty - 6} width={16} height={9} fill="#2b3350" /><rect x={tx + L.tableW - 29} y={ty - 5} width={14} height={7} fill="#7fd0c8" /></g>}
+      {/* 줄마다: 빈 의자(앉은 사람이 없으면) → 탁자 → 사람(팔이 탁자 위에 오게) → 자료·노트북 */}
+      {L.reviewRows.map((row, i) => {
+        const lp = reviewP.find((x) => x.x === row.left.x && x.y === row.left.y); const rp = reviewP.find((x) => x.x === row.right.x && x.y === row.right.y);
+        return (
+          <g key={`rr${i}`}>
+            <Pix r={pairTable(L.tableW)} x={row.tableX} y={row.tableY} />
+            <Pix r={lp ? charSide(lp.p.char, 'sit') : emptySide()} x={row.left.x} y={row.left.y} />
+            <Pix r={rp ? flipX(charSide(rp.p.char, 'review'), SIDE_W) : flipX(emptySide(), SIDE_W)} x={row.right.x} y={row.right.y} />
+            {lp && <g><rect x={row.tableX + 8} y={row.tableY + 2} width={12} height={3} fill="#fbf8f0" /><rect className="ofc-anim ofc-mark" x={row.tableX + 10} y={row.tableY + 3} width={6} height={1} fill="#c2413b" /></g>}
+            {rp?.p.external && <g><rect x={row.tableX + L.tableW - 20} y={row.tableY - 6} width={12} height={7} fill="#2b3350" /><rect x={row.tableX + L.tableW - 19} y={row.tableY - 5} width={10} height={5} fill="#7fd0c8" /></g>}
+          </g>
+        );
+      })}
       <Pix r={plant2(true)} x={review.x + 4} y={review.y + review.h - 40} />
       {/* 선택 표시 */}
       {placed.filter((x) => x.p.key === selected).map(({ x, y, w, h }) => <rect key="sel" className="ofc-sel" x={x - 1} y={y - 1} width={w + 2} height={h + 2} fill="none" stroke="#14b8a6" strokeWidth={1} />)}
@@ -271,7 +281,7 @@ export function Scene({ people, staff, layout: L, placed, mood, selected }: { pe
       <g style={{ opacity: mood.lamp, ...tr }} pointerEvents="none">
         {staff.map((p, i) => { const d = L.desks[i]; return <g key={p.key}><circle cx={d.x + 87} cy={d.y + 14} r={20} fill="url(#glow-lamp)" opacity={0.5} />{deskPlaced.has(p.key) && <circle cx={d.x + 18} cy={d.y + 16} r={18} fill="url(#glow-screen)" opacity={0.3} />}</g>; })}
         <circle cx={lounge.x + 10} cy={(L.sofas.length ? L.sofas[0].y - 22 : lounge.y + 4) + 6} r={28} fill="url(#glow-lamp)" opacity={0.55} />
-        <circle cx={tx + L.tableW / 2} cy={ty} r={44} fill="url(#glow-lamp)" opacity={0.3} />
+        <circle cx={tx + L.tableW / 2} cy={ty} r={40} fill="url(#glow-lamp)" opacity={0.3} />
       </g>
     </svg>
   );
