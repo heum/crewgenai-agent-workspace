@@ -205,8 +205,10 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const [note, setNote] = useState<string | null>(null);
   const st = mission?.status ?? null;
   const live = !!st && ACTIVE.includes(st);
-  const gaps = st === 'waiting_user' && !!mission?.gaps?.length;
-  const denied = st === 'waiting_user' && (!!mission?.denials?.length || !!mission?.blockers?.length);
+  // 검토 지점에서는 결정·피드백을 검토 카드에서 보내므로 입력창은 일반 추가 지시로 쓴다
+  const cp = st === 'waiting_user' && !!mission?.checkpoint;
+  const gaps = !cp && st === 'waiting_user' && !!mission?.gaps?.length;
+  const denied = !cp && st === 'waiting_user' && (!!mission?.denials?.length || !!mission?.blockers?.length);
   const mode: 'new' | 'live' | 'answer' | 'done' | 'stopped' = !mission || st === 'failed' ? 'new' : live ? 'live' : st === 'waiting_user' ? 'answer' : st === 'done' ? 'done' : 'stopped';
   const active = ready?.activeMission ?? null;
   const blockedNew = mode === 'new' && !!active;
@@ -247,7 +249,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   });
 
   const primary = mode === 'new' ? startNew : mode === 'live' ? () => directive('next') : mode === 'stopped' ? () => answer('continue') : () => answer('continue');
-  const label = mode === 'new' ? '새 지시' : mode === 'live' ? '진행 중 추가 지시' : mode === 'answer' ? (gaps ? '근거 문서 보완 후 다시 확인' : denied ? '확인한 뒤 다시 시도' : '오퍼레이터 질문에 답변') : mode === 'done' ? '완료 보고 — 추가 지시' : '중단된 미션';
+  const label = mode === 'new' ? '새 지시' : mode === 'live' ? '진행 중 추가 지시' : mode === 'answer' ? (cp ? '추가 지시(결정·피드백은 위 검토 카드에서 한 번에)' : gaps ? '근거 문서 보완 후 다시 확인' : denied ? '확인한 뒤 다시 시도' : '오퍼레이터 질문에 답변') : mode === 'done' ? '완료 보고 — 추가 지시' : '중단된 미션';
   const placeholder = mode === 'new' ? '무엇을 만들거나 고칠지 적어 주세요. 예: 공고 목록 화면에 마감일 정렬을 추가하고, 정렬 기준을 문서로 남겨 줘'
     : mode === 'live' ? '추가 지시 — 예: 표 대신 목록으로 정리하고, 근거 줄 번호를 꼭 달아 줘'
     : mode === 'answer' ? (gaps ? '보완한 내용을 적거나(선택), 문서를 올린 뒤 비워 두고 다시 확인을 누르세요' : denied ? '위에서 허용했으면 비워 두고 다시 시도를 누르세요. 다른 방법으로 하려면 바꿀 지시를 적으세요' : '답변을 입력하세요')

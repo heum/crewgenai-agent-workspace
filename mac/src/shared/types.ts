@@ -749,7 +749,7 @@ export interface Learning extends LearningFields { id: ID; source: string; revie
 /** 사용자가 확인해야 진행되는 항목(에이전트가 스스로 해결할 수 없는 것) */
 export interface AttentionItem {
   projectId: ID;
-  kind: 'denied' | 'blocked' | 'gaps' | 'question' | 'review' | 'resume' | 'staff';
+  kind: 'checkpoint' | 'denied' | 'blocked' | 'gaps' | 'question' | 'review' | 'resume' | 'staff';
   label: string;
   missionId?: ID;
   runId?: ID;

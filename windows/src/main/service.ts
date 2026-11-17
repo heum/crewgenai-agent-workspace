@@ -336,7 +336,7 @@ export class Service {
           if (pick && !['stopped', 'failed'].includes(m.status)) items.push({ projectId: p.id, kind: 'gaps', label: `골라 줄 결정 ${pick}건 — 고르면 다음 계획부터 그대로 따릅니다(나머지 작업은 계속)`, missionId: m.id });
           continue;
         }
-        const kind: AttentionItem['kind'] = m.denials?.length ? 'denied' : m.blockers?.length ? 'blocked' : m.gaps?.length ? 'gaps' : 'question';
+        const kind: AttentionItem['kind'] = m.checkpoint ? 'checkpoint' : m.denials?.length ? 'denied' : m.blockers?.length ? 'blocked' : m.gaps?.length ? 'gaps' : 'question';
         items.push({ projectId: p.id, kind, label: (m.question ?? '').split('\n')[0].slice(0, 140) || '오퍼레이터가 확인을 요청했습니다', missionId: m.id });
       }
       const missionRuns = new Set(this.missions.list(p.id).map((m) => m.currentRunId).filter(Boolean));
@@ -345,7 +345,7 @@ export class Service {
         else if (r.status === 'needs_resume' && !this.engine.limitOf(r.id) && !missionRuns.has(r.id)) items.push({ projectId: p.id, kind: 'resume', label: '중단된 실행 — 재개 방법을 골라야 합니다', runId: r.id });
       }
     }
-    const order: AttentionItem['kind'][] = ['denied', 'blocked', 'gaps', 'question', 'staff', 'resume', 'review'];
+    const order: AttentionItem['kind'][] = ['checkpoint', 'denied', 'blocked', 'gaps', 'question', 'staff', 'resume', 'review'];
     items.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
     return { items, learningsToReview: this.learnings.toReview() };
   }
