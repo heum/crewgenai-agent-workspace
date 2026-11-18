@@ -431,7 +431,7 @@ export interface WorkspaceApi {
   deleteLearning(id: ID): Promise<void>;
   markLearningsReviewed(ids: ID[]): Promise<void>;
   missionReadiness(projectId: ID, refresh?: boolean): Promise<MissionReadiness>;
-  startMission(projectId: ID, prompt: string): Promise<Mission>;
+  startMission(projectId: ID, prompt: string, limits?: MissionLimits | null): Promise<Mission>;
   missionDetail(missionId: ID): Promise<MissionDetail>;
   /** keepPending: 질문에만 답하고 보류한 업무·근거 부족 항목은 그대로 둔다(선택지 버튼) */
   answerMission(missionId: ID, text: string, action: 'continue' | 'stop', keepPending?: boolean): Promise<Mission>;
@@ -533,8 +533,14 @@ export interface MissionCheckpoint {
   unverified: string; // 미완성·미검증 부분
   decisions: { doc: string; question: string; choices: MissionChoice[] }[]; // 사용자 판단이 필요한 핵심(최대 3). doc+question이 원래 항목의 식별자
   assumptions: string[]; // 문서가 부족해 가정하고 진행한 세부(되돌리기 쉬운 것)
-  reason: 'ready' | 'budget'; // 결과가 준비돼서 / 자동 진행 한도에 닿아서
+  reason: 'ready' | 'budget' | 'limit' | 'blocked'; // 결과가 준비돼서 / 자동 진행 한도 / 시간 상한 / 실행 준비·전체 막힘
+  blocked?: string[]; // 막힌 것(무엇이·직접 확인한 원인·시도한 방법), 사용자에게 필요한 최소 결정·권한
+  usage?: string; // 지금까지 사용량(CLI 보고값만, 미보고는 미보고로)
 }
+/** 미션 실행 제한(시작할 때 정함): 시간 상한, 참여 직원 */
+export interface MissionLimits { minutes: number | null; staff: string[] | null }
+/** 미션 사용량: CLI가 보고한 값만 더한다(미보고 호출 수는 따로 셈, 추정하지 않음) */
+export interface MissionUsage { calls: number; reported: number; costUsd: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
 /** 결과물의 시연: 시연 목록의 서비스 화면 경로 또는 API 항목으로 바로 연다 */
 export interface ResultDemo { service: string; path: string; api: string; steps: string; expected: string; data: DemoData }
 export type DemoData = 'api+db' | 'screen-only' | 'mock';
@@ -570,6 +576,14 @@ export interface Mission {
   sinceReview?: number;
   /** 멈춘 이유가 사용자 결정이 아닌 경우(앱 재시작 등): 팝업 대신 미션 화면 알림 */
   pauseKind?: 'restart' | null;
+  /** 실행 제한(시간 상한·참여 직원). 없으면 제한 없음 */
+  limits?: MissionLimits | null;
+  /** 시간 상한을 재는 시작 시각(이어서 진행하면 새로 잰다) */
+  limitStart?: string | null;
+  /** 사용량(오퍼레이터·직원 CLI 보고값) */
+  usage?: MissionUsage | null;
+  /** 실행 준비 확인을 통과했는지(통과 전에는 직원에게 작업을 배정하지 않는다) */
+  readyChecked?: boolean;
   /** 오퍼레이터의 직원 제안(적용·무시한 것도 기록으로 남김) */
   staffProposals?: StaffProposal[];
   /** 오퍼레이터가 직접 물은 질문이면 배열(선택형이면 선택지, 아니면 빈 배열). 앱이 만든 안내 문구면 null */

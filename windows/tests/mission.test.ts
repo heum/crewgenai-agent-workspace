@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Mission } from '../src/shared/types';
 import { gitInit, mkService, plan, sleep, tmpProject } from './helpers';
+import { cleanLimits } from '../src/main/mission';
 
 async function waitMission(svc: ReturnType<typeof mkService>, id: string, statuses: Mission['status'][], ms = 60000) {
   const t0 = Date.now();
@@ -22,6 +23,52 @@ function setup(extra = {}) {
 }
 
 describe('오퍼레이터 루프', () => {
+  it('실행 제한: 참여 직원만 배정, 사용량 기록, 실행 준비 확인 기록. 시간 상한을 넘으면 작업 배정 없이 결과·막힌 것·사용량 보고', async () => {
+    const { svc, p } = setup();
+    svc.saveSettings({ missionMaxCycles: 1 });
+    const ags = svc.store.listAgents(p.id).filter((a) => a.active && a.code !== '00');
+    const writer = ags.find((a) => a.tools.includes('Edit') || a.tools.includes('Write'))!;
+    const reader = ags.find((a) => !a.tools.includes('Edit') && !a.tools.includes('Write'))!;
+    const m0 = await svc.startMission(p.id, '문서를 정리하라', { minutes: 90, staff: [writer.id, reader.id, 'unknown'] });
+    expect(m0.limits).toEqual({ minutes: 90, staff: [writer.id, reader.id] });
+    // 고른 직원을 하나도 찾지 못하면 제한을 풀지 않고 거절한다
+    expect(() => cleanLimits({ minutes: null, staff: ['gone'] }, ags)).toThrow('참여 직원');
+    const w = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    const ev = svc.missions.events(w.id);
+    expect(ev.some((e) => e.kind === 'system' && e.text.startsWith('실행 준비 확인'))).toBe(true);
+    expect(ev.some((e) => e.kind === 'system' && e.text.includes('시작부터 90분 상한'))).toBe(true);
+    // 계획을 받은 직원은 오퍼레이터와 지정한 직원뿐
+    const run = svc.engine.detail(svc.missions.detail(w.id).cycles[0].runId);
+    const allowed = new Set([writer.id, reader.id, svc.store.listAgents(p.id).find((a) => a.code === '00')!.id]);
+    for (const a of run.attempts.filter((x) => x.role !== 'codex')) expect(allowed.has(a.agentId ?? '')).toBe(true);
+    expect(w.usage!.calls).toBeGreaterThan(0);
+    expect(w.checkpoint?.usage).toContain('CLI 호출');
+    // 시간 상한이 지난 상태에서 이어서 진행하면 새 작업을 배정하지 않고 보고한다
+    (svc.missions as unknown as { set: (id: string, p: object) => void }).set(w.id, { limitStart: new Date(Date.now() - 91 * 60_000).toISOString() });
+    const cycles = svc.missions.detail(w.id).cycles.length;
+    svc.missions.review(w.id, [], '', 'continue');
+    const l = await waitMission(svc, w.id, ['waiting_user', 'done', 'failed']);
+    expect(l.checkpoint?.reason).toBe('limit');
+    expect(svc.missions.detail(w.id).cycles.length).toBe(cycles);
+    // 이어서 진행하면 시간 상한을 새로 잰다
+    const before = Date.parse(l.limitStart!);
+    svc.missions.review(l.id, [], '', 'stop');
+    expect(Date.parse(svc.missions.get(l.id).limitStart!)).toBeGreaterThanOrEqual(before);
+    svc.close();
+  });
+
+  it('실행 준비 확인에서 막히면(구현 담당 없음) 직원에게 작업을 배정하지 않고 막힌 것을 보고한다', async () => {
+    const { svc, p } = setup();
+    const reader = svc.store.listAgents(p.id).find((a) => a.active && a.code !== '00' && !a.tools.includes('Edit') && !a.tools.includes('Write'))!;
+    const m0 = await svc.startMission(p.id, '문서를 정리하라', { minutes: null, staff: [reader.id] });
+    const w = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(w.checkpoint?.reason).toBe('blocked');
+    expect(w.checkpoint?.blocked?.[0]).toContain('구현 담당');
+    expect(svc.missions.detail(w.id).cycles.length).toBe(0);
+    expect(svc.missions.events(w.id).some((e) => e.kind === 'operator_plan')).toBe(false);
+    svc.close();
+  });
+
   it('지시 → 계획 → 수행 → Codex 리뷰 → Claude 재검토(재작업) → 판단(계속) → 다음 사이클 → 완료 보고', async () => {
     const { dir, svc, p } = setup();
     const m0 = await svc.startMission(p.id, '[[mock:todo-first]] 사이클마다 문서를 정리하라');

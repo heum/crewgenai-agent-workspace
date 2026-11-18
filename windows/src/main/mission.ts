@@ -4,9 +4,9 @@
 // → 오퍼레이터 판단(계속 / 사용자 확인 / 완료) → 사용자가 멈출 때까지 반복
 // 오퍼레이터는 작업 완료·검토 필요·추가 정보 필요·사이클 상한 도달 때만 사용자에게 묻는다.
 import { randomUUID } from 'node:crypto';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants as fsc, existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { MissionCheckpoint, ResultStatus } from '../shared/types';
+import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
@@ -187,6 +187,8 @@ export interface MissionDeps {
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
+/** 미션 시간 상한에 닿음(작업 배정·자동 재시도를 멈추고 보고) */
+class TimeCap extends Error { constructor() { super('시간 상한에 닿았습니다.'); this.name = 'TimeCap'; } }
 class OperatorLimit extends Error { constructor(public lim: LimitInfo) { super('오퍼레이터 호출이 사용 한도에 걸렸습니다.'); this.name = 'OperatorLimit'; } }
 
 /** 거부된 명령에서 허용 명령 접두어 후보를 만든다: 첫 단순 명령의 이름과 그 뒤 옵션(값 포함). 예) 'shasum -a 256 /x/y' → 'shasum -a 256', 'git -C /repo log' → 'git -C' */
@@ -358,15 +360,18 @@ export class MissionRunner {
       ?? all.find((m) => m.projectId === projectId && ['waiting_user', 'done'].includes(m.status)) ?? null;
   }
 
-  start(projectId: string, prompt: string): Mission {
+  start(projectId: string, prompt: string, limitsIn?: Partial<MissionLimits> | null): Mission {
     if (!prompt.trim()) throw new Error('지시 내용을 입력하세요.');
+    const limits = cleanLimits(limitsIn, this.d.store.listAgents(projectId).filter((a) => a.active));
     const b = this.blocking(projectId);
     if (b) throw new Error(b.projectId === projectId
       ? `이 프로젝트에 열려 있는 미션이 있습니다(${b.status === 'done' ? '완료 보고' : b.status === 'waiting_user' ? '확인 대기' : '작동 중'}). 그 미션에 추가 지시하거나 종료한 뒤 새로 지시하세요.`
       : '다른 프로젝트에서 미션이 작동 중입니다. 미션은 한 번에 하나만 작동합니다. 그 미션을 마치거나 중단한 뒤 지시하세요.');
     const t = now();
-    const m = this.save({ id: uid(), projectId, prompt: prompt.trim(), status: 'planning', stage: 'instruction', cycle: 1, maxCycles: Math.max(1, this.d.maxCycles()), currentRunId: null, question: null, summary: '', createdAt: t, updatedAt: t });
+    const m = this.save({ id: uid(), projectId, prompt: prompt.trim(), status: 'planning', stage: 'instruction', cycle: 1, maxCycles: Math.max(1, this.d.maxCycles()), currentRunId: null, question: null, summary: '', createdAt: t, updatedAt: t, limits, limitStart: t, usage: emptyUsage(), readyChecked: false });
     this.event(m, 'user', prompt.trim());
+    if (limits) { const names = limits.staff ? this.d.store.listAgents(projectId).filter((a) => limits.staff!.includes(a.id)).map((a) => `${a.code} ${a.name}`) : null;
+      this.event(m, 'system', `실행 제한: ${limits.minutes ? `시작부터 ${limits.minutes}분 상한(넘으면 작업 배정·자동 재시도를 멈추고 현재 결과를 보고)` : '시간 상한 없음'}${names ? ` · 참여 직원 ${names.join(', ')}(오퍼레이터 외 다른 직원은 배정하지 않음)` : ''}`, { limits }); }
     void this.loop(m.id);
     return m;
   }
@@ -388,7 +393,9 @@ export class MissionRunner {
     // 이번 사이클에 실행이 있었으면 다음 사이클로, 계획 단계 질문이었으면 같은 사이클을 다시 계획한다. 상한은 사용자 승인만큼 늘린다.
     const ran = !!this.d.store.db.prepare('SELECT 1 FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, m.cycle);
     const cycle = ran ? m.cycle + 1 : m.cycle;
-    const next = this.set(id, { checkpoint: null, pauseKind: null, sinceReview: 0, status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
+    const fresh = m.checkpoint?.reason === 'limit' || m.checkpoint?.reason === 'blocked';
+    if (fresh && action === 'continue' && m.limits?.minutes) this.event(m, 'system', `사용자가 이어서 진행: 시간 상한 ${m.limits.minutes}분을 지금부터 새로 잽니다.`);
+    const next = this.set(id, { ...(fresh ? { limitStart: now(), readyChecked: m.checkpoint?.reason === 'blocked' ? false : m.readyChecked } : {}), checkpoint: null, pauseKind: null, sinceReview: 0, status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
     void this.loop(id);
     return next;
   }
@@ -734,6 +741,7 @@ export class MissionRunner {
   private async patient<T>(id: string, call: () => Promise<T>): Promise<T> {
     for (;;) {
       this.guardLoop(id);
+      if (this.overTime(this.get(id))) throw new TimeCap();
       try { return await call(); } catch (e) {
         if (!(e instanceof OperatorLimit)) throw e;
         const until = this.d.engine.limitWaitUntil(e.lim);
@@ -745,6 +753,7 @@ export class MissionRunner {
           if (this.closed) throw new Error('앱 종료');
           if (this.get(id).status === 'stopped') throw new Error('사용자가 중단했습니다.');
           if (this.replan.has(id)) { this.set(id, { limitUntil: null }); throw new Error('추가 지시 반영'); }
+          if (this.overTime(this.get(id))) { this.set(id, { limitUntil: null }); throw new TimeCap(); } // 사용 한도 대기도 시간 상한을 넘기지 않는다
           await new Promise((res) => setTimeout(res, 300));
         }
         this.wakeLimit.delete(id);
@@ -833,7 +842,16 @@ export class MissionRunner {
         let m = this.get(id);
         if (this.closed || !['planning', 'running', 'evaluating'].includes(m.status)) return;
         const project = this.d.store.getProject(m.projectId);
-        const agents = this.d.ensureAgents(m.projectId).filter((a) => a.active);
+        const agents = this.staffFor(m);
+        // 시간 상한: 넘었으면 새 작업을 배정하지 않고 지금까지의 결과·막힌 것을 한 번에 보고한다
+        if (this.overTime(m)) { await this.pauseReport(id, 'limit'); return; }
+        // 실행 준비 확인: 통과 전에는 직원에게 개발 작업을 배정하지 않는다
+        if (!m.readyChecked) {
+          const rc = await this.readyCheck(m, project.plan, agents);
+          if (this.closed || this.get(id).status === 'stopped') return;
+          if (rc.fail.length) { await this.pauseReport(id, 'blocked', rc.fail); return; }
+          m = this.set(id, { readyChecked: true });
+        }
 
         // 1) 오퍼레이터 계획
         m = this.set(id, { status: 'planning', stage: 'plan', currentRunId: null });
@@ -920,12 +938,14 @@ export class MissionRunner {
         // 스냅샷을 기다리는 동안 중단·종료·'지금 반영' 추가 지시가 들어왔으면 이 계획으로 실행하지 않는다
         if (this.closed || this.get(id).status === 'stopped') return;
         if (this.replan.delete(id)) { this.event(m, 'system', '추가 지시가 들어와 이 계획으로 실행하지 않고 다시 계획합니다.'); this.set(id, { status: 'planning', stage: 'plan' }); continue; }
+        if (this.overTime(this.get(id))) { await this.pauseReport(id, 'limit'); return; } // 계획하는 동안 상한을 넘었으면 작업을 배정하지 않는다
         const run = this.d.engine.startRun(m.projectId, saved.id, { missionId: id, cycle: m.cycle });
         this.d.store.db.prepare('INSERT OR REPLACE INTO mission_cycles VALUES(?,?,?)').run(id, m.cycle, run.id);
         m = this.set(id, { status: 'running', stage: 'execute', currentRunId: run.id });
         this.event(m, 'cycle_start', `사이클 ${m.cycle} 실행 시작(흐름 v${saved.version}, 작업 ${plan.tasks.length}개)`, { runId: run.id });
         const fin = await this.waitRun(run.id, id);
         if (this.closed || this.get(id).status === 'stopped') return;
+        this.addRunUsage(id, run.id);
         this.event(m, 'cycle_end', `사이클 ${m.cycle} 실행 종료: ${fin.status}${fin.reason ? ` — ${fin.reason}` : ''}`);
         await this.snapshot(m, project.plan.folder, `cycle-${m.cycle}`, `사이클 ${m.cycle} 종료(${fin.status})`);
         // 권한 거부: 실행이 실패했거나 직전 사이클과 같은 거부가 반복되면 같은 설정으로 다시 시도하지 않고 멈춘다(권한은 앱 설정으로만 바뀐다)
@@ -988,6 +1008,7 @@ export class MissionRunner {
           catch (e) { this.demoChecks.set(id, [`- 시연 확인 실패: ${redact((e as Error).message).slice(0, 200)}`]); }
           if (this.closed || this.get(id).status === 'stopped') return;
         }
+        if (this.overTime(this.get(id))) { await this.pauseReport(id, 'limit', [], run.id); return; }
         const judge = await this.patient(id, () => this.callOperator<Judge>(this.get(id), project.plan, this.judgePrompt(this.get(id), project.plan, run.id), JUDGE_SCHEMA));
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_judge', `판단: ${judge.decision === 'continue' ? '계속' : judge.decision === 'done' ? '완료' : '사용자 확인'} — ${judge.summary}`, judge);
@@ -1008,7 +1029,8 @@ export class MissionRunner {
         const openCheckpoint = (reason: 'ready' | 'budget', extra: { question: string; choices: MissionChoice[] }[] = []) => {
           const cur = this.get(id);
           const raw: RawCheckpoint = { ...(judge.checkpoint ?? {}), decisions: [...extra, ...(judge.checkpoint?.decisions ?? [])] };
-          const cp = buildCheckpoint(raw, m.cycle, cur.results ?? [], cur.gaps ?? [], (cur.assumptions ?? []).filter((a) => a.cycle > (cur.checkpoint?.cycle ?? 0) || !cur.checkpoint).map((a) => a.text), reason, summaryTitle(judge.summary) || judge.nextFocus.slice(0, 120), this.demoChecks.get(id) ?? []);
+          const cp: MissionCheckpoint = buildCheckpoint(raw, m.cycle, cur.results ?? [], cur.gaps ?? [], (cur.assumptions ?? []).filter((a) => a.cycle > (cur.checkpoint?.cycle ?? 0) || !cur.checkpoint).map((a) => a.text), reason, summaryTitle(judge.summary) || judge.nextFocus.slice(0, 120), this.demoChecks.get(id) ?? []);
+          cp.usage = this.usageLine(cur);
           this.set(id, { status: 'waiting_user', stage: 'ask_user', summary: judge.summary, checkpoint: cp, question: `검토 준비됨: ${cp.title}`, questionOptions: null, questionChoices: null, sinceReview: 0, idleCycles: 0 });
           this.event(m, 'question', `검토 지점(${reason === 'ready' ? '결과 준비됨' : '자동 진행 한도'}): ${cp.title} — 결정 ${cp.decisions.length}건, 가정 ${cp.assumptions.length}건`, { checkpoint: true });
         };
@@ -1035,6 +1057,7 @@ export class MissionRunner {
       }
     } catch (e) {
       if (this.closed) return; // 앱 종료 중: 재시작 때 사용자 확인 대기로 복원된다
+      if (e instanceof TimeCap && this.get(id).status !== 'stopped') { await this.pauseReport(id, 'limit', [], this.get(id).currentRunId ?? undefined); return; }
       if (this.replan.has(id) && this.get(id).status !== 'stopped') {
         // 오퍼레이터 계획·판단 중에 '지금 반영' 추가 지시가 들어와 호출을 멈춘 경우: 같은 사이클을 다시 계획한다
         this.replan.delete(id);
@@ -1058,6 +1081,15 @@ export class MissionRunner {
       if (this.closed || this.get(missionId).status === 'stopped') return r;
       const active = this.d.engine.isActive(runId);
       const lim = !active && r.status === 'needs_resume' ? this.d.engine.limitOf(runId) : null;
+      if ((active || r.status === 'needs_resume') && this.overTime(this.get(missionId))) {
+        // 시간 상한: 진행 중인 실행(사용 한도 대기 포함)을 멈춘다. 작업 프로세스가 끝나 사용량이 저장될 때까지 기다린다(실행 기록·스냅샷은 남음)
+        const mm = this.get(missionId);
+        this.event(mm, 'system', `시간 상한(${mm.limits?.minutes}분)에 닿아 진행 중인 실행을 멈췄습니다.`);
+        await this.d.engine.cancel(runId);
+        this.set(missionId, { limitUntil: null });
+        for (let i = 0; i < 300 && this.d.engine.isActive(runId); i++) await new Promise((res) => setTimeout(res, 200));
+        return this.d.store.getRun(runId);
+      }
       if (lim && this.replan.has(missionId)) { await this.d.engine.cancel(runId); this.set(missionId, { limitUntil: null }); return this.d.store.getRun(runId); }
       if (lim) {
         // 사용 한도: 실행은 해제 시각에 엔진이 스스로 이어서 진행한다. 미션은 실패로 판단하지 않고 기다린다.
@@ -1071,9 +1103,106 @@ export class MissionRunner {
         continue;
       }
       if (noted && this.get(missionId).limitUntil) { noted = 0; this.set(missionId, { limitUntil: null }); }
+
       if (!active && ['succeeded', 'failed', 'cancelled', 'needs_resume', 'review_wait', 'on_hold'].includes(r.status)) return r;
       await new Promise((res) => setTimeout(res, 300));
     }
+  }
+
+  // ───── 실행 제한·사용량·실행 준비 ─────
+  /** 참여 직원 제한: 오퍼레이터(00)와 지정한 직원만 */
+  /** 실행 제한 안내(남은 시간·참여 직원·사용량): 오퍼레이터가 상한 안에서 시연 가능한 결과부터 만들게 */
+  private limitSection(m: Mission): string[] {
+    const L = m.limits; if (!L) return [];
+    const left = L.minutes ? Math.max(0, Math.round((L.minutes * 60_000 - (Date.now() - Date.parse(m.limitStart ?? m.createdAt))) / 60_000)) : null;
+    return ['## 실행 제한(앱이 집행함)',
+      ...(L.minutes ? [`- 시간 상한 ${L.minutes}분, 남은 시간 약 ${left}분. 넘으면 앱이 진행 중인 실행을 멈추고 지금까지 실제로 되는 결과를 사용자에게 보고한다. 남은 시간 안에 시연 가능한 결과가 먼저 나오도록 작업을 작게 나눈다.`] : []),
+      ...(L.staff ? ['- 참여 직원은 위 \'사용 가능한 직원\'(지정된 직원)뿐이다. 다른 직원 투입·직원 추가 제안은 하지 않는다.'] : []),
+      `- 지금까지 사용량: ${this.usageLine(m)}`, ''];
+  }
+  private staffFor(m: Mission): Agent[] {
+    const all = this.d.ensureAgents(m.projectId).filter((a) => a.active);
+    const ids = m.limits?.staff;
+    return ids?.length ? all.filter((a) => a.code === '00' || ids.includes(a.id)) : all;
+  }
+  private overTime(m: Mission): boolean {
+    const min = m.limits?.minutes; if (!min) return false;
+    const t0 = Date.parse(m.limitStart ?? m.createdAt); return Number.isFinite(t0) && Date.now() - t0 >= min * 60_000;
+  }
+  private addUsage(id: string, items: { costUsd: number | null; usage: Record<string, number> | null }[]) {
+    const m = this.get(id); const u = { ...(m.usage ?? emptyUsage()) };
+    for (const it of items) {
+      u.calls++;
+      if (it.costUsd === null && !it.usage) continue;
+      u.reported++; u.costUsd += it.costUsd ?? 0;
+      const g = (k: string) => (typeof it.usage?.[k] === 'number' ? it.usage[k] : 0);
+      u.inputTokens += g('input_tokens'); u.outputTokens += g('output_tokens'); u.cacheReadTokens += g('cache_read_input_tokens'); u.cacheWriteTokens += g('cache_creation_input_tokens');
+    }
+    this.set(id, { usage: u });
+  }
+  private addRunUsage(id: string, runId: string) {
+    this.addUsage(id, this.d.store.runAttempts(runId).filter((a) => a.role === 'author' || a.role === 'reviewer').map((a) => ({ costUsd: a.costUsd, usage: a.usage })));
+  }
+  /**
+   * 실행 준비 확인(직원에게 일을 주기 전에 앱이 직접): 작업 폴더 쓰기, 실행할 직원, 로컬 서버(직원 실행 환경의 로컬 포트), 시연 환경.
+   * 막히면 직원에게 작업을 배정하지 않고 무엇이 막혔는지와 필요한 최소 결정을 보고한다.
+   */
+  private async readyCheck(m: Mission, plan: PlanFields, agents: Agent[]): Promise<{ lines: string[]; fail: string[] }> {
+    const ok: string[] = []; const fail: string[] = [];
+    const paths = plan.writablePaths.length ? plan.writablePaths : ['.'];
+    // 아직 없는 경로(직원이 만들 폴더)는 가장 가까운 있는 상위 폴더에 쓸 수 있는지 본다(연결 폴더 밖으로는 올라가지 않음)
+    const writable = (p: string) => { let cur = resolve(plan.folder, p); const root = resolve(plan.folder);
+      for (;;) { if (existsSync(cur)) { try { accessSync(cur, fsc.W_OK); return true; } catch { return false; } } if (cur === root || !cur.startsWith(root)) return false; cur = resolve(cur, '..'); } };
+    const bad = paths.filter((p) => !writable(p));
+    if (bad.length) fail.push(`작업 폴더 쓰기: ${bad.join(', ')}에 쓸 수 없음(앱이 직접 확인) → 폴더가 있는지, 기획의 자동 수정 허용 경로가 맞는지 확인이 필요합니다.`);
+    else ok.push(`작업 폴더 쓰기: 자동 수정 허용 경로 ${paths.length}곳 쓰기 가능(앱이 직접 확인)`);
+    const doers = agents.filter((a) => a.code !== '00' && (a.tools.includes('Edit') || a.tools.includes('Write')));
+    const runners = doers.filter((a) => a.tools.includes('Bash'));
+    if (!doers.length) fail.push('구현 담당: 이 미션에 파일을 고칠 수 있는 직원이 없습니다 → 참여 직원에 구현 담당을 넣어야 합니다.');
+    else ok.push(`구현 담당: ${doers.map((a) => `${a.code} ${a.name}`).join(', ')}${runners.length ? '' : ' (명령 실행 권한이 없어 서버·시험을 직접 돌리지 못함)'}`);
+    const sockets = this.d.testLocalSockets?.() ?? false;
+    if (runners.length && !sockets) ok.push('[주의] 로컬 서버: 설정 > 자동 처리의 \'로컬 포트 열기\'가 꺼져 있어 직원 실행 환경에서 서버·서버 시험을 띄울 수 없습니다(앱 설정 확인) → 서버를 띄워야 하는 작업이면 이 설정 하나를 켜야 합니다(이 컴퓨터의 127.0.0.1만, 외부 네트워크는 계속 막힘).');
+    else if (runners.length) ok.push('로컬 서버: 직원 실행 환경(격리)에서 127.0.0.1 포트 열기 허용(설정), 외부 네트워크는 막힘');
+    if (this.d.demoVerify) {
+      try { const lines = await this.d.demoVerify(m.projectId); this.demoChecks.set(m.id, lines);
+        ok.push(...(lines.length ? lines.map((l) => `시연 환경${l.startsWith('- ') ? ' ' + l.slice(2) : ' ' + l}`) : ['시연 환경: 시연 목록이 아직 없음(이번 미션에서 직원이 함께 만든다)']));
+      } catch (e) { ok.push(`시연 환경: 확인 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
+    }
+    this.event(m, 'system', `실행 준비 확인(직원에게 작업을 주기 전에 앱이 직접 확인)${fail.length ? ' — 막힘이 있어 작업을 배정하지 않습니다' : ''}:\n${[...fail.map((x) => `- [막힘] ${x}`), ...ok.map((x) => `- ${x}`)].join('\n')}`, { ready: { ok, fail } });
+    return { lines: ok, fail };
+  }
+  /** 사용량 한 줄(CLI 보고값만, 미보고는 그대로 미보고) */
+  usageLine(m: Mission): string {
+    const u = m.usage; if (!u || !u.calls) return '사용량 기록 없음';
+    const tok = u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
+    return `CLI 호출 ${u.calls}회(사용량 보고 ${u.reported}회${u.calls > u.reported ? `, 미보고 ${u.calls - u.reported}회는 알 수 없음` : ''}) · 토큰 입력 ${u.inputTokens.toLocaleString()} / 출력 ${u.outputTokens.toLocaleString()} / 캐시 ${(u.cacheReadTokens + u.cacheWriteTokens).toLocaleString()} (합 ${tok.toLocaleString()}) · CLI 보고 금액 $${u.costUsd.toFixed(2)}(구독 로그인이면 API 환산 추정값이며 청구액 아님)`;
+  }
+  /** 시간 상한·전체 막힘: 작업 배정과 자동 재시도를 멈추고, 막힌 것·원인·필요한 최소 결정·지금 실제로 되는 결과를 한 카드로 보고한다 */
+  private async pauseReport(id: string, reason: 'limit' | 'blocked', fail: string[] = [], runId?: string) {
+    let m = this.get(id);
+    if (reason === 'limit' && this.d.demoVerify) { try { this.demoChecks.set(id, await this.d.demoVerify(m.projectId)); } catch { /* 시연 확인 실패는 보고에 그대로 */ } }
+    m = this.get(id); if (this.closed || m.status === 'stopped') return;
+    const blocked = [
+      ...fail,
+      ...(m.denials ?? []).map((d) => `권한 보류: ${d.agent} · ${d.tool}: ${d.target}`),
+      ...(m.blockers ?? []).map((b) => `${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}: ${b.step} — ${b.reason}`),
+    ].slice(0, 12);
+    const title = reason === 'limit' ? `시간 상한(${m.limits?.minutes}분)에 닿아 멈췄습니다 — 지금까지 실제로 되는 결과` : '실행 준비 확인에서 막혀 직원에게 작업을 배정하지 않았습니다';
+    const cp = buildCheckpoint(undefined, m.cycle, m.results ?? [], m.gaps ?? [], (m.assumptions ?? []).map((a) => a.text), reason, title, this.demoChecks.get(id) ?? []);
+    cp.blocked = blocked; cp.usage = this.usageLine(m);
+    if (runId) {
+      // 판단 전에 멈춘 사이클의 실제 변경(직원이 고친 파일)을 보여 준다. 결과 목록은 이전 판단 기준임을 밝힌다
+      try {
+        const d = this.d.engine.detail(runId); const label = new Map(d.graph.nodes.map((n) => [n.id, n.label]));
+        const byNode = new Map<string, string[]>();
+        for (const a of d.attempts) if (a.role === 'author' && a.changedFiles.length) byNode.set(a.nodeId, [...new Set([...(byNode.get(a.nodeId) ?? []), ...a.changedFiles])]);
+        const feats = [...byNode].map(([n, files]) => ({ name: `${label.get(n) ?? n} (사이클 ${m.cycle}, 판단 전 중단)`, changed: `고친 파일 ${files.length}개: ${files.slice(0, 6).join(', ')}${files.length > 6 ? ' 외' : ''}`, status: 'implemented' as const }));
+        if (feats.length) cp.features = [...feats, ...cp.features].slice(0, 8);
+        cp.unverified = [`사이클 ${m.cycle} 결과는 오퍼레이터 판단 전에 멈춰 검증·정리되지 않았습니다.${m.resultsCycle ? ` 아래 결과 목록은 사이클 ${m.resultsCycle} 판단 기준입니다.` : ''}`, cp.unverified].filter(Boolean).join('\n');
+      } catch { /* 실행 기록을 읽지 못하면 이전 결과만 보여 준다 */ }
+    }
+    this.set(id, { status: 'waiting_user', stage: 'ask_user', checkpoint: cp, question: `검토 준비됨: ${title}`, questionOptions: null, questionChoices: null, currentRunId: null });
+    this.event(m, 'question', `${title}${blocked.length ? `\n막힌 것:\n${blocked.map((b) => `- ${b}`).join('\n')}` : ''}\n사용량: ${cp.usage}`, { checkpoint: true, reason });
   }
 
   // ───── 흐름 구성 ─────
@@ -1159,6 +1288,7 @@ export class MissionRunner {
       '## 사용자 지시', m.prompt, '',
       ...this.learnedSection(m.projectId),
       `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회)`, '',
+      ...this.limitSection(m),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
       '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}`), '',
@@ -1276,6 +1406,7 @@ export class MissionRunner {
     return [
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
+      ...this.limitSection(m),
       ...this.learnedSection(m.projectId),
       '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회, 검토 없이 ${this.reviewBudget()}회까지 진행)`, '',
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
@@ -1349,17 +1480,24 @@ export class MissionRunner {
     const h = startProcess(file, argv, { cwd: plan.folder, env: cleanEnv(ex.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1' } : {}), stdin: prompt, timeoutSec: 900,
       onStdoutLine: (l) => { interpretLine(l, sink); }, onStderrLine: () => {} });
     this.procs.set(key, h);
+    // 시간 상한: 남은 시간이 지나면 오퍼레이터 호출도 멈춘다
+    let capped = false;
+    const left = m.limits?.minutes ? m.limits.minutes * 60_000 - (Date.now() - Date.parse(m.limitStart ?? m.createdAt)) : null;
+    const capTimer = left !== null ? setTimeout(() => { capped = true; h.cancel(); }, Math.max(0, left)) : null;
     const sid = args[args.indexOf('--session-id') + 1] ?? '';
     const ps = await processStart(h.pid);
     if (!this.closed) this.d.store.db.prepare('INSERT OR REPLACE INTO mission_procs VALUES(?,?,?,?)').run(key, h.pid, ps, sid);
     const done = await h.done;
+    if (capTimer) clearTimeout(capTimer);
     this.procs.delete(key);
     if (!this.closed) this.d.store.db.prepare('DELETE FROM mission_procs WHERE mission_id=?').run(key);
     if (this.closed) throw new Error('앱 종료');
     const r = sink.result;
+    if (capped) { this.addUsage(m.id, [{ costUsd: r?.costUsd ?? null, usage: r?.usage ?? null }]); throw new TimeCap(); }
     if (done.cancelled) throw new Error('오퍼레이터 호출이 취소됐습니다.');
     const lim = claudeLimit(sink, done.code);
     if (lim) throw new OperatorLimit(lim);
+    if (!this.closed) this.addUsage(m.id, r ? [{ costUsd: r.costUsd, usage: r.usage }] : [{ costUsd: null, usage: null }]);
     if (done.code !== 0 || !r || r.isError) throw new Error(`오퍼레이터 호출 실패(종료 코드 ${done.code ?? '없음'}${r?.subtype ? `, ${r.subtype}` : ''})`);
     let v = r.structured as T | null;
     if (!v) { const mm = r.text.match(/\{[\s\S]*\}/); try { v = mm ? JSON.parse(mm[0]) as T : null; } catch { v = null; } }
@@ -1400,13 +1538,25 @@ export function resultStatus(r: { status?: string; verified?: string; demo?: unk
 }
 
 /** 검토 지점 정리: 결정은 최대 3개(미결 '결정' 항목을 합쳐서), 가정은 이번 것과 누적한 것을 함께 */
+export function emptyUsage(): MissionUsage { return { calls: 0, reported: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }; }
+/** 실행 제한 정리: 시간은 10~600분 정수, 참여 직원은 이 프로젝트의 활성 직원 id만(오퍼레이터는 늘 포함되므로 빼고 저장) */
+export function cleanLimits(raw: Partial<MissionLimits> | null | undefined, active: Agent[]): MissionLimits | null {
+  if (!raw) return null;
+  const n = Math.floor(Number(raw.minutes));
+  const minutes = Number.isFinite(n) && n > 0 ? Math.min(600, Math.max(10, n)) : null;
+  const ids = Array.isArray(raw.staff) ? [...new Set(raw.staff.map(String))].filter((x) => active.some((a) => a.id === x && a.code !== '00')) : [];
+  if (Array.isArray(raw.staff) && raw.staff.length && !ids.length) throw new Error('고른 참여 직원을 이 프로젝트의 활성 직원에서 찾지 못했습니다. 직원 목록을 새로 고친 뒤 다시 고르세요.');
+  const staff = ids.length ? ids : null;
+  return minutes || staff ? { minutes, staff } : null;
+}
+
 /** 판단 요약 첫 줄을 검토 지점 제목으로(굵은 '한 줄 요약:' 머리말은 뺀다). 다음 계획이 아니라 이번에 한 일을 제목으로 쓴다. */
 export function summaryTitle(summary: string): string {
   const line = String(summary ?? '').split('\n').map((l) => l.replace(/\*\*/g, '').replace(/^\s*한\s*줄\s*요약\s*[:：]\s*/, '').trim()).find(Boolean) ?? '';
   return redact(line).slice(0, 160);
 }
 
-export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, results: MissionResult[], openGaps: MissionGap[], assumptions: string[], reason: 'ready' | 'budget', fallbackTitle: string, demo: string[] = []): MissionCheckpoint {
+export function buildCheckpoint(raw: RawCheckpoint | undefined, cycle: number, results: MissionResult[], openGaps: MissionGap[], assumptions: string[], reason: MissionCheckpoint['reason'], fallbackTitle: string, demo: string[] = []): MissionCheckpoint {
   const t = (v: unknown, n: number) => redact(String(v ?? '').trim()).slice(0, n);
   // 기능 상태도 실제 확인 기록(검토 지점의 verified)이 없으면 올리지 않는다
   const features = (Array.isArray(raw?.features) ? raw!.features! : []).filter((f) => t(f?.name, 200)).slice(0, 8)

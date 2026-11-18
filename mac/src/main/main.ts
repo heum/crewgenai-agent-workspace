@@ -172,7 +172,7 @@ function register() {
   h('markLearningsReviewed', (ids) => { s().learnings.markReviewed(ids); emit({ type: 'learning' }); });
   h('workingNow', (pid) => s().missions.working(pid));
   h('missionReadiness', (pid, refresh) => s().missionReadiness(pid, !!refresh));
-  h('startMission', (pid, prompt) => s().startMission(pid, prompt));
+  h('startMission', (pid, prompt, limits) => s().startMission(pid, prompt, limits && typeof limits === 'object' ? limits as never : null));
   h('missionDetail', (id) => s().missions.detail(id));
   h('reviewMission', (id, picks, feedback, action) => s().missions.review(id, Array.isArray(picks) ? picks : [], String(feedback ?? ''), action === 'stop' ? 'stop' : 'continue'));
   h('answerMission', (id, text, action, keepPending) => s().missions.answer(id, text, action, keepPending === true ? 'pending' : undefined));

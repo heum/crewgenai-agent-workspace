@@ -2016,3 +2016,13 @@ textarea.input {
 .review-cp-actions { align-items: center; }
 .decision-batch { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; border-radius: 8px; background: #f5f6f8; }
 @media (max-width: 900px) { .review-cp-grid { grid-template-columns: 1fr; } }
+
+/* 새 지시의 실행 제한(시간 상한·참여 직원) */
+.composer-limits { display: flex; flex-direction: column; gap: 6px; padding: 6px 2px 2px; }
+.composer-limits label { display: inline-flex; align-items: center; gap: 6px; }
+.composer-min { width: 64px; padding: 2px 6px; }
+.composer-staff { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip-check { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line, #d0d5dd); border-radius: 999px; cursor: pointer; }
+.chip-check.is-on { border-color: var(--accent, #2f5bea); background: color-mix(in srgb, var(--accent, #2f5bea) 10%, transparent); }
+.review-cp-usage { margin-top: 4px; }
+.review-cp-blocked { border-left: 3px solid var(--danger, #c0392b); padding-left: 10px; }

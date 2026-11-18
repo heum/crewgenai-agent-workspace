@@ -10,6 +10,7 @@ import type { Attention, AttentionItem, CommitPreview, Learning, LearningFields,
 import { COMMAND_LEVELS, projectSkillDirs, workBranchName, type CommandLevel } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
+import type { MissionLimits } from '../shared/types';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
 import { APPROVED_FLAG_LABEL, commitApproved, gitRoot, gitShutdown, previewApprovedCommit, workspaceRepos } from './git';
@@ -164,12 +165,12 @@ export class Service {
   }
 
   /** 필수 항목이 하나라도 빠지면 지시를 받지 않는다(화면 우회 불가). */
-  async startMission(projectId: string, prompt: string) {
+  async startMission(projectId: string, prompt: string, limits?: Partial<MissionLimits> | null) {
     const r = await this.missionReadiness(projectId);
     const single = r.items.find((i) => i.key === 'single' && !i.ok);
     if (single) throw new Error(`${single.detail}${r.activeMission && !r.activeMission.sameProject ? ' 미션은 한 번에 하나만 작동합니다.' : ''}`);
     if (!r.ready) throw new Error(`지시하려면 먼저 설정하세요: ${r.items.filter((i) => !i.ok).map((i) => i.label).join(', ')}`);
-    return this.missions.start(projectId, prompt);
+    return this.missions.start(projectId, prompt, limits ?? null);
   }
 
   // ───── 설정 ─────

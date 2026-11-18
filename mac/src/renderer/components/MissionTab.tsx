@@ -214,14 +214,21 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const blockedNew = mode === 'new' && !!active;
   const notReady = mode === 'new' && !!ready && !ready.ready;
   const run = (f: () => Promise<void>) => act.run(async () => { setNote(null); await f(); });
+  // 새 지시의 실행 제한(선택): 시간 상한(분)과 참여 직원. 비워 두면 제한 없음
+  const [minutes, setMinutes] = useState('');
+  const [staff, setStaff] = useState<string[]>([]);
+  const staffList = useLoad(() => (mode === 'new' ? ws().listAgents(project.id) : Promise.resolve([] as Agent[])), [project.id, mode]);
+  const pickable = (staffList.data ?? []).filter((a) => a.active && a.code !== '00');
 
   const startNew = () => run(async () => {
     const t = text.trim();
     if (!t) throw new Error('지시 내용을 입력하세요.');
     const r = await ws().missionReadiness(project.id, true);
     if (!r.ready) throw new Error(`지시하려면 먼저 설정하세요: ${r.items.filter((i) => !i.ok).map((i) => i.label).join(', ')}`);
-    const m = await ws().startMission(project.id, t);
-    setText('');
+    const min = minutes.trim() ? Math.floor(Number(minutes)) : null;
+    if (minutes.trim() && (!Number.isFinite(min) || min! < 10 || min! > 600)) throw new Error('시간 상한은 10~600분 사이로 적어 주세요(비우면 제한 없음).');
+    const m = await ws().startMission(project.id, t, min || staff.length ? { minutes: min, staff: staff.length ? staff : null } : null);
+    setText(''); setMinutes(''); setStaff([]);
     await onChanged(m.id);
   });
   const directive = (how: 'next' | 'now') => run(async () => {
@@ -287,6 +294,23 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!disabled) void primary(); }
           }}
         />
+        {mode === 'new' && (
+          <div className="composer-limits">
+            <label className="small">시간 상한 <input className="input composer-min" inputMode="numeric" placeholder="예: 90" value={minutes} onChange={(e) => setMinutes(e.target.value.replace(/[^0-9]/g, ''))} aria-label="시간 상한(분)" />분 <span className="muted">(넘으면 앱이 멈추고 그때까지 결과를 보고)</span></label>
+            {pickable.length > 0 && (
+              <div className="small composer-staff" role="group" aria-label="참여 직원">
+                <span>참여 직원</span>
+                {pickable.map((a) => (
+                  <label key={a.id} className={`chip-check${staff.includes(a.id) ? ' is-on' : ''}`}>
+                    <input type="checkbox" checked={staff.includes(a.id)} onChange={(e) => setStaff((s) => (e.target.checked ? [...s, a.id] : s.filter((x) => x !== a.id)))} />
+                    {a.code} {a.name}
+                  </label>
+                ))}
+                <span className="muted">{staff.length ? '오퍼레이터와 고른 직원만 일합니다' : '고르지 않으면 활성 직원 전체'}</span>
+              </div>
+            )}
+          </div>
+        )}
         <div className="composer-actions">
           <small className="muted">⌘+Enter로 보내기</small>
           <span className="grow" />
