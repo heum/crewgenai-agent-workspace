@@ -36,7 +36,8 @@ export async function safeFetch(input: string | URL, init: SafeInit = {}): Promi
   const mod = url.protocol === 'https:' ? https : http;
   return new Promise<Response>((resolve, reject) => {
     if (init.signal?.aborted) { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); return; }
-    const req = mod.request(url, { method: init.method ?? 'GET', headers }, (res) => {
+    // IPv6에 닿지 않는 망에서 IPv4 연결 시도 시간이 기본 250ms라 해외 서버(텔레그램 등)에 붙지 못하고 ETIMEDOUT이 나는 문제: 시도 시간을 늘린다
+    const req = mod.request(url, { method: init.method ?? 'GET', headers, autoSelectFamilyAttemptTimeout: 2500 } as http.RequestOptions, (res) => {
       const chunks: Buffer[] = []; let size = 0;
       res.on('data', (c: Buffer) => { size += c.length; if (size > MAX_BYTES) { req.destroy(new Error('응답이 너무 큽니다.')); return; } chunks.push(c); });
       res.on('end', () => {
@@ -52,7 +53,14 @@ export async function safeFetch(input: string | URL, init: SafeInit = {}): Promi
     });
     const onAbort = () => { const e = new Error('aborted'); e.name = 'AbortError'; req.destroy(e); };
     init.signal?.addEventListener('abort', onAbort, { once: true });
-    req.on('error', (e) => { init.signal?.removeEventListener('abort', onAbort); reject(e); });
+    req.on('error', (e) => {
+      init.signal?.removeEventListener('abort', onAbort);
+      // 여러 주소 시도가 모두 실패하면(AggregateError) 메시지가 비어 있다: 원인 코드를 모아 읽을 수 있게
+      const errs = (e as Error & { errors?: (Error & { code?: string })[]; code?: string }).errors;
+      if (!e.message && Array.isArray(errs) && errs.length) { const x = new Error(`연결 실패(${[...new Set(errs.map((y) => y.code ?? y.message))].join(', ')})`); x.name = e.name; reject(x); return; }
+      if (!e.message && (e as { code?: string }).code) { reject(new Error(`연결 실패(${(e as { code?: string }).code})`)); return; }
+      reject(e);
+    });
     req.on('close', () => init.signal?.removeEventListener('abort', onAbort));
     if (payload) req.write(payload);
     req.end();
