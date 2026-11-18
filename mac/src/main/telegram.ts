@@ -168,7 +168,12 @@ export class TelegramBridge {
     const alive = () => this.running && !this.closed && gen === this.gen; // 다시 시작하면 이전 루프는 끝난다(같은 봇을 두 곳에서 받지 않게)
     while (alive()) {
       const t = this.d.token.get(); if (!t) { this.state = 'no-token'; break; }
-      if (this.state !== 'connected') { this.state = 'connecting'; this.d.onStatus?.(); }
+      if (this.state !== 'connected') {
+        this.state = 'connecting'; this.d.onStatus?.();
+        // 첫 수신(최대 50초 대기)을 기다리지 않고, 짧은 확인으로 바로 '연결됨'을 표시한다
+        try { await this.call('getMe', {}, 15); if (alive()) this.ok(); } catch { /* 아래 수신에서 다시 판단 */ }
+      }
+      if (!alive()) break; // 확인하는 사이 다시 시작·중지됐으면 이 루프는 끝낸다
       try {
         const offset = Number(this.kv('offset') ?? '0');
         const ups = await this.call<TgUpdate[]>('getUpdates', { offset, timeout: this.d.pollTimeoutSec ?? 50, allowed_updates: ['message', 'callback_query'] }, (this.d.pollTimeoutSec ?? 50) + 15);
