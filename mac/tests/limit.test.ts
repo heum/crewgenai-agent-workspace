@@ -137,6 +137,8 @@ describe('사용 한도 도달 시 미션', () => {
     expect(classifyError('API Error: fetch failed (ECONNRESET)')).toBe('network');
     expect(classifyError('529 overloaded_error')).toBe('network');
     expect(classifyError('오퍼레이터가 구조화된 결과를 돌려주지 않았습니다.')).toBe('other');
+    expect(classifyError('오퍼레이터 호출 실패(종료 코드 0)')).toBe('network'); // 결과·이유 없이 끊긴 호출은 다시 시도
+    expect(classifyError('오퍼레이터 호출 실패(종료 코드 1): 잘못된 요청')).toBe('other');
     const { svc, p } = setup({ limitGraceMs: 0 });
     const tag = randomUUID().slice(0, 8);
     const m0 = await svc.startMission(p.id, `[[mock:netfail-once:${tag}]] 문서를 정리하라`);

@@ -77,6 +77,8 @@ const NETWORK_RETRY_MS = 10 * 60_000; // 일시적인 연결 장애 뒤 다시 �
 export function classifyError(msg: string): 'auth' | 'network' | 'other' {
   if (/\b401\b|unauthori[sz]ed|authentication|not logged in|log ?in (required|expired)|invalid (api )?key|oauth token|token (has )?expired|please run \/login/i.test(msg)) return 'auth';
   if (/ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network (error|is unreachable)|\b(502|503|504|529)\b|overloaded|service unavailable|connection (error|reset|closed)/i.test(msg)) return 'network';
+  // 결과도 이유도 없이 끝난 오퍼레이터 호출(앱 종료·프로세스 중단 등으로 끊김)은 일시적인 실패로 보고 다시 시도한다
+  if (/^오퍼레이터 호출 실패\(종료 코드 (0|없음)\)$/.test(msg.trim())) return 'network';
   return 'other';
 } // 변경 없는 사이클이 이만큼 이어지면 진행 가능한 작업이 없는 것으로 본다
 const COMMIT_RULE = [
