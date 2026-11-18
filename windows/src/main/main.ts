@@ -1,5 +1,5 @@
 // Electron 메인 프로세스 — 창·메뉴·IPC·파일 선택·탐색기·격리 미리보기·종료 처리
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, safeStorage, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import type { LiveEvent } from '../shared/types';
 import { createTracer } from './langsmith';
 import { Service } from './service';
+import { TelegramBridge } from './telegram';
 import { loadTemplates } from './docset';
 
 app.setName('CREWGENAI 개발팀 관리');
@@ -17,7 +18,11 @@ const logFile = join(dataDir, 'app.log');
 const log = (m: string) => { try { writeFileSync(logFile, `${new Date().toISOString()} ${m}\n`, { flag: 'a' }); } catch { /* 무시 */ } };
 
 let win: BrowserWindow | null = null;
-const emit = (e: LiveEvent) => { if (win && !win.isDestroyed()) win.webContents.send('ws:live', e); if (e.type === 'mission' || e.type === 'run' || e.type === 'learning') scheduleBadge(); };
+let tg: TelegramBridge | null = null;
+// 같은 앱을 두 번 띄우면 같은 봇을 두 곳에서 받게 되므로(충돌) 하나만 실행한다
+if (!app.requestSingleInstanceLock()) app.quit();
+else app.on('second-instance', () => { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); } });
+const emit = (e: LiveEvent) => { tg?.onLive(e); if (win && !win.isDestroyed()) win.webContents.send('ws:live', e); if (e.type === 'mission' || e.type === 'run' || e.type === 'learning') scheduleBadge(); };
 // 확인이 필요한 항목 수를 Dock 아이콘에 표시한다(macOS. 다른 운영체제에서는 무시됨)
 let badgeTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleBadge() {
@@ -39,6 +44,32 @@ const secretStore = {
     writeFileSync(secretFile, safeStorage.encryptString(v), { mode: 0o600 });
   },
 };
+
+// 텔레그램 봇 토큰: 운영체제 보안 저장소(Windows DPAPI)로 암호화한 파일에만 둔다. 암호화를 쓸 수 없으면 저장하지 않는다(평문으로 바꾸지 않음).
+const tgTokenFile = join(dataDir, 'telegram.token.enc');
+const tgToken = {
+  get(): string | null { try { if (!existsSync(tgTokenFile) || !safeStorage.isEncryptionAvailable()) return null; const b = readFileSync(tgTokenFile); return b.length ? safeStorage.decryptString(b) : null; } catch { return null; } },
+  set(v: string | null) {
+    if (!v) { try { writeFileSync(tgTokenFile, ''); } catch { /* 무시 */ } return; }
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('운영체제 보안 저장소(Windows DPAPI)를 쓸 수 없어 토큰을 저장하지 않았습니다.');
+    writeFileSync(tgTokenFile, safeStorage.encryptString(v), { mode: 0o600 });
+  },
+  available: () => safeStorage.isEncryptionAvailable(),
+};
+/** 시연 화면 미리보기: 창을 띄우지 않고 이 컴퓨터 안의 시연 주소만 찍는다(별도 세션, 앱 코드 접근 없음) */
+async function captureLocal(url: string): Promise<Buffer> {
+  if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(url)) throw new Error('이 컴퓨터 안의 시연 주소만 찍습니다.');
+  const local = (u: string) => /^(http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/|data:|blob:|about:blank)/.test(u);
+  const ses = session.fromPartition('crewgenai-tg-preview');
+  // 리디렉션·스크립트 이동·외부 자원 요청까지 이 컴퓨터 안의 주소로만(밖으로 나가는 요청은 막음)
+  ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: !local(d.url) }));
+  const w = new BrowserWindow({ show: false, width: 1280, height: 860, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, session: ses } });
+  w.webContents.on('will-navigate', (e, u) => { if (!local(u)) e.preventDefault(); });
+  w.webContents.on('will-redirect', (e, u) => { if (!local(u)) e.preventDefault(); });
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  try { await w.loadURL(url); await new Promise((r) => setTimeout(r, 2500)); return (await w.webContents.capturePage()).toPNG(); }
+  finally { w.destroy(); }
+}
 
 let svc: Service;
 
@@ -181,10 +212,23 @@ function register() {
   h('resolveStaffProposal', (id, pid, action, edit) => s().resolveStaffProposal(String(id), String(pid), action === 'apply' ? 'apply' : 'dismiss', (() => { const e = edit as unknown as Record<string, unknown> | null; return e && typeof e === 'object' ? { name: String(e.name ?? ''), role: String(e.role ?? ''), instructions: String(e.instructions ?? '') } : null; })()));
   h('refSnippet', (id, p, line) => s().refSnippet(String(id), String(p ?? ''), typeof line === 'number' ? line : null));
   h('decideMission', (id, picks, resume) => s().missions.decide(id, picks, resume));
+  // 텔레그램(토큰은 화면으로 돌려주지 않는다)
+  const T = () => { if (!tg) throw new Error('텔레그램 연동이 아직 준비되지 않았습니다.'); return tg; };
+  h('telegramStatus', () => T().status());
+  h('telegramSetToken', (t) => T().setToken(t === null ? null : String(t ?? '')));
+  h('telegramTest', () => T().test());
+  h('telegramSetOptions', (o) => T().setOptions(o && typeof o === 'object' ? o as never : {}));
+  h('telegramLinkCode', () => T().newLinkCode());
+  h('telegramLinkConfirm', (ok, uid) => T().confirmLink(ok === true, typeof uid === 'number' ? uid : undefined));
+  h('telegramUnlink', () => T().unlink());
+  h('telegramSendTest', () => T().sendTest());
+  h('applyDecisions', (picks) => s().applyDecisions(Array.isArray(picks) ? (picks as { key: string; choice: string; version?: string }[]) : [], '앱'));
+  h('pauseMission', (id) => s().missions.pause(String(id)));
+  h('resumeMission', (id) => s().missions.resume(String(id)));
   h('retryMissionLimit', (id) => s().missions.retryLimitNow(id));
   h('missionSnapshots', (id) => s().missions.snapshots(id));
   h('rollbackMission', (id, tag) => s().missions.rollback(id, tag));
-  h('addDirective', (id, text, mode) => s().missions.addDirective(id, text, mode === 'now' ? 'now' : 'next'));
+  h('addDirective', (id, text, mode) => s().missions.addDirective(id, text, mode === 'now' ? 'now' : mode === 'priority' ? 'priority' : 'next'));
   // 권장 기획 문서 템플릿: resources/docs/prompts/*.md
   h('listPromptTemplates', () => loadTemplates(join(resDir, 'docs', 'prompts')));
   h('projectDocs', (pid) => s().projectDocs(pid));
@@ -245,6 +289,7 @@ app.on('before-quit', (e) => {
     if (c === 1) { e.preventDefault(); return; }
   }
   quitting = true;
+  tg?.close(); // 앱을 완전히 종료하면 텔레그램 수신도 멈춘다
   e.preventDefault(); // 프로세스 종료를 기다린 뒤 DB를 닫고 다시 종료한다
   void svc.closeGracefully().finally(() => app.quit());
 });
@@ -259,6 +304,11 @@ void app.whenReady().then(async () => {
   await svc.engine.recoverOnStartup();
   await svc.missions.recoverProcesses();
   svc.missions.recoverOnStartup();
+  await svc.recoverCommits().catch(() => null); // 커밋하던 중 꺼진 승인 요청을 실제 커밋 여부로 정리
+  tg = new TelegramBridge({ svc, token: tgToken, capture: captureLocal, onStatus: () => { if (win && !win.isDestroyed()) win.webContents.send('ws:live', { type: 'telegram' }); } });
+  tg.start();
+  // 잠자기 해제·네트워크 복구 뒤 바로 다시 연결(놓친 예약을 몰아서 실행하지 않음)
+  powerMonitor.on('resume', () => tg?.kick());
   register();
   buildMenu();
   createWindow();

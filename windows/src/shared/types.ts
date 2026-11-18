@@ -356,7 +356,8 @@ export type LiveEvent =
   | { type: 'cli'; status: CliStatus }
   | { type: 'mission'; mission: Mission }
   | { type: 'missionEvent'; event: MissionEvent }
-  | { type: 'learning' };
+  | { type: 'learning' }
+  | { type: 'telegram' };
 
 // ───────── preload가 노출하는 API ─────────
 export interface WorkspaceApi {
@@ -422,6 +423,18 @@ export interface WorkspaceApi {
   listMissions(projectId: ID): Promise<Mission[]>;
   attention(): Promise<Attention>;
   pendingDecisions(all?: boolean): Promise<PendingDecision[]>;
+  applyDecisions(picks: { key: string; choice: string; version?: string }[]): Promise<{ applied: number; stale: number; lines: string[] }>;
+  // 텔레그램(토큰은 넣기만 하고 화면으로 돌려받지 않는다)
+  telegramStatus(): Promise<TgStatusView>;
+  telegramSetToken(token: string | null): Promise<TgStatusView>;
+  telegramTest(): Promise<{ ok: boolean; bot: string | null; detail: string }>;
+  telegramSetOptions(o: Partial<TgOptionsView>): Promise<TgStatusView>;
+  telegramLinkCode(): Promise<TgStatusView>;
+  telegramLinkConfirm(accept: boolean, expectUserId?: number): Promise<TgStatusView>;
+  telegramUnlink(): Promise<TgStatusView>;
+  telegramSendTest(): Promise<string>;
+  pauseMission(missionId: ID): Promise<Mission>;
+  resumeMission(missionId: ID): Promise<Mission>;
   /** 승인 커밋: 화면에 보여 줄 내용, 승인(보여 준 hash가 지금과 같을 때만), 거절 */
   commitPreview(missionId: ID, requestId: string): Promise<CommitPreview>;
   commitApprove(missionId: ID, requestId: string, shownHash: string): Promise<MissionCommitRequest>;
@@ -438,7 +451,7 @@ export interface WorkspaceApi {
   /** 검토 지점 답변: 고른 결정과 묶은 피드백을 한 번에 보내고 이어서 진행(또는 종료) */
   reviewMission(missionId: ID, picks: { doc: string; question: string; choice: string }[], feedback: string, action: 'continue' | 'stop'): Promise<Mission>;
   /** 진행 중인 미션에 추가 지시: next = 다음 사이클 계획에 반영, now = 진행 중인 작업을 멈추고 바로 다시 계획 */
-  addDirective(missionId: ID, text: string, mode: 'next' | 'now'): Promise<Mission>;
+  addDirective(missionId: ID, text: string, mode: 'next' | 'now' | 'priority'): Promise<Mission>;
   listPromptTemplates(): Promise<PromptTemplate[]>;
   /** 프로젝트 완성 문서 세트(상태 포함) */
   projectDocs(projectId: ID): Promise<ProjectDoc[]>;
@@ -578,6 +591,8 @@ export interface Mission {
   sinceReview?: number;
   /** 멈춘 이유가 사용자 결정이 아닌 경우(앱 재시작 등): 팝업 대신 미션 화면 알림 */
   pauseKind?: 'restart' | null;
+  /** 사용자가 일시정지함(진행 중 단계는 마저 끝내고 새 배정·다음 계획을 멈춤). 중지·결정 대기·한도 대기와 구분 */
+  paused?: boolean;
   /** 실행 범위(참여 직원). 없으면 활성 직원 전체 */
   limits?: MissionLimits | null;
   /** 사용량을 이미 더한 사이클 실행(재시작 후 중복 집계 방지) */
@@ -629,8 +644,9 @@ export interface MissionCommitRequest {
   repo: string; // 연결 폴더 기준 저장소 경로(폴더 자체가 저장소면 빈 문자열)
   files: string[]; // 저장소 기준 경로
   message: string; why: string; task: string;
-  status: 'pending' | 'approved' | 'declined' | 'failed';
+  status: 'pending' | 'approving' | 'approved' | 'declined' | 'failed'; // approving: 커밋 실행 중(앱이 꺼지면 재시작 때 실제 커밋 여부를 확인해 정리)
   sha?: string | null; branch?: string | null; error?: string | null;
+  shownHash?: string | null; // 승인한 변경 묶음(보여 준 내용) 식별값
   at: string; decidedAt?: string | null;
 }
 export interface CommitPreviewFile { path: string; status: string; added: number | null; removed: number | null; flags: string[] }
@@ -791,4 +807,16 @@ export interface PendingDecision {
   held?: string; // 무엇 때문에 보류됐는지
   resumes?: string; // 정하면 재개될 작업
   grants?: string; // 권한 항목: 허용하면 무엇을 허용하는지
+}
+
+/** 텔레그램 연동 화면용 상태(토큰 값은 없음) */
+export interface TgOptionsView {
+  enabled: boolean; projects: string[] | null; missions: string[] | null;
+  kinds: { review: boolean; results: boolean; commits: boolean; failures: boolean; limit: boolean; cycle: boolean };
+  batchMinutes: number; sourceDetail: Record<string, boolean>; preview: Record<string, string[]>;
+}
+export interface TgStatusView {
+  state: 'off' | 'no-token' | 'connecting' | 'connected' | 'error' | 'conflict' | 'unavailable'; reason: string | null; lastOkAt: string | null;
+  tokenSet: boolean; tokenHint: string | null; secureStore: boolean; pendingOut: number; lastDenied: string | null;
+  settings: TgOptionsView & { bot: { id: number; username: string; name: string } | null; link: { userId: number; chatId: number; name: string; at: string } | null; candidate: { userId: number; chatId: number; name: string; at: string } | null; linkCode: { code: string; link: string | null; expires: number } | null; epoch: number; target: { projectId: string; missionId: string } | null };
 }

@@ -740,11 +740,15 @@ export class MissionRunner {
   }
 
   /** 작동 중인 미션에 추가 지시. now면 진행 중인 오퍼레이터 호출·실행을 실제로 멈추고 바로 다시 계획한다. */
-  async addDirective(id: string, text: string, mode: 'next' | 'now'): Promise<Mission> {
+  /**
+   * 추가 지시: next = 다음 사이클 계획에 반영, priority = 우선 지시(진행 중인 파일 수정·저장은 끊지 않고 지금 실행이 끝나는 대로 다음 계획 맨 앞에 반영),
+   * now = 진행 중인 작업을 멈추고 바로 다시 계획(앱 화면의 '지금 반영').
+   */
+  async addDirective(id: string, text: string, mode: 'next' | 'now' | 'priority'): Promise<Mission> {
     const m = this.get(id);
     if (!text.trim()) throw new Error('추가 지시 내용을 입력하세요.');
     if (!['planning', 'running', 'evaluating'].includes(m.status)) throw new Error('작동 중인 미션에만 추가 지시할 수 있습니다. 확인 대기·완료 상태에서는 답변 칸을 쓰세요.');
-    this.event(m, 'directive', `${mode === 'now' ? '[지금 반영] ' : '[다음 사이클 반영] '}${text.trim()}`);
+    this.event(m, 'directive', `${mode === 'now' ? '[지금 반영] ' : mode === 'priority' ? '[우선 지시 — 다음 계획에서 가장 먼저 반영] ' : '[다음 사이클 반영] '}${redact(text.trim())}`);
     if (mode === 'now') {
       this.replan.add(id);
       this.procs.get(id)?.cancel();
@@ -802,12 +806,35 @@ export class MissionRunner {
     return this.get(id);
   }
 
+  /** 일시정지: 진행 중인 작업 단계는 마저 끝내되(파일 수정·저장을 끊지 않음) 새 작업 배정·다음 사이클 계획을 멈춘다. 결정 처리·조회는 계속된다. */
+  pause(id: string): Mission {
+    const m = this.get(id);
+    if (!['planning', 'running', 'evaluating', 'waiting_user'].includes(m.status)) throw new Error('진행 중이거나 결정을 기다리는 미션만 일시정지할 수 있습니다.');
+    if (m.paused) return m;
+    if (m.currentRunId && this.d.engine.isActive(m.currentRunId)) { try { this.d.engine.pause(m.currentRunId); } catch { /* 이미 멈춤 */ } }
+    const nm = this.set(id, { paused: true });
+    this.event(nm, 'system', '사용자가 미션을 일시정지했습니다. 진행 중인 단계는 마저 끝내고, 새 작업 배정과 다음 계획은 재개할 때까지 멈춥니다.');
+    return nm;
+  }
+  resume(id: string): Mission {
+    const m = this.get(id);
+    if (!m.paused) throw new Error('일시정지한 미션이 아닙니다.');
+    if (m.currentRunId && this.d.engine.isActive(m.currentRunId)) void this.d.engine.resume(m.currentRunId).catch(() => {});
+    const nm = this.set(id, { paused: false });
+    this.event(nm, 'system', '사용자가 미션을 재개했습니다.');
+    return nm;
+  }
+  /** 일시정지 중이면 재개·중지·앱 종료까지 기다린다(사이클 사이·실행 시작 전의 안전한 지점에서만 부름) */
+  private async waitWhilePaused(id: string) {
+    while (this.get(id).paused && !this.closed && this.get(id).status !== 'stopped') await new Promise((res) => setTimeout(res, 500));
+  }
+
   async stop(id: string): Promise<Mission> {
     const m = this.get(id);
     this.procs.get(id)?.cancel();
     if (m.currentRunId && (this.d.engine.isActive(m.currentRunId) || this.d.engine.limitOf(m.currentRunId))) await this.d.engine.cancel(m.currentRunId);
     this.event(m, 'system', '사용자가 미션을 중단했습니다. 진행 중이던 작업을 취소했습니다.');
-    const st = this.set(id, { status: 'stopped', stage: 'stopped', question: null, limitUntil: null, limitWait: null }); // 사용자 중지: 자동 재개 예약도 끈다
+    const st = this.set(id, { status: 'stopped', stage: 'stopped', question: null, limitUntil: null, limitWait: null, paused: false }); // 사용자 중지: 자동 재개 예약도 끈다
     void this.learn(id);
     return st;
   }
@@ -889,6 +916,9 @@ export class MissionRunner {
           m = this.set(id, { readyChecked: true });
         }
 
+        // 일시정지: 다음 계획·새 작업 배정 전의 안전한 지점에서 기다린다
+        await this.waitWhilePaused(id);
+        if (this.closed || this.get(id).status === 'stopped') return;
         // 오퍼레이터 호출이 사용 한도에 걸려 기다리던 중(앱 재시작 포함)이면, 해제 시각까지 Claude를 부르지 않고 기다린다
         await this.waitOperatorLimit(id);
         if (this.closed || this.get(id).status === 'stopped') return;
@@ -990,6 +1020,8 @@ export class MissionRunner {
         // 스냅샷을 기다리는 동안 중단·종료·'지금 반영' 추가 지시가 들어왔으면 이 계획으로 실행하지 않는다
         if (this.closed || this.get(id).status === 'stopped') return;
         if (this.replan.delete(id)) { this.event(m, 'system', '추가 지시가 들어와 이 계획으로 실행하지 않고 다시 계획합니다.'); this.set(id, { status: 'planning', stage: 'plan' }); continue; }
+        await this.waitWhilePaused(id); // 계획하는 동안 일시정지했으면 작업을 배정하기 전에 기다린다
+        if (this.closed || this.get(id).status === 'stopped') return;
         run = this.d.engine.startRun(m.projectId, saved.id, { missionId: id, cycle: m.cycle });
         graphNodes = built.graph.nodes;
         this.d.store.db.prepare('INSERT OR REPLACE INTO mission_cycles VALUES(?,?,?)').run(id, m.cycle, run.id);
@@ -1539,7 +1571,7 @@ export class MissionRunner {
   private commitSection(m: Mission): string[] {
     const rs = (m.commitRequests ?? []).slice(-10);
     if (!rs.length) return [];
-    const st = { pending: '사용자 승인 대기', approved: '승인·커밋됨', declined: '사용자가 거절(커밋하지 않음)', failed: '커밋 실패' } as const;
+    const st = { pending: '사용자 승인 대기', approving: '승인됨·커밋 중', approved: '승인·커밋됨', declined: '사용자가 거절(커밋하지 않음)', failed: '커밋 실패' } as const;
     return ['## 커밋 요청(최근)', ...rs.map((r) => `- [${st[r.status]}] ${r.repo || '(연결 폴더)'} · "${r.message}" · 파일 ${r.files.slice(0, 8).join(', ')}${r.files.length > 8 ? ` 외 ${r.files.length - 8}개` : ''}${r.sha ? ` → ${r.branch ?? ''} ${r.sha.slice(0, 8)}` : ''}${r.error ? ` (이유: ${r.error.slice(0, 200)})` : ''}`), ''];
   }
 

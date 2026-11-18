@@ -1,4 +1,5 @@
 import LearningsModal from './LearningsModal';
+import TelegramSettings from './TelegramSettings';
 import { useEffect, useState } from 'react';
 import type { AppSettings, CliStatus, CodexStatus, Project, Attention, SkillSource } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
@@ -366,9 +367,12 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           ))}
         </select>
       </Field>
-      <Field label="오퍼레이터 루프 최대 사이클" hint="이 수만큼 반복하면 계속할지 사용자에게 묻습니다(1–50).">
+      <Field label="결과 정리 주기(사이클)" hint="이 수만큼 반복할 때마다 지금까지의 결과를 확인함에 정리해 올립니다. 개발은 멈추지 않습니다(1–50).">
         <NumberInput value={s.missionMaxCycles ?? 5} min={1} onChange={(v) => setS({ ...s, missionMaxCycles: Math.min(50, Math.max(1, v ?? 1)) })} />
       </Field>
+      <h3>텔레그램</h3>
+      <p className="muted small">휴대폰 텔레그램에서 진행 상황 확인, 결정·검토, 커밋 승인, 추가 지시를 처리합니다. 텔레그램에서 처리한 내용은 앱과 미션에 그대로 반영됩니다(아래 항목은 바로 적용).</p>
+      <TelegramSettings />
         </div>
       </div>
       <div className="row gap end">

@@ -13,9 +13,11 @@ import { redactKeepLines } from './cli/claudeCli';
 import type { MissionLimits } from '../shared/types';
 import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
-import { APPROVED_FLAG_LABEL, commitApproved, gitRoot, gitShutdown, previewApprovedCommit, workspaceRepos } from './git';
+import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, workspaceRepos } from './git';
 import { LearningStore } from './learning';
 import { MissionRunner } from './mission';
+import { decisionVersion } from '../shared/decisions';
+export { decisionVersion };
 import { autoLayout, needsLayout } from '../shared/layout';
 import { checkCli } from './cli/claudeCli';
 import { Store } from './db';
@@ -399,6 +401,51 @@ export class Service {
     return out;
   }
 
+  /**
+   * 확인함 결정 적용(앱 화면·텔레그램 공통): 적용 직전에 각 항목이 아직 유효한지(같은 질문·같은 선택지인지) 다시 확인하고, 유효한 것만 반영한다.
+   * 질문·결정·권한 항목만 다룬다(커밋 승인·검토 카드는 각자의 화면에서). 한 번 반영된 항목은 목록에서 빠지므로 같은 결정이 두 번 반영되지 않는다.
+   * 추천 표시·미응답·시간 경과는 적용하지 않는다: 이 함수는 사용자가 고른 것만 받는다.
+   */
+  applyDecisions(picks: { key: string; choice: string; version?: string }[], via = '앱'): { applied: number; stale: number; lines: string[] } {
+    const live = new Map(this.pendingDecisions().map((x) => [x.key, x]));
+    const ok = (p: { key: string; choice: string; version?: string }) => {
+      const it = live.get(p.key); const c = String(p.choice ?? '').trim();
+      if (!it || !c || !['question', 'gap', 'permission'].includes(it.kind)) return false;
+      if (p.version && p.version !== decisionVersion(it)) return false; // 보여 준 뒤 질문·선택지가 바뀜
+      if (it.kind === 'permission' && !it.choices.some((x) => x.label === c)) return false; // 권한은 보여 준 선택지만
+      return true;
+    };
+    const go = picks.filter(ok); const stale = picks.length - go.length;
+    const lines: string[] = [];
+    for (const missionId of [...new Set(go.map((p) => live.get(p.key)!.missionId))]) {
+      const mine = go.filter((p) => live.get(p.key)!.missionId === missionId).map((p) => ({ it: live.get(p.key)!, choice: p.choice.trim() }));
+      const title = mine[0].it.missionTitle;
+      const perms = mine.filter((x) => x.it.kind === 'permission'); const allowed = perms.filter((x) => !x.choice.startsWith('허용하지 않'));
+      for (const x of allowed) this.allowDenial(x.it);
+      if (allowed.length) this.missions.retryParked(missionId, allowed.map((x) => x.it.denial!.sig));
+      const withEffect = (x: { it: PendingDecision; choice: string }) => { const c = x.it.choices.find((y) => y.label === x.choice); return (c?.effect ? `${x.choice} — ${c.effect}` : x.choice).slice(0, 600); };
+      const q = mine.find((x) => x.it.kind === 'question'); const gaps = mine.filter((x) => x.it.kind === 'gap');
+      if (gaps.length) this.missions.decide(missionId, gaps.map((g) => ({ doc: g.it.doc, issue: g.it.issue, choice: withEffect(g) })), !q && gaps.some((g) => g.it.waiting));
+      if (q) this.missions.answer(missionId, withEffect(q), 'continue', 'pending');
+      const parts = [gaps.length && `결정 ${gaps.length}건`, q && '질문 답 1건', allowed.length && `권한 ${allowed.length}건 허용`, perms.length - allowed.length && `권한 ${perms.length - allowed.length}건 보류 유지`].filter(Boolean).join(', ');
+      lines.push(`· ${title}: ${parts} 반영(${via}) → ${q || gaps.some((g) => g.it.waiting) ? '멈춰 있던 미션이 이어서 진행합니다' : '진행 중인 미션이 다음 계획부터 따릅니다'}${allowed.length ? ' · 보류한 업무를 다시 시도합니다' : ''}`);
+    }
+    return { applied: go.length, stale, lines };
+  }
+  /** 권한 보류 허용: 그 직원에게만 그 명령을 허용하거나, 그 경로를 읽기 전용 참고 자료로 연다 */
+  private allowDenial(it: PendingDecision) {
+    const d = it.denial; if (!d?.suggestion) return;
+    if (d.kind === 'command') {
+      const a = this.store.listAgents(it.projectId).find((x) => x.id === d.agentId);
+      if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
+      const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a as Agent & { fired?: unknown };
+      this.saveAgent(it.projectId, a.id, { ...fields, tools: fields.tools.includes('Bash') ? fields.tools : [...fields.tools, 'Bash'], allowedCommands: fields.allowedCommands.includes(d.suggestion) ? fields.allowedCommands : [...fields.allowedCommands, d.suggestion] });
+    } else if (d.kind === 'path') {
+      const p = this.store.getProject(it.projectId);
+      if (!p.plan.referenceDocs.includes(d.suggestion)) this.updatePlan(p.id, { ...p.plan, referenceDocs: [...p.plan.referenceDocs, d.suggestion] });
+    }
+  }
+
   // ───── 사용자 승인 커밋 ─────
   private commitReq(missionId: string, requestId: string): { req: MissionCommitRequest; folder: string; branch: string | undefined } {
     const m = this.missions.get(missionId);
@@ -411,19 +458,41 @@ export class Service {
     const { req, folder, branch } = this.commitReq(missionId, requestId);
     return { ...(await previewApprovedCommit(folder, req.repo, req.files, req.message, branch)), flagLabels: APPROVED_FLAG_LABEL };
   }
-  /** 사용자가 팝업에서 승인한 커밋: 보여 준 내용(hash)과 지금이 같을 때만 그 파일만 커밋한다. push하지 않는다. */
-  async commitApprove(missionId: string, requestId: string, shownHash: string): Promise<MissionCommitRequest> {
+  /**
+   * 사용자가 승인한 커밋(앱·텔레그램 공통): 보여 준 내용(hash)과 지금이 같을 때만 그 파일만 커밋한다. push·병합하지 않는다.
+   * 같은 요청은 한 번만 실행한다(동시 승인·중복 클릭은 '처리 중/이미 처리'로 거절). 실행 중 앱이 꺼지면 재시작 때 실제 커밋 여부를 확인한다.
+   */
+  async commitApprove(missionId: string, requestId: string, shownHash: string, via = '앱'): Promise<MissionCommitRequest> {
     const { req, folder, branch } = this.commitReq(missionId, requestId);
-    if (req.status !== 'pending') throw new Error('이미 처리한 커밋 요청입니다.');
+    if (this.committing.has(requestId) || req.status === 'approving') throw new Error('이 커밋 요청은 지금 처리 중입니다.');
+    if (req.status !== 'pending') throw new Error(`이미 처리한 커밋 요청입니다(${req.status === 'approved' ? `커밋됨 ${req.sha?.slice(0, 8) ?? ''}` : req.status === 'declined' ? '거절됨' : '실패'}).`);
+    this.committing.add(requestId);
+    this.missions.markCommitRequest(missionId, requestId, { status: 'approving', shownHash: String(shownHash ?? '') }, `커밋 승인(${via}): ${req.repo || '(연결 폴더)'} · "${req.message}" — 커밋하는 중`);
     try {
-      const r = await commitApproved(folder, req.repo, req.files, req.message, String(shownHash ?? ''), { 'Crewgenai-Mission': missionId, 'Crewgenai-Approved': 'user' }, branch);
-      return this.missions.markCommitRequest(missionId, requestId, { status: 'approved', sha: r.sha, branch: r.branch, error: r.note }, `커밋 승인: ${req.repo || '(연결 폴더)'} · "${req.message}" → ${r.branch ?? ''} ${r.sha.slice(0, 8)}${r.note ? ` (${r.note})` : ''}`);
+      const r = await commitApproved(folder, req.repo, req.files, req.message, String(shownHash ?? ''), { 'Crewgenai-Mission': missionId, 'Crewgenai-Approved': 'user', 'Crewgenai-Request': requestId }, branch);
+      return this.missions.markCommitRequest(missionId, requestId, { status: 'approved', sha: r.sha, branch: r.branch, error: r.note }, `커밋 완료(${via} 승인): ${req.repo || '(연결 폴더)'} · "${req.message}" → ${r.branch ?? ''} ${r.sha.slice(0, 8)}${r.note ? ` (${r.note})` : ''}`);
     } catch (e) {
       const msg = (e as Error).message;
-      // 보여 준 뒤 바뀐 경우는 요청을 그대로 두고 다시 확인하게 한다. 그 밖의 실패는 기록한다.
-      if (!/바뀌었습니다|커밋할 수 없는 파일/.test(msg)) this.missions.markCommitRequest(missionId, requestId, { status: 'failed', error: msg.slice(0, 500) }, `커밋 실패: "${req.message}" — ${msg.slice(0, 300)}`);
+      // 보여 준 뒤 바뀐 경우는 요청을 승인 대기로 되돌려 새 내용으로 다시 확인하게 한다(다른 변경까지 커밋하지 않음). 그 밖의 실패는 기록한다.
+      if (/바뀌었습니다|커밋할 수 없는 파일/.test(msg)) this.missions.markCommitRequest(missionId, requestId, { status: 'pending', shownHash: null }, `커밋하지 않음: 보여 준 뒤 변경 내용이 바뀌었습니다. 새 내용으로 다시 확인하세요.`);
+      else this.missions.markCommitRequest(missionId, requestId, { status: 'failed', error: msg.slice(0, 500) }, `커밋 실패: "${req.message}" — ${msg.slice(0, 300)}`);
       throw e;
+    } finally { this.committing.delete(requestId); }
+  }
+  private committing = new Set<string>();
+  /** 앱 시작 때: 커밋하던 중 꺼진 요청은 저장소 기록(요청 표식)을 보고 실제로 커밋됐는지 확인해 정리한다(다시 커밋하지 않음) */
+  async recoverCommits(): Promise<void> {
+    for (const p of this.store.listProjects()) for (const m of this.missions.list(p.id)) for (const r of m.commitRequests ?? []) {
+      if (r.status !== 'approving') continue;
+      const found = await findRequestCommit(join(p.plan.folder, r.repo || '.'), r.id).catch(() => null);
+      if (found) this.missions.markCommitRequest(m.id, r.id, { status: 'approved', sha: found.sha, branch: found.branch }, `커밋 확인(앱 재시작 후): "${r.message}" → ${found.branch ?? ''} ${found.sha.slice(0, 8)}`);
+      else this.missions.markCommitRequest(m.id, r.id, { status: 'pending', shownHash: null }, `커밋하던 중 앱이 꺼져 커밋되지 않았습니다. 변경 내용을 다시 확인하고 승인하세요.`);
     }
+  }
+  /** 텔레그램 '변경 상세'용 코드 차이(비밀값 파일·줄 제외, 길이 제한, 한 번 더 가림) */
+  async commitDiff(missionId: string, requestId: string): Promise<string> {
+    const { req, folder, branch } = this.commitReq(missionId, requestId);
+    return redactKeepLines(await approvedDiff(folder, req.repo, req.files, branch));
   }
   commitDecline(missionId: string, requestId: string): MissionCommitRequest {
     const { req } = this.commitReq(missionId, requestId);

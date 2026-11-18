@@ -6,7 +6,7 @@
 // - 같은 작업 트리(git dir)를 쓰는 작업은 한 줄로 세워 실행하고, 앱 종료 때 진행 중인 git 작업을 기다린다.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, sep } from 'node:path';
 import { PROTECTED_BRANCHES } from './autopilot';
@@ -570,4 +570,44 @@ export async function commitApproved(folder: string, repo: string, files: string
       return { sha: c.out, branch, note };
     } finally { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* 무시 */ } }
   });
+}
+
+/** 승인 커밋 요청 표식(Crewgenai-Request 트레일러)이 붙은 커밋을 찾는다: 앱이 커밋 도중 꺼졌을 때 실제로 커밋됐는지 확인용 */
+export async function findRequestCommit(repoAbs: string, requestId: string): Promise<{ sha: string; branch: string | null } | null> {
+  const r = await git(repoAbs, ['log', '--all', '-n', '200', '--format=%H%x1f%(trailers:key=Crewgenai-Request,valueonly)%x1e']);
+  if (r.code !== 0) return null;
+  for (const rec of r.raw.split('\x1e')) {
+    const [sha, val] = rec.trim().split('\x1f');
+    if (sha && val && val.trim() === requestId) {
+      const b = await git(repoAbs, ['branch', '--contains', sha, '--format=%(refname:short)']);
+      return { sha: sha.trim(), branch: b.code === 0 ? b.raw.split('\n').map((x: string) => x.trim()).filter(Boolean)[0] ?? null : null };
+    }
+  }
+  return null;
+}
+
+/**
+ * 승인 커밋 요청의 코드 차이(텔레그램 '변경 상세'용): 승인 화면과 같은 검사(previewApprovedCommit)를 통과한 파일만 보낸다.
+ * 비밀값 이름·내용, git 필터(LFS 등)·링크·저장소 밖·검사 못 한 파일은 빼고, hook·fsmonitor·외부 diff·textconv를 쓰지 않는다(저장소 설정이 명령을 실행하지 못하게).
+ */
+export async function approvedDiff(folder: string, repo: string, files: string[], workBranch?: string, maxChars = 6000): Promise<string> {
+  const pv = await previewApprovedCommit(folder, repo, files, '', workBranch);
+  const ok = pv.files.filter((f) => !f.flags.length).map((f) => f.path);
+  const skipped = pv.files.length - ok.length;
+  if (!ok.length) return `(보낼 수 있는 파일이 없습니다${skipped ? ` — ${skipped}개는 비밀값·필터·링크 등이라 보내지 않음` : ''})`;
+  const rr = await approvedRepo(folder, repo);
+  if (typeof rr === 'string') throw new Error(rr);
+  const head = (await ag(rr.abs, ['rev-parse', '--verify', '-q', 'HEAD'])).out;
+  let out = '';
+  for (const f of ok) {
+    const tracked = head ? (await ag(rr.abs, ['ls-tree', '-z', head, '--', f])).raw.split('\0').filter(Boolean).length > 0 : false;
+    if (tracked) { const d = await ag(rr.abs, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', f]); out += d.ok ? d.raw : `(${f}: 차이를 읽지 못함)\n`; }
+    else { try { out += `+++ 새 파일 ${f}\n${readFileSync(join(rr.abs, f), 'utf8').split('\n').slice(0, 80).map((l) => `+${l}`).join('\n')}\n`; } catch { out += `(${f}: 읽지 못함)\n`; } }
+    if (out.length > maxChars) break;
+  }
+  // 비밀값으로 보이는 줄(키·토큰·비밀번호가 든 접속 주소 포함)은 한 번 더 뺀다
+  const CRED_URL = /[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@/i;
+  const lines = out.split('\n'); const kept = lines.filter((l) => !SECRET_TEXT.some((re) => re.test(l)) && !CRED_URL.test(l));
+  out = kept.join('\n') + (kept.length < lines.length ? '\n(비밀값으로 보이는 줄은 뺐습니다)' : '');
+  return `${skipped ? `(비밀값·필터·링크 등 ${skipped}개 파일은 보내지 않음)\n` : ''}${out.length > maxChars ? `${out.slice(0, maxChars)}\n…(이하 생략)` : out}`;
 }

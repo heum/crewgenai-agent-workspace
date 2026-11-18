@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { LiveEvent, WorkspaceApi } from '../shared/types';
 
 const methods = [
-  'listProjects', 'createProject', 'updatePlan', 'planHistory', 'pickFolder', 'pickFiles', 'pickSubfolder',
+  'applyDecisions', 'pauseMission', 'resumeMission', 'telegramStatus', 'telegramSetToken', 'telegramTest', 'telegramSetOptions', 'telegramLinkCode', 'telegramLinkConfirm', 'telegramUnlink', 'telegramSendTest', 'listProjects', 'createProject', 'updatePlan', 'planHistory', 'pickFolder', 'pickFiles', 'pickSubfolder',
   'revealInFinder', 'openPath', 'openLocalUrl', 'demoInfo', 'demoApprove', 'demoStart', 'demoStop', 'demoLog', 'demoRequest', 'demoReset', 'previewFile', 'readTextFile',
   'listAgents', 'saveAgent', 'duplicateAgent', 'setAgentActive', 'loadAgentTemplates', 'agentTemplateSets', 'fireAgent',
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',

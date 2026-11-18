@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CommitPreview, LiveEvent, Mission, PendingDecision } from '../../shared/types';
 import ReviewCheckpoint from './ReviewCheckpoint';
+import { decisionVersion } from '../../shared/decisions';
 import { useAction, ws } from '../api';
 import { Banner } from './common';
 
@@ -176,28 +177,13 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const picked = items.filter((it) => batchable(it) && answerOf(it));
   // 추천안으로 채우기: 추천이 있는 결정만 고른다(권한 허용은 직접 골라야 함). 고르기만 할 뿐 적용 전에는 반영되지 않는다.
   const fillRec = () => setSel((cur) => { const n = { ...cur }; for (const it of items) { if (it.kind === 'permission' || !batchable(it) || n[it.key]) continue; const r = it.choices.find((c) => c.recommended); if (r) n[it.key] = r.label; } return n; });
+  // 적용은 앱 본체의 공통 처리(텔레그램과 같은 로직)로: 적용 직전에 각 항목이 아직 유효한지 다시 확인하고 유효한 것만 반영한다
   const applySelected = () => act.run(async () => {
-    // 적용 직전에 질문·대상 작업이 아직 유효한지 다시 확인한다(그사이 해결·변경된 항목은 적용하지 않음)
-    const live = new Map((await ws().pendingDecisions(true)).map((x) => [x.key, x]));
-    const go = picked.filter((it) => live.has(it.key)); const stale = picked.length - go.length;
-    const lines: string[] = [];
-    for (const missionId of [...new Set(go.map((x) => x.missionId))]) {
-      const mine = go.filter((x) => x.missionId === missionId); const title = mine[0].missionTitle;
-      const perms = mine.filter((x) => x.kind === 'permission'); const allowed = perms.filter((x) => !answerOf(x).startsWith('허용하지 않'));
-      for (const it of perms) await resolvePermissionFor(it, allowed.includes(it));
-      if (allowed.length) await ws().retryParked(missionId, allowed.map((x) => x.denial!.sig));
-      const q = mine.find((x) => x.kind === 'question');
-      const gaps = mine.filter((x) => x.kind === 'gap');
-      const withEffect = (it: PendingDecision) => { const a = answerOf(it); const c = it.choices.find((x) => x.label === a); return (c?.effect ? `${a} — ${c.effect}` : a).slice(0, 600); };
-      if (gaps.length) await ws().decideMission(missionId, gaps.map((g) => ({ doc: g.doc, issue: g.issue, choice: withEffect(g) })), !q && gaps.some((g) => g.waiting));
-      if (q) await ws().answerMission(missionId, withEffect(q), 'continue', true);
-      for (const it of mine) handled.current.add(it.key);
-      const parts = [gaps.length && `결정 ${gaps.length}건`, q && '질문 답 1건', allowed.length && `권한 ${allowed.length}건 허용`, perms.length - allowed.length && `권한 ${perms.length - allowed.length}건 보류 유지`].filter(Boolean).join(', ');
-      lines.push(`· ${title}: ${parts} 반영 → ${q || gaps.some((g) => g.waiting) ? '멈춰 있던 미션이 이어서 진행합니다' : '진행 중인 미션이 다음 계획부터 따릅니다'}${allowed.length ? ' · 보류한 업무를 다시 시도합니다' : ''}`);
-    }
+    const r = await ws().applyDecisions(picked.map((it) => ({ key: it.key, choice: answerOf(it), version: decisionVersion(it) })));
+    for (const it of picked) handled.current.add(it.key);
     const list = (await ws().pendingDecisions(true)).filter((x) => !handled.current.has(x.key));
     setItems(list); setSel({}); setOwnMap({});
-    setDone(`${go.length}건을 적용했습니다.${stale ? ` 이미 해결됐거나 바뀐 ${stale}건은 적용하지 않았습니다.` : ''}\n${lines.join('\n')}`);
+    setDone(`${r.applied}건을 적용했습니다.${r.stale ? ` 이미 처리됐거나 내용이 바뀐 ${r.stale}건은 적용하지 않았습니다.` : ''}\n${r.lines.join('\n')}`);
   });
   const urgentN = items.filter((x) => x.urgent).length;
   const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토' };

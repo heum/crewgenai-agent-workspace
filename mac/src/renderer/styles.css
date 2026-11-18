@@ -2046,3 +2046,10 @@ textarea.input {
 .limit-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; }
 .limit-facts dt { color: var(--text-soft, #667085); }
 .limit-facts dd { margin: 0; }
+
+/* 설정 > 텔레그램 */
+.tg-settings { display: flex; flex-direction: column; gap: 8px; }
+.tg-settings h4 { margin: 10px 0 2px; }
+.tg-code { padding: 8px 10px; border: 1px dashed var(--border, #d0d5dd); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; word-break: break-all; }
+.tg-projects, .tg-kinds { display: flex; flex-direction: column; gap: 2px; }
+.tg-scope { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-top: 1px solid var(--border, #eef0f3); }
