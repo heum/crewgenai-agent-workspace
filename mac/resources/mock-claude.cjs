@@ -65,12 +65,26 @@ async function main() {
   out({ type: 'system', subtype: 'init', session_id: sessionId, cwd, tools, model: 'mock-model', permissionMode: argv[argv.indexOf('--permission-mode') + 1], mock: true });
   if (prompt.includes('[[mock:leak]]')) out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: 'env: ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKE1234 token: ghp_FAKEFAKEFAKEFAKEFAKEFAKE12' }] } });
   const isOperator = prompt.includes('# 오퍼레이터 ');
+  // 실행 환경 점검: [[mock:probe-fail]]이 프로젝트 경로에 있으면 쓰기 실패로, 아니면 모두 됨으로 보고
+  if (prompt.includes('# 실행 환경 점검')) {
+    const res = { output: prompt.includes('probe-nowrite') ? 'READ_OK\nNODE: v20' : 'W_OK\nPORT_OK\nREAD_OK\nNODE: v20' };
+    out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(res), structured_output: res, permission_denials: [], total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 5 } });
+    process.exit(0);
+  }
   // 화면 시험용: 임시 폴더에 crewgenai-mock-slow-claude 파일이 있으면 그 밀리초만큼 늦게 시작한다(모든 호출)
   const slowF = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), 'crewgenai-mock-slow-claude');
   if (fs.existsSync(slowF)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(fs.readFileSync(slowF, 'utf8')) || 0);
   for (const m of isOperator ? [] : prompt.matchAll(/\[\[mock:wait-while:(.+?)\]\]/g)) {
     out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: `${m[1]} 파일이 사라질 때까지 대기합니다.` }] } });
     while (fs.existsSync(path.resolve(cwd, m[1]))) await new Promise((r) => setTimeout(r, 100));
+  }
+  // [[mock:netfail-once:이름]] 오퍼레이터 호출이 처음 한 번 연결 장애로 실패
+  for (const m of isOperator ? prompt.matchAll(/\[\[mock:netfail-once:([\w-]+)\]\]/g) : []) {
+    const flag = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), `crewgenai-mock-netfail-${m[1]}`);
+    if (fs.existsSync(flag)) continue;
+    fs.writeFileSync(flag, String(Date.now()));
+    out({ type: 'result', subtype: 'error_during_execution', is_error: true, session_id: sessionId, result: 'API Error: fetch failed (ECONNRESET)', permission_denials: [] });
+    process.exit(1);
   }
   for (const m of prompt.matchAll(/\[\[mock:limit-once:([\w-]+)\]\]/g)) {
     const flag = path.join((process.env.CREWGENAI_MOCK_STATE || require('node:os').tmpdir()), `crewgenai-mock-limit-${m[1]}`);
@@ -176,7 +190,7 @@ async function main() {
     // 큰 결과가 준비되면 검토 지점(review): 기능·시연 순서·검증 범위·결정(최대 3)·가정을 한곳에
     if (prompt.includes('[[mock:review]]') && !failed) {
       const reviewed = prompt.includes('검토 지점 결정') || prompt.includes('[검토 피드백');
-      if (!reviewed) Object.assign(dec, { decision: 'review', summary: '전체 화면과 핵심 흐름 준비', nextFocus: '피드백 반영', checkpoint: { title: '회사 관리 전체 흐름', steps: '1. 목록 열기 → 2. 회사 선택 → 3. 메모 저장 → 다시 열어 저장값 확인', verified: '목록·상세·저장을 시연 환경에서 실제로 실행', unverified: '권한별 화면은 준비 중', features: [{ name: '회사 목록·상세', changed: '실제 API 연결', status: 'reviewable' }], decisions: [{ question: '삭제 기능을 1차에 넣을까요?', choices: [{ label: '넣는다', effect: '삭제 버튼과 확인 창을 만든다', recommended: false, why: '' }, { label: '2차로 미룬다', effect: '이번에는 숨긴다', recommended: true, why: '정책이 아직 없음' }] }], assumptions: ['메모는 최대 500자로 가정'] } });
+      if (!reviewed && cyc < 3) Object.assign(dec, { decision: 'review', summary: '전체 화면과 핵심 흐름 준비', nextFocus: '피드백 반영', checkpoint: { title: '회사 관리 전체 흐름', steps: '1. 목록 열기 → 2. 회사 선택 → 3. 메모 저장 → 다시 열어 저장값 확인', verified: '목록·상세·저장을 시연 환경에서 실제로 실행', unverified: '권한별 화면은 준비 중', features: [{ name: '회사 목록·상세', changed: '실제 API 연결', status: 'reviewable' }], decisions: [{ question: '삭제 기능을 1차에 넣을까요?', choices: [{ label: '넣는다', effect: '삭제 버튼과 확인 창을 만든다', recommended: false, why: '' }, { label: '2차로 미룬다', effect: '이번에는 숨긴다', recommended: true, why: '정책이 아직 없음' }] }], assumptions: ['메모는 최대 500자로 가정'] } });
       else Object.assign(dec, { decision: 'done', summary: '피드백 반영 완료', question: '', nextFocus: '' });
     }
     if (prompt.includes('[[mock:commit-request]]') && !prompt.includes('## 커밋 요청(최근)')) dec.commitRequests = [{ repo: '', files: ['pending.txt'], message: '대기 변경 커밋', why: '다음 작업에 필요' }];

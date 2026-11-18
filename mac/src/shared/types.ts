@@ -533,12 +533,14 @@ export interface MissionCheckpoint {
   unverified: string; // 미완성·미검증 부분
   decisions: { doc: string; question: string; choices: MissionChoice[] }[]; // 사용자 판단이 필요한 핵심(최대 3). doc+question이 원래 항목의 식별자
   assumptions: string[]; // 문서가 부족해 가정하고 진행한 세부(되돌리기 쉬운 것)
-  reason: 'ready' | 'budget' | 'limit' | 'blocked'; // 결과가 준비돼서 / 자동 진행 한도 / 시간 상한 / 실행 준비·전체 막힘
+  reason: 'ready' | 'budget' | 'blocked'; // 결과가 준비돼서 / 정기 결과 보고(진행은 계속) / 실행 준비·전체 막힘
+  blocking?: boolean; // 이 결정 없이는 진행할 작업이 없어 미션이 기다림(아니면 개발은 계속)
   blocked?: string[]; // 막힌 것(무엇이·직접 확인한 원인·시도한 방법), 사용자에게 필요한 최소 결정·권한
   usage?: string; // 지금까지 사용량(CLI 보고값만, 미보고는 미보고로)
 }
-/** 미션 실행 제한(시작할 때 정함): 시간 상한, 참여 직원 */
-export interface MissionLimits { minutes: number | null; staff: string[] | null }
+export interface MissionLimitWait { source: 'operator' | 'run'; reason: string; resetKnown: boolean; nextAt: string; tries: number; lastAt: string | null; lastResult: string | null; target: string }
+/** 미션 실행 범위(시작할 때 정함): 참여 직원. 전체 시간·사이클 상한은 두지 않는다 */
+export interface MissionLimits { staff: string[] | null }
 /** 미션 사용량: CLI가 보고한 값만 더한다(미보고 호출 수는 따로 셈, 추정하지 않음) */
 export interface MissionUsage { calls: number; reported: number; costUsd: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
 /** 결과물의 시연: 시연 목록의 서비스 화면 경로 또는 API 항목으로 바로 연다 */
@@ -576,12 +578,10 @@ export interface Mission {
   sinceReview?: number;
   /** 멈춘 이유가 사용자 결정이 아닌 경우(앱 재시작 등): 팝업 대신 미션 화면 알림 */
   pauseKind?: 'restart' | null;
-  /** 실행 제한(시간 상한·참여 직원). 없으면 제한 없음 */
+  /** 실행 범위(참여 직원). 없으면 활성 직원 전체 */
   limits?: MissionLimits | null;
-  /** 시간 상한을 재는 시작 시각(이어서 진행하면 새로 잰다) */
-  limitStart?: string | null;
-  /** 사용자 답을 기다리기 시작한 시각(기다린 시간은 시간 상한에서 뺀다) */
-  waitingSince?: string | null;
+  /** 사용량을 이미 더한 사이클 실행(재시작 후 중복 집계 방지) */
+  countedRuns?: string[];
   /** 사용량(오퍼레이터·직원 CLI 보고값) */
   usage?: MissionUsage | null;
   /** 실행 준비 확인을 통과했는지(통과 전에는 직원에게 작업을 배정하지 않는다) */
@@ -606,6 +606,8 @@ export interface Mission {
   learnedSeq?: number; // 배운 것을 정리한 마지막 기록 번호
   /** 사용 한도 해제를 기다리는 중이면 자동으로 이어서 진행할 시각(ISO). 아니면 null/없음 */
   limitUntil?: string | null;
+  /** Claude 한도 대기 상태(앱이 예약·관리): 사유, 해제 시각을 알았는지, 다음 확인 시각, 재시도 횟수·마지막 결과, 재개할 작업 */
+  limitWait?: MissionLimitWait | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -785,4 +787,8 @@ export interface PendingDecision {
   waiting: boolean; // 미션이 이 결정을 기다리며 멈춰 있는가
   denial?: MissionDenial; // 권한 보류 항목(허용하면 그 직원 설정에 넣고 다시 시도)
   commit?: MissionCommitRequest; // 승인 커밋 요청
+  urgent?: boolean; // 미션 전체가 이 결정을 기다림(팝업으로 안내). 아니면 확인함에만
+  held?: string; // 무엇 때문에 보류됐는지
+  resumes?: string; // 정하면 재개될 작업
+  grants?: string; // 권한 항목: 허용하면 무엇을 허용하는지
 }

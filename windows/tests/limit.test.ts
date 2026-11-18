@@ -48,7 +48,7 @@ describe('사용 한도 감지', () => {
 
 describe('사용 한도 도달 시 미션', () => {
   it('오퍼레이터·담당 작업이 한도에 걸리면 실패로 처리하지 않고, 해제 후 같은 세션을 이어서 끝까지 진행한다', async () => {
-    const { svc, p } = setup({ limitGraceMs: 0 });
+    const { svc, p } = setup({ limitGraceMs: 1500 }); // 대기가 화면에 보일 만큼(해제 시각이 1초 안쪽이면 대기를 알리기 전에 재개될 수 있음)
     const tag = randomUUID().slice(0, 8);
     const m0 = await svc.startMission(p.id, `[[mock:limit-once:${tag}]] 문서를 정리하라`);
     const m = await fin(svc, m0.id, ['done', 'waiting_user', 'failed']);
@@ -56,7 +56,10 @@ describe('사용 한도 도달 시 미션', () => {
     expect(m.limitUntil ?? null).toBeNull();
     const d = svc.missions.detail(m.id);
     const texts = d.events.map((e) => e.text).join('\n');
-    expect(texts).toContain('오퍼레이터 호출이 사용 한도에 걸렸습니다');
+    expect(texts).toContain('Claude 한도 대기 —');
+    expect(texts).toContain('Claude 한도가 풀려 자동으로 이어서 진행합니다');
+    expect(d.events.filter((e) => e.text.startsWith('Claude 한도 대기')).length).toBe(1); // 처음 한도 도달만 알림
+    expect(m.limitWait ?? null).toBeNull();
     expect(texts).toContain('사용 한도 도달 —');
     expect(d.cycles[0].status).toBe('succeeded');
     const r1 = svc.engine.detail(d.cycles[0].runId);
@@ -86,6 +89,88 @@ describe('사용 한도 도달 시 미션', () => {
     const m = await fin(svc, m0.id, ['done', 'waiting_user', 'failed']);
     expect(m.status).toBe('done');
     svc.close();
+  });
+
+  it('해제 시각을 모르면 1시간 뒤에 한 번 다시 확인하고, 알려 주면 그 시각을 쓴다', () => {
+    const { svc } = setup({ limitGraceMs: 0 });
+    const t = Date.now();
+    const u = svc.engine.limitWaitUntil({ resetsAt: null, text: '' });
+    expect(u - t).toBeGreaterThanOrEqual(60 * 60_000 - 50); expect(u - t).toBeLessThan(60 * 60_000 + 2000);
+    expect(svc.engine.limitWaitUntil({ resetsAt: t + 5 * 60_000, text: '' })).toBe(t + 5 * 60_000);
+    svc.close();
+  });
+
+  it('한도 대기 중 앱을 다시 시작해도 예약을 유지하고(Claude를 다시 부르지 않음), 해제되면 멈춘 지점부터 한 번만 이어서 끝낸다', async () => {
+    const { Service } = await import('../src/main/service');
+    const { MOCK, MOCK_CODEX } = await import('./helpers');
+    const { svc, p } = setup({ limitGraceMs: 10 * 60_000 });
+    const tag = randomUUID().slice(0, 8);
+    const m0 = await svc.startMission(p.id, `[[mock:limit-once:${tag}]] 문서를 정리하라`);
+    const opUntil = await until(() => svc.missions.get(m0.id).limitUntil);
+    // 1) 오퍼레이터 한도 대기 중 재시작: 저장한 해제 시각까지 Claude를 부르지 않는다
+    let file = svc.store.file; svc.close();
+    let re = new Service({ dbFile: file, mockScript: MOCK, mockCodexScript: MOCK_CODEX, emit: () => {}, limitGraceMs: 10 * 60_000 });
+    await re.engine.recoverOnStartup(); await re.missions.recoverProcesses(); re.missions.recoverOnStartup();
+    await sleep(800);
+    expect(re.missions.get(m0.id).limitUntil).toBe(opUntil);
+    expect(re.missions.events(m0.id).some((e) => e.kind === 'operator_plan')).toBe(false);
+    re.missions.retryLimitNow(m0.id); // 해제됨(테스트에서는 바로)
+    const runId = await until(() => { const m = re.missions.get(m0.id); return m.currentRunId && re.engine.limitOf(m.currentRunId) ? m.currentRunId : null; });
+    // 2) 직원 실행 한도 대기 중 재시작: 예약 유지. 해제 시각이 이미 지났으면(절전·종료 중 지남) 시작 후 한 번만 확인해 이어 간다
+    const lim = re.engine.limitOf(runId)!;
+    re.store.db.prepare("UPDATE run_meta SET value=? WHERE run_id=? AND key='limit'").run(JSON.stringify({ ...lim, until: Date.now() - 1000 }), runId);
+    file = re.store.file; re.close();
+    re = new Service({ dbFile: file, mockScript: MOCK, mockCodexScript: MOCK_CODEX, emit: () => {}, limitGraceMs: 10 * 60_000 });
+    await re.engine.recoverOnStartup(); await re.missions.recoverProcesses(); re.missions.recoverOnStartup();
+    const m = await until(() => { const x = re.missions.get(m0.id); return ['done', 'waiting_user', 'failed'].includes(x.status) ? x : null; });
+    expect(m.status).toBe('done');
+    const authors = re.engine.detail(runId).attempts.filter((a) => a.role === 'author');
+    expect(authors.length).toBe(2); // 한도에 걸린 시도 1 + 재개 1(몰아서 여러 번 실행하지 않음)
+    expect(re.missions.events(m0.id).filter((e) => e.kind === 'operator_plan' && e.cycle === 1).length).toBe(1); // 같은 사이클을 다시 계획하지 않음
+    re.close();
+  });
+
+  it('오류 구분: 로그인 만료·연결 장애·그 밖의 오류를 나누고, 연결 장애는 멈추지 않고 앱이 나중에 다시 시도한다', async () => {
+    const { classifyError } = await import('../src/main/mission');
+    expect(classifyError('오퍼레이터 호출 실패(종료 코드 1): Invalid API key · Please run /login')).toBe('auth');
+    expect(classifyError('API Error: 401 authentication_error')).toBe('auth');
+    expect(classifyError('API Error: fetch failed (ECONNRESET)')).toBe('network');
+    expect(classifyError('529 overloaded_error')).toBe('network');
+    expect(classifyError('오퍼레이터가 구조화된 결과를 돌려주지 않았습니다.')).toBe('other');
+    const { svc, p } = setup({ limitGraceMs: 0 });
+    const tag = randomUUID().slice(0, 8);
+    const m0 = await svc.startMission(p.id, `[[mock:netfail-once:${tag}]] 문서를 정리하라`);
+    const w = await until(() => { const m = svc.missions.get(m0.id); return m.limitWait ? m : null; });
+    expect(w.status).not.toBe('waiting_user'); // 사용자에게 묻지 않는다
+    expect(w.limitWait!.reason).toContain('일시 장애');
+    expect(Date.parse(w.limitUntil!) - Date.now()).toBeGreaterThan(9 * 60_000);
+    svc.missions.retryLimitNow(m0.id); // (테스트) 예약 시각 대신 바로
+    const m = await fin(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    expect(m.status).toBe('done');
+    expect(svc.missions.events(m.id).some((e) => e.text.startsWith('연결이 회복돼'))).toBe(true);
+    svc.close();
+  });
+
+  it('중지된 미션의 실행이 한도 대기 예약을 남긴 채 앱이 꺼져도, 다시 켤 때 예약을 끄고 다시 돌지 않는다', async () => {
+    const { Service } = await import('../src/main/service');
+    const { MOCK, MOCK_CODEX } = await import('./helpers');
+    const { svc, p } = setup({ limitGraceMs: 10 * 60_000 });
+    const tag = randomUUID().slice(0, 8);
+    const m0 = await svc.startMission(p.id, `[[mock:limit-once:${tag}]] 문서를 정리하라`);
+    await until(() => svc.missions.get(m0.id).limitUntil);
+    svc.missions.retryLimitNow(m0.id);
+    const runId = await until(() => { const m = svc.missions.get(m0.id); return m.currentRunId && svc.engine.limitOf(m.currentRunId) ? m.currentRunId : null; });
+    // 중지 정리 도중에 꺼진 상황: 미션은 중지로 저장됐지만 실행에는 한도 예약이 남아 있음
+    (svc.missions as unknown as { save: (m: object) => void }).save({ ...svc.missions.get(m0.id), status: 'stopped', stage: 'stopped' });
+    const file = svc.store.file; svc.close();
+    const re = new Service({ dbFile: file, mockScript: MOCK, mockCodexScript: MOCK_CODEX, emit: () => {}, limitGraceMs: 0 });
+    await re.engine.recoverOnStartup(); await re.missions.recoverProcesses(); re.missions.recoverOnStartup();
+    await sleep(500);
+    expect(re.engine.limitOf(runId)).toBeNull();
+    expect(re.engine.isActive(runId)).toBe(false);
+    expect(re.store.getRun(runId).status).toBe('cancelled');
+    expect(re.missions.get(m0.id).status).toBe('stopped');
+    re.close();
   });
 
   it('한도 대기 중 중단하면 대기 중인 실행도 취소되고 다시 깨어나지 않는다', async () => {

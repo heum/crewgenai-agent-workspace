@@ -9,8 +9,8 @@ import { Markdown } from '../markdown';
 import ResultsPanel, { StatusBadge } from './Results';
 
 const REASON: Record<string, string> = {
-  ready: '검토할 결과가 준비됐습니다', budget: '자동 진행 한도에 닿아 지금까지 결과를 보여 드립니다',
-  limit: '시간 상한에 닿아 멈췄습니다 — 지금까지 실제로 되는 결과', blocked: '실행 준비 확인에서 막혀 작업을 배정하지 않았습니다',
+  ready: '검토할 결과가 준비됐습니다', budget: '지금까지의 결과입니다(개발은 계속 진행 중)',
+  blocked: '실행 준비 확인에서 막혀 작업을 배정하지 않았습니다',
 };
 
 export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: Mission; onChanged: () => Promise<void> | void }) {
@@ -36,7 +36,7 @@ export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: M
         <div className="review-cp-sec review-cp-blocked">
           <h4>막힌 것 — 자동 재시도·작업 배정을 멈췄습니다</h4>
           <ul>{c.blocked.map((b, i) => <li key={i}>{b}</li>)}</ul>
-          <div className="muted small">해결하셨거나 이대로 진행하려면 아래 '이어서 진행'을 누르세요. 시간 상한은 그때부터 새로 잽니다.</div>
+          <div className="muted small">해결하셨거나 이대로 진행하려면 아래 '이어서 진행'을 누르세요.</div>
         </div>
       )}
       {c.features.length > 0 && (

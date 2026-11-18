@@ -1,5 +1,6 @@
-// 결정 팝업: 사용자가 정해야 하는 것이 생기면 어느 탭에서든 팝업으로 알리고, 그 자리에서 버튼으로 고르게 한다.
-// 추천안은 '추천' 표시와 이유만 보여 주고 자동으로 고르지 않는다. 닫아도 오른쪽 아래 '결정 대기'로 다시 열 수 있다.
+// 사용자 확인함: 결정·승인이 필요한 것을 한곳에 모은다. 진행 중 미션은 그동안 다른 작업을 계속한다.
+// 팝업은 미션 전체가 그 결정을 기다릴 때(긴급)와 오래 비웠다 돌아왔을 때만 요약으로 띄운다. 질문마다 연속 팝업을 띄우지 않는다.
+// 추천안은 표시만 하고, '추천안으로 채우기'로 골라도 '선택 항목 일괄 적용'을 누르기 전에는 아무것도 승인·반영되지 않는다.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CommitPreview, LiveEvent, Mission, PendingDecision } from '../../shared/types';
 import ReviewCheckpoint from './ReviewCheckpoint';
@@ -12,6 +13,9 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const [idx, setIdx] = useState(0);
   const [own, setOwn] = useState('');
   const [done, setDone] = useState<string | null>(null);
+  const [view, setView] = useState<'list' | 'item'>('list'); // 확인함 목록 / 한 항목 자세히
+  const [sel, setSel] = useState<Record<string, string>>({}); // 항목별로 고른 선택지(적용 전)
+  const [ownMap, setOwnMap] = useState<Record<string, string>>({}); // 항목별 직접 적은 답(적용 전)
   const seen = useRef<Set<string>>(new Set()); // 이미 팝업으로 보여 준 결정(닫으면 같은 결정으로 다시 띄우지 않음)
   const handled = useRef<Set<string>>(new Set()); // 이번에 정한 권한 항목(보류 유지 포함) — 다시 묻지 않음
   const act = useAction();
@@ -25,7 +29,9 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
         const list = all.filter((x) => !handled.current.has(x.key));
         setItems(list);
         const fresh = list.filter((d) => !seen.current.has(d.key));
-        if (fresh.length) { for (const d of fresh) seen.current.add(d.key); setIdx(Math.max(0, list.findIndex((d) => d.key === fresh[0].key))); setDone(null); setOpen(true); }
+        for (const d of fresh) seen.current.add(d.key);
+        // 미션 전체가 기다리는 새 결정만 팝업(확인함 요약)으로 알린다. 나머지는 확인함 배지에 쌓는다.
+        if (fresh.some((d) => d.urgent)) { setView('list'); setDone(null); setOpen(true); }
       }).catch(() => {});
     };
     load();
@@ -38,11 +44,21 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
         const list = all.filter((x) => !handled.current.has(x.key));
         const at = d?.missionId ? list.findIndex((x) => x.missionId === d.missionId) : 0;
         if ((d?.missionId && at < 0) || !list.length) { d?.fallback?.(); return; }
-        explicit.current = true; for (const x of list) seen.current.add(x.key); setItems(list); setIdx(Math.max(0, at)); setDone(null); setOpen(true);
+        explicit.current = true; for (const x of list) seen.current.add(x.key); setItems(list); setIdx(Math.max(0, at)); setDone(null);
+        setView(d?.missionId && list[Math.max(0, at)]?.kind === 'checkpoint' ? 'item' : 'list'); setOpen(true);
       }).catch(() => d?.fallback?.());
     };
     window.addEventListener('crewgenai:open-decisions', openNow);
-    return () => { off(); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); };
+    // 앱으로 돌아왔을 때(10분 이상 비움) 미결 항목이 있으면 확인함 요약을 한 번 보여 준다
+    let awayAt = 0;
+    const onBlur = () => { awayAt = Date.now(); };
+    const onFocus = () => {
+      if (!awayAt || Date.now() - awayAt < 10 * 60_000) { awayAt = 0; return; }
+      awayAt = 0;
+      ws().pendingDecisions(true).then((all) => { const list = all.filter((x) => !handled.current.has(x.key)); if (list.length) { setItems(list); setView('list'); setDone(null); setOpen(true); } }).catch(() => {});
+    };
+    window.addEventListener('blur', onBlur); window.addEventListener('focus', onFocus);
+    return () => { off(); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); window.removeEventListener('blur', onBlur); window.removeEventListener('focus', onFocus); };
   }, []);
 
   const cur = items[Math.min(idx, items.length - 1)] ?? null;
@@ -154,22 +170,95 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     if (!list.length) setTimeout(() => setOpen(false), 1800);
   });
 
+  // ───── 확인함: 선택 항목 일괄 적용 ─────
+  const batchable = (it: PendingDecision) => it.kind === 'question' || it.kind === 'gap' || it.kind === 'permission';
+  const answerOf = (it: PendingDecision) => (ownMap[it.key]?.trim() || sel[it.key] || '').trim();
+  const picked = items.filter((it) => batchable(it) && answerOf(it));
+  // 추천안으로 채우기: 추천이 있는 결정만 고른다(권한 허용은 직접 골라야 함). 고르기만 할 뿐 적용 전에는 반영되지 않는다.
+  const fillRec = () => setSel((cur) => { const n = { ...cur }; for (const it of items) { if (it.kind === 'permission' || !batchable(it) || n[it.key]) continue; const r = it.choices.find((c) => c.recommended); if (r) n[it.key] = r.label; } return n; });
+  const applySelected = () => act.run(async () => {
+    // 적용 직전에 질문·대상 작업이 아직 유효한지 다시 확인한다(그사이 해결·변경된 항목은 적용하지 않음)
+    const live = new Map((await ws().pendingDecisions(true)).map((x) => [x.key, x]));
+    const go = picked.filter((it) => live.has(it.key)); const stale = picked.length - go.length;
+    const lines: string[] = [];
+    for (const missionId of [...new Set(go.map((x) => x.missionId))]) {
+      const mine = go.filter((x) => x.missionId === missionId); const title = mine[0].missionTitle;
+      const perms = mine.filter((x) => x.kind === 'permission'); const allowed = perms.filter((x) => !answerOf(x).startsWith('허용하지 않'));
+      for (const it of perms) await resolvePermissionFor(it, allowed.includes(it));
+      if (allowed.length) await ws().retryParked(missionId, allowed.map((x) => x.denial!.sig));
+      const q = mine.find((x) => x.kind === 'question');
+      const gaps = mine.filter((x) => x.kind === 'gap');
+      const withEffect = (it: PendingDecision) => { const a = answerOf(it); const c = it.choices.find((x) => x.label === a); return (c?.effect ? `${a} — ${c.effect}` : a).slice(0, 600); };
+      if (gaps.length) await ws().decideMission(missionId, gaps.map((g) => ({ doc: g.doc, issue: g.issue, choice: withEffect(g) })), !q && gaps.some((g) => g.waiting));
+      if (q) await ws().answerMission(missionId, withEffect(q), 'continue', true);
+      for (const it of mine) handled.current.add(it.key);
+      const parts = [gaps.length && `결정 ${gaps.length}건`, q && '질문 답 1건', allowed.length && `권한 ${allowed.length}건 허용`, perms.length - allowed.length && `권한 ${perms.length - allowed.length}건 보류 유지`].filter(Boolean).join(', ');
+      lines.push(`· ${title}: ${parts} 반영 → ${q || gaps.some((g) => g.waiting) ? '멈춰 있던 미션이 이어서 진행합니다' : '진행 중인 미션이 다음 계획부터 따릅니다'}${allowed.length ? ' · 보류한 업무를 다시 시도합니다' : ''}`);
+    }
+    const list = (await ws().pendingDecisions(true)).filter((x) => !handled.current.has(x.key));
+    setItems(list); setSel({}); setOwnMap({});
+    setDone(`${go.length}건을 적용했습니다.${stale ? ` 이미 해결됐거나 바뀐 ${stale}건은 적용하지 않았습니다.` : ''}\n${lines.join('\n')}`);
+  });
+  const urgentN = items.filter((x) => x.urgent).length;
+  const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토' };
+
   if (!items.length && !open) return null;
   return (
     <>
       {items.length > 0 && !open && (
-        <button className="decision-badge" onClick={() => { setDone(null); setIdx(0); setOpen(true); }} title="정해야 할 결정을 다시 엽니다">
-          결정 대기 {items.length}
+        <button className={`decision-badge${urgentN ? ' is-urgent' : ''}`} onClick={() => { setDone(null); setIdx(0); setView('list'); setOpen(true); }} title="사용자 확인함을 엽니다">
+          확인함 {items.length}{urgentN ? ` · 대기 ${urgentN}` : ''}
         </button>
       )}
       {open && (
         <div className="modal-back" role="presentation">
-          <div className={`modal decision-modal${cur?.kind === 'checkpoint' ? ' is-wide' : ''}`} role="dialog" aria-modal="true" aria-label="결정이 필요합니다">
+          <div className={`modal decision-modal${view === 'list' || cur?.kind === 'checkpoint' ? ' is-wide' : ''}`} role="dialog" aria-modal="true" aria-label="사용자 확인함">
             <div className="modal-head">
-              <h2>결정이 필요합니다{items.length > 1 ? ` (${Math.min(idx, items.length - 1) + 1}/${items.length})` : ''}</h2>
+              {view === 'list'
+                ? <h2>사용자 확인함 <span className="muted small">{items.length}건{urgentN ? ` · 미션을 멈춘 결정 ${urgentN}건` : ' · 진행 중인 미션은 계속 작업 중'}</span></h2>
+                : <h2><button className="btn-link" onClick={() => { setView('list'); setDone(null); }}>← 확인함</button> {cur ? KIND[cur.kind] : ''}</h2>}
               <button className="btn" onClick={() => setOpen(false)}>나중에</button>
             </div>
-            {cur ? (
+            {view === 'list' ? (
+              <div className="decision-body inbox">
+                {done && <div className="decision-done" style={{ whiteSpace: 'pre-line' }}>{done}</div>}
+                {!items.length && <div className="muted">남은 항목이 없습니다.</div>}
+                {items.length > 0 && <div className="row gap inbox-tools"><button className="btn btn-sm" onClick={fillRec}>추천안으로 채우기</button><span className="muted small">채우기·고르기만으로는 아무것도 승인·반영되지 않습니다. 아래 '선택 항목 일괄 적용'을 눌러야 적용됩니다. 고르지 않은 항목은 그대로 남습니다.</span></div>}
+                <ul className="inbox-list">
+                  {items.map((it, i) => (
+                    <li key={it.key} className={`inbox-item${it.urgent ? ' is-urgent' : ''}`}>
+                      <div className="inbox-meta small"><span className={`badge ${it.urgent ? 'badge-warn' : 'badge-info'}`}>{KIND[it.kind]}{it.urgent ? ' · 미션 대기' : ''}</span> <b>{it.missionTitle}</b> · {it.task}</div>
+                      <div className="inbox-q">{it.question}</div>
+                      {it.held && <div className="small muted">보류 사유: {it.held}</div>}
+                      {it.explain && <div className="small inbox-explain">{it.explain}</div>}
+                      {it.grants && <div className="small inbox-grants">허용하면: {it.grants}</div>}
+                      {it.resumes && <div className="small muted">재개될 작업: {it.resumes}</div>}
+                      {batchable(it) ? (
+                        <div className="inbox-choices" role="radiogroup" aria-label={it.question}>
+                          {it.choices.map((c) => (
+                            <label key={c.label} className={`review-cp-choice${sel[it.key] === c.label && !ownMap[it.key]?.trim() ? ' is-on' : ''}`}>
+                              <input type="radio" name={`ib-${it.key}`} checked={sel[it.key] === c.label && !ownMap[it.key]?.trim()} onChange={() => { setSel((x) => ({ ...x, [it.key]: c.label })); setOwnMap((x) => ({ ...x, [it.key]: '' })); }} />
+                              <span><b>{c.label}</b>{c.recommended && <span className="badge badge-info">추천</span>}{c.effect && <span className="muted small"> — {c.effect}</span>}{c.recommended && c.why && <span className="small review-cp-why">추천 이유: {c.why}</span>}</span>
+                            </label>
+                          ))}
+                          {it.kind !== 'permission' && <input className="input" placeholder={it.choices.length ? '직접 적기(선택)' : '답을 적어 주세요'} value={ownMap[it.key] ?? ''} onChange={(e) => setOwnMap((x) => ({ ...x, [it.key]: e.target.value }))} />}
+                          {answerOf(it) && <span className="small inbox-picked">선택됨(적용 전): {answerOf(it).slice(0, 80)} <button className="btn-link small" onClick={() => { setSel((x) => { const n = { ...x }; delete n[it.key]; return n; }); setOwnMap((x) => ({ ...x, [it.key]: '' })); }}>선택 해제</button></span>}
+                        </div>
+                      ) : (
+                        <div className="row gap"><button className="btn btn-sm btn-primary" onClick={() => { setIdx(i); setView('item'); setDone(null); }}>{it.kind === 'checkpoint' ? '결과 보고 시연 열기' : '자세히 보고 정하기'}</button></div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {items.some(batchable) && (
+                  <div className="row gap inbox-foot">
+                    <button className="btn btn-primary" disabled={act.busy || !picked.length} onClick={() => void applySelected()}>선택 항목 일괄 적용({picked.length})</button>
+                    <span className="muted small">적용 직전에 각 항목이 아직 유효한지 다시 확인합니다.</span>
+                  </div>
+                )}
+                {act.error && <Banner>{act.error}</Banner>}
+              </div>
+            ) : cur ? (
               <>
               <div className="decision-body">
                 {done && <div className="decision-done">{done}</div>}

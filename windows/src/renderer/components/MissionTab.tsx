@@ -206,7 +206,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const st = mission?.status ?? null;
   const live = !!st && ACTIVE.includes(st);
   // 검토 지점에서는 결정·피드백을 검토 카드에서 보내므로 입력창은 일반 추가 지시로 쓴다
-  const cp = st === 'waiting_user' && !!mission?.checkpoint;
+  const cp = st === 'waiting_user' && !!mission?.checkpoint?.blocking;
   const gaps = !cp && st === 'waiting_user' && !!mission?.gaps?.length;
   const denied = !cp && st === 'waiting_user' && (!!mission?.denials?.length || !!mission?.blockers?.length);
   const mode: 'new' | 'live' | 'answer' | 'done' | 'stopped' = !mission || st === 'failed' ? 'new' : live ? 'live' : st === 'waiting_user' ? 'answer' : st === 'done' ? 'done' : 'stopped';
@@ -214,8 +214,7 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const blockedNew = mode === 'new' && !!active;
   const notReady = mode === 'new' && !!ready && !ready.ready;
   const run = (f: () => Promise<void>) => act.run(async () => { setNote(null); await f(); });
-  // 새 지시의 실행 제한(선택): 시간 상한(분)과 참여 직원. 비워 두면 제한 없음
-  const [minutes, setMinutes] = useState('');
+  // 새 지시의 참여 직원(선택). 비워 두면 활성 직원 전체
   const [staff, setStaff] = useState<string[]>([]);
   const staffList = useLoad(() => (mode === 'new' ? ws().listAgents(project.id) : Promise.resolve([] as Agent[])), [project.id, mode]);
   const pickable = (staffList.data ?? []).filter((a) => a.active && a.code !== '00');
@@ -225,10 +224,8 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
     if (!t) throw new Error('지시 내용을 입력하세요.');
     const r = await ws().missionReadiness(project.id, true);
     if (!r.ready) throw new Error(`지시하려면 먼저 설정하세요: ${r.items.filter((i) => !i.ok).map((i) => i.label).join(', ')}`);
-    const min = minutes.trim() ? Math.floor(Number(minutes)) : null;
-    if (minutes.trim() && (!Number.isFinite(min) || min! < 10 || min! > 600)) throw new Error('시간 상한은 10~600분 사이로 적어 주세요(비우면 제한 없음).');
-    const m = await ws().startMission(project.id, t, min || staff.length ? { minutes: min, staff: staff.length ? staff : null } : null);
-    setText(''); setMinutes(''); setStaff([]);
+    const m = await ws().startMission(project.id, t, staff.length ? { staff } : null);
+    setText(''); setStaff([]);
     await onChanged(m.id);
   });
   const directive = (how: 'next' | 'now') => run(async () => {
@@ -296,7 +293,6 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
         />
         {mode === 'new' && (
           <div className="composer-limits">
-            <label className="small">시간 상한 <input className="input composer-min" inputMode="numeric" placeholder="예: 90" value={minutes} onChange={(e) => setMinutes(e.target.value.replace(/[^0-9]/g, ''))} aria-label="시간 상한(분)" />분 <span className="muted">(넘으면 앱이 멈추고 그때까지 결과를 보고)</span></label>
             {pickable.length > 0 && (
               <div className="small composer-staff" role="group" aria-label="참여 직원">
                 <span>참여 직원</span>
@@ -369,7 +365,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           )}
         </div>
       </div>
-      {m.status === 'waiting_user' && m.checkpoint && <ReviewCheckpoint mission={m} onChanged={async () => { await detail.reload(); onChanged(); }} />}
+      {m.checkpoint && !['stopped', 'failed'].includes(m.status) && <ReviewCheckpoint mission={m} onChanged={async () => { await detail.reload(); onChanged(); }} />}
       {m.status === 'waiting_user' && m.pauseKind === 'restart' && !m.checkpoint && (
         <div className="limit-card" role="status">
           <strong>앱이 다시 시작되어 잠시 멈췄습니다</strong>
@@ -388,10 +384,17 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
         <div>{m.prompt}</div>
       </Fold>
       {act.error && <Banner>{act.error}</Banner>}
-      {live && m.limitUntil && (
+      {live && (m.limitUntil || m.limitWait) && (
         <div className="limit-card" role="status">
-          <strong>사용 한도 대기 — {fmtDate(m.limitUntil)} 이후 자동으로 이어서 진행합니다</strong>
-          <div className="muted small">Claude(또는 Codex) 플랜 사용 한도에 도달했습니다. 실패로 처리하지 않고, 끊긴 작업은 해제 후 같은 세션을 이어서 진행합니다. 한도가 이미 풀렸다면 바로 다시 시도할 수 있습니다.</div>
+          <strong>Claude 한도 대기{m.limitUntil ? ` — ${fmtDate(m.limitUntil)}에 앱이 다시 확인하고 자동으로 이어서 진행합니다` : ' — 다시 시도하는 중'}</strong>
+          <dl className="limit-facts small">
+            <dt>대기 사유</dt><dd>{m.limitWait?.reason || '플랜 사용 한도 도달'}</dd>
+            <dt>해제 시각</dt><dd>{m.limitWait ? (m.limitWait.resetKnown ? `확인됨 · ${fmtDate(m.limitWait.nextAt)}` : '알 수 없음 — 1시간마다 한 번 다시 확인') : '—'}</dd>
+            <dt>다음 확인</dt><dd>{m.limitUntil ? fmtDate(m.limitUntil) : '지금 확인 중'}</dd>
+            <dt>마지막 확인</dt><dd>{m.limitWait?.lastAt ? `${fmtDate(m.limitWait.lastAt)} · ${m.limitWait.lastResult ?? ''}` : '아직 없음(처음 한도 도달)'}</dd>
+            <dt>자동 재개할 작업</dt><dd>{m.limitWait?.target ?? '멈춘 작업'}</dd>
+          </dl>
+          <div className="muted small">실패로 처리하지 않습니다. 예약은 이 앱이 관리하므로 앱이 켜져 있어야 실행됩니다(앱을 껐다 켜도 예약은 복원되고, 지난 예약은 한 번만 확인합니다). 대기 중에는 Claude를 부르지 않습니다.</div>
           <div className="row gap">
             <button className="btn" disabled={act.busy} onClick={() => void act.run(async () => { await ws().retryMissionLimit(m.id); await detail.reload(); })}>
               지금 다시 시도
@@ -399,7 +402,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           </div>
         </div>
       )}
-      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && !m.checkpoint && m.pauseKind !== 'restart' && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
+      {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && !m.checkpoint?.blocking && m.pauseKind !== 'restart' && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'waiting_user' && m.status !== 'stopped' && m.status !== 'failed' && <ParkedCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'stopped' && m.status !== 'failed' && <StaffProposalCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />

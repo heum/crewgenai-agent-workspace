@@ -59,7 +59,7 @@ export interface EngineOptions {
 }
 
 /** 실행 메타에 남기는 사용 한도 대기 정보 */
-export interface RunLimit { until: number; text: string; nodeId: string; at: string }
+export interface RunLimit { until: number; text: string; nodeId: string; at: string; known?: boolean }
 const fmtTime = (ms: number) => new Date(ms).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 type RecStatus = 'ok' | 'fail' | 'true' | 'false' | 'stale' | 'waiting';
@@ -139,7 +139,8 @@ export class Engine {
   // ───────── 사용 한도 ─────────
   /** 한도 정보로 자동 재개 시각을 정한다(해제 시각 + 여유, 시각을 모르면 기본 대기). 미션 오퍼레이터 호출도 같은 기준을 쓴다. */
   limitWaitUntil(lim: LimitInfo): number {
-    const base = lim.resetsAt && lim.resetsAt > 0 ? lim.resetsAt : Date.now() + (this.o.limitFallbackMs ?? 30 * 60_000);
+    // 해제 시각을 알려 주면 그 시각, 모르면 1시간 뒤 한 번 다시 확인한다(무조건 5시간처럼 가정하지 않음)
+    const base = lim.resetsAt && lim.resetsAt > 0 ? lim.resetsAt : Date.now() + (this.o.limitFallbackMs ?? 60 * 60_000);
     return Math.max(Date.now(), base) + (this.o.limitGraceMs ?? 60_000);
   }
 
@@ -154,7 +155,7 @@ export class Engine {
   private hitLimit(runId: string, node: GraphNode, lim: LimitInfo): never {
     const prev = this.limitOf(runId);
     const until = Math.max(this.limitWaitUntil(lim), prev?.until ?? 0);
-    this.setMeta(runId, 'limit', JSON.stringify({ until, text: redact(lim.text).slice(0, 300), nodeId: node.id, at: now() } satisfies RunLimit));
+    this.setMeta(runId, 'limit', JSON.stringify({ until, text: redact(lim.text).slice(0, 300), nodeId: node.id, at: now(), known: !!(lim.resetsAt && lim.resetsAt > 0) } satisfies RunLimit));
     this.setNode(runId, node.id, { status: 'needs_resume', failureReason: `사용 한도 도달 — ${fmtTime(until)} 이후 자동으로 이어서 진행`, nextAction: '사용 한도 해제를 기다립니다' });
     throw new LimitHit(`"${node.label}" 사용 한도 도달`);
   }
@@ -168,6 +169,35 @@ export class Engine {
       this.resumeAfterLimit(runId);
     }, wait);
     this.limitTimers.set(runId, t);
+  }
+
+  /**
+   * 앱 재시작 등으로 끊긴 미션 실행을 자동으로 이어서 진행한다: 끊긴 작성 작업은 같은 Claude 세션을 이어 쓰고(없으면 새 시도),
+   * 완료된 단계는 다시 실행하지 않는다. 사용자가 재개 방법을 고를 필요가 없다.
+   */
+  resumeInterrupted(runId: string): boolean {
+    if (this.closed || this.active.has(runId)) return false;
+    const run = this.s.getRun(runId);
+    if (!['needs_resume', 'running', 'queued', 'paused'].includes(run.status)) return false;
+    const atts = this.s.runAttempts(runId);
+    for (const n of this.s.runNodes(runId)) {
+      if (['running', 'checking', 'rework'].includes(n.status)) this.s.updateRunNode(runId, n.nodeId, { status: 'needs_resume' });
+      if (!['running', 'checking', 'rework', 'needs_resume'].includes(n.status) || this.s.getResolution(runId, n.nodeId)) continue;
+      const last = atts.filter((a) => a.nodeId === n.nodeId && a.role === 'author').pop();
+      this.s.setResolution(runId, n.nodeId, last?.status === 'interrupted' && last.sessionId ? 'continue_session' : 'retry');
+      this.setNode(runId, n.nodeId, { nextAction: '앱 재시작 후 자동으로 이어서 진행' });
+    }
+    void this.drive(runId, 'resume');
+    return true;
+  }
+
+  /** 자동 재개 예약을 끈다(사용자가 중지했거나 미션이 더는 진행 중이 아님): 한도 대기를 풀고 실행을 취소 상태로 둔다 */
+  dropLimitSchedule(runId: string, reason: string) {
+    const t = this.limitTimers.get(runId); if (t) { clearTimeout(t); this.limitTimers.delete(runId); }
+    if (!this.limitOf(runId) || this.active.has(runId)) return;
+    this.setMeta(runId, 'limit', '');
+    for (const n of this.s.runNodes(runId)) if (n.status === 'needs_resume') this.s.updateRunNode(runId, n.nodeId, { status: 'cancelled', nextAction: '' });
+    if (this.s.getRun(runId).status === 'needs_resume') this.s.setRunStatus(runId, 'cancelled', reason);
   }
 
   /** 한도 해제 후(또는 사용자가 '지금 다시 시도'를 누르면) 같은 실행을 이어서 진행한다. 끊긴 작성 작업은 같은 Claude 세션을 이어 쓴다. */
@@ -367,12 +397,8 @@ export class Engine {
     for (const r of this.s.runsWithStatus(['needs_resume'])) {
       const lim = this.limitOf(r.id);
       if (!lim) continue;
-      if (this.meta(r.id, 'mission')) {
-        // 미션은 재시작 후 사용자 확인으로 돌아간다. 실행만 몰래 이어지지 않도록 자동 재개를 풀고 재개 방법 선택으로 둔다.
-        this.setMeta(r.id, 'limit', '');
-        for (const n of this.s.runNodes(r.id)) if (n.status === 'needs_resume') this.s.updateRunNode(r.id, n.nodeId, { nextAction: '재개 방법을 선택하세요: 새 시도 / 세션 이어서 / 산출물만 확인' });
-        this.s.setRunStatus(r.id, 'needs_resume', '사용 한도 대기 중 앱이 다시 시작됐습니다. 재개 방법을 선택하세요.');
-      } else this.scheduleLimitResume(r.id, lim.until);
+      // 미션 실행도 저장한 해제 시각에 앱이 다시 확인한다(재시작해도 예약 유지). 지난 시각이면(절전·종료 중 지남) 한 번만 바로 확인한다.
+      this.scheduleLimitResume(r.id, lim.until);
     }
   }
 

@@ -3,13 +3,25 @@
 // - 비대화 실행(-p, stream-json)의 인자 구성: 셸을 거치지 않고 argv 배열로 전달
 // - 도구·파일 접근 범위는 CLI의 권한 엔진(--restricted, dontAsk, allow 규칙, Bash 샌드박스)으로 집행
 // - 이벤트 해석, 세션 ID, 프로세스 그룹 단위 취소
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { highDenyRules, MEDIUM_COMMANDS, type CommandLevel } from '../autopilot';
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CliStatus, ToolName } from '../../shared/types';
 
+let javaHomeCache: string | null | undefined;
+/** 이 PC의 기본 JDK 위치(macOS java_home). 없거나 찾지 못하면 null. 한 번만 찾는다. */
+export function hostJavaHome(): string | null {
+  if (javaHomeCache !== undefined) return javaHomeCache;
+  javaHomeCache = null;
+  if (process.platform !== 'darwin') return null;
+  try {
+    const p = execFileSync('/usr/libexec/java_home', [], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (p && existsSync(join(p, 'bin', 'java'))) javaHomeCache = p;
+  } catch { /* JDK 없음 */ }
+  return javaHomeCache;
+}
 export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   const inheritedFromHost = !!env.CLAUDECODE || !!env.CLAUDE_CODE_ENTRYPOINT;
@@ -19,7 +31,11 @@ export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
     if (inheritedFromHost && k === 'ANTHROPIC_BASE_URL') delete env[k];
   }
   const extraPath = ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
-  env.PATH = [...new Set([...(env.PATH ?? '').split(':').filter(Boolean), ...extraPath])].join(':');
+  // 사용자 폴더(~/Library/Java)에만 설치된 JDK는 격리 실행 안에서 macOS의 java 실행기가 찾지 못한다(직원의 Gradle 시험이 실패하던 원인).
+  // JAVA_HOME이 없으면 이 PC의 기본 JDK를 찾아 넘기고 그 bin을 PATH 앞에 둔다.
+  const jh = env.JAVA_HOME || hostJavaHome();
+  if (jh) env.JAVA_HOME = jh;
+  env.PATH = [...new Set([...(jh ? [join(jh, 'bin')] : []), ...(env.PATH ?? '').split(':').filter(Boolean), ...extraPath])].join(':');
   env.NO_COLOR = '1';
   return { ...env, ...extra };
 }

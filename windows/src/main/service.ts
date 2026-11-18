@@ -352,8 +352,8 @@ export class Service {
   }
 
   /** 사용자가 버튼으로 고를 결정 목록(오퍼레이터 질문의 선택지, 근거 부족 항목의 선택지). 추천은 안내만 하고 고르지 않는다. */
-  /** all: 사용자가 '지금 확인'으로 직접 열 때는 진행 중이라 팝업을 미뤄 둔 권한 보류·미결 항목도 함께 보여 준다 */
-  pendingDecisions(all = false): PendingDecision[] {
+  /** 사용자 확인함: 결정이 필요한 모든 항목(진행 중이어도). urgent는 미션 전체가 기다리는 것(팝업 대상). all은 이전 호출 호환용 */
+  pendingDecisions(_all = false): PendingDecision[] {
     const out: PendingDecision[] = [];
     const asChoices = (choices: MissionChoice[] | null | undefined, options: string[] | null | undefined): MissionChoice[] =>
       choices?.length ? choices : (options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' }));
@@ -366,30 +366,33 @@ export class Service {
           if (r.status !== 'pending') continue;
           out.push({ ...base, key: `${m.id}|c|${r.id}`, kind: 'commit', task: `커밋 승인 요청 · 사이클 ${r.cycle}${r.task ? ` · ${r.task}` : ''}`, question: `${r.repo || '연결 폴더'} 저장소에 파일 ${r.files.length}개를 커밋할까요?`, explain: r.why, doc: '', issue: '', choices: [], waiting: false, commit: r });
         }
-        if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정(근거 부족 항목)은 보여 준다
-        // 미션이 기다리는 질문은 선택지가 없어도 보여 준다(직접 적어 답한다)
-        // 검토 지점: 결과·시연·결정을 한곳(미션 화면 검토 카드)에서 보도록 팝업은 한 건으로 묶는다
-        if (m.status === 'waiting_user' && m.checkpoint) {
+        if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정은 보여 준다
+        // 확인함: 결정이 필요한 것은 모두 모은다(진행 중이어도). 팝업은 미션 전체가 그 결정을 기다릴 때(urgent)만 띄운다.
+        const blocked = m.status === 'waiting_user' && m.pauseKind !== 'restart';
+        const cpBlocks = blocked && !!m.checkpoint?.blocking; // 미션을 멈추게 한 검토 카드인가(정기 카드는 진행을 막지 않음)
+        const shown = new Set<string>();
+        if (m.checkpoint) {
           const c = m.checkpoint;
-          out.push({ ...base, key: `${m.id}|cp|${c.cycle}|${c.at}`, kind: 'checkpoint', task: `검토 지점 · 사이클 ${c.cycle}`, question: c.title, explain: `${c.features.length}개 기능 결과와 시연이 준비됐습니다.${c.decisions.length ? ` 정할 것 ${c.decisions.length}건.` : ''}${c.assumptions.length ? ` 가정하고 진행한 세부 ${c.assumptions.length}건.` : ''} 미션 화면의 검토 카드에서 시연을 열어 보고 피드백·결정을 한 번에 보내세요.`, doc: '', issue: '', choices: [], waiting: true });
+          for (const d of c.decisions) shown.add(`${d.doc}|${d.question}`);
+          out.push({ ...base, key: `${m.id}|cp|${c.cycle}|${c.at}`, kind: 'checkpoint', task: `결과 검토 · 사이클 ${c.cycle}`, question: c.title, explain: `${c.features.length}개 기능 결과와 시연이 준비됐습니다.${c.decisions.length ? ` 정할 것 ${c.decisions.length}건.` : ''}${c.assumptions.length ? ` 가정하고 진행한 세부 ${c.assumptions.length}건.` : ''}`, doc: '', issue: '', choices: [], waiting: cpBlocks,
+            urgent: cpBlocks, held: cpBlocks ? '이 결정 없이는 진행할 수 있는 작업이 없어 미션이 기다립니다.' : '개발은 계속 진행 중입니다. 시연을 보고 피드백·결정을 보내면 다음 계획부터 반영합니다.', resumes: cpBlocks ? '결정·피드백을 보내면 미션이 이어서 진행합니다.' : '피드백·결정은 다음 계획부터 반영(지금 실행은 그대로)' });
         }
-        // 앱 재시작으로 잠시 멈춘 것은 사용자 결정이 아니므로 팝업으로 띄우지 않는다(미션 화면 알림)
-        if (m.status === 'waiting_user' && m.question && !m.checkpoint && m.pauseKind !== 'restart' && !(m.gaps?.length && !(m.questionOptions?.length))) {
-          out.push({ ...base, key: `${m.id}|q|${m.cycle}|${m.question.slice(0, 200)}`, kind: 'question', task: `오퍼레이터 질문 · 사이클 ${m.cycle}`, question: m.question, explain: '', doc: '', issue: '', choices: asChoices(m.questionChoices, m.questionOptions), waiting: true });
+        // 미션이 기다리는 질문은 선택지가 없어도 보여 준다(직접 적어 답한다). 앱 재시작은 사용자 결정이 아니므로 넣지 않는다.
+        if (m.status === 'waiting_user' && m.question && !m.checkpoint?.blocking && m.pauseKind !== 'restart' && !(m.gaps?.length && !(m.questionOptions?.length))) {
+          out.push({ ...base, key: `${m.id}|q|${m.cycle}|${m.question.slice(0, 200)}`, kind: 'question', task: `오퍼레이터 질문 · 사이클 ${m.cycle}`, question: m.question, explain: '', doc: '', issue: '', choices: asChoices(m.questionChoices, m.questionOptions), waiting: true,
+            urgent: true, held: '진행할 수 있는 작업이 없어 미션 전체가 이 답을 기다립니다.', resumes: '답하면 미션이 이어서 진행합니다.' });
         }
-        // 권한 때문에 보류한 업무: 허용하면 그 직원에게만 허용하고 다시 시도한다(허용 안 하면 보류 유지)
-        // 권한 보류는 그 업무만 빼고 나머지가 계속 진행되므로 진행 중에는 팝업으로 띄우지 않고 검토 지점·확인 대기에 모아 보여 준다
-        const showDenials = (all || !['planning', 'running', 'evaluating'].includes(m.status)) && m.pauseKind !== 'restart';
-        for (const d of showDenials ? m.denials ?? [] : []) {
+        // 권한 때문에 보류한 업무: 그 업무만 빠지고 나머지는 계속 진행한다. 허용하면 그 직원에게만 허용하고 보류한 업무를 다시 시도한다.
+        for (const d of m.pauseKind === 'restart' ? [] : m.denials ?? []) {
           const what = d.kind === 'command' ? `명령 '${d.suggestion ?? d.target}'` : d.kind === 'path' ? `경로 '${d.suggestion ?? d.target}' 읽기` : `${d.tool} 사용`;
-          const allow: MissionChoice[] = d.suggestion && d.kind !== 'other' ? [{ label: d.kind === 'command' ? `${d.agent}에게 '${d.suggestion}' 허용` : `참고 자료로 '${d.suggestion}' 추가`, effect: d.kind === 'command' ? `이 직원만 이 명령을 쓸 수 있게 되고, 보류한 업무를 다시 시도합니다(격리 복사본 안에서 실행).` : `이 경로를 읽기 전용 참고 자료로 열고, 보류한 업무를 다시 시도합니다.`, recommended: false, why: '' }] : [];
-          out.push({ ...base, key: `${m.id}|p|${d.sig}`, kind: 'permission', task: `보류한 업무 · ${d.agent} · ${d.tool}`, question: `${d.agent}이(가) ${what} 권한이 없어 이 업무를 보류했습니다. 허용할까요?`, explain: `거부된 요청: ${d.target}`, doc: '', issue: '', choices: [...allow, { label: '허용하지 않고 보류 유지', effect: '이 업무는 계속 보류하고 나머지 작업만 진행합니다. 나중에 미션 화면에서 다시 고를 수 있습니다.', recommended: false, why: '' }], waiting: m.status === 'waiting_user', denial: d });
+          const allow: MissionChoice[] = d.suggestion && d.kind !== 'other' ? [{ label: d.kind === 'command' ? `${d.agent}에게 '${d.suggestion}' 허용` : `참고 자료로 '${d.suggestion}' 추가`, effect: d.kind === 'command' ? `허용 범위: ${d.agent} 한 명이 '${d.suggestion}'로 시작하는 명령을 격리 복사본 안에서 실행(다른 직원·다른 명령은 그대로 막힘). 보류한 업무를 다시 시도합니다.` : `허용 범위: 이 경로를 읽기 전용 참고 자료로 엶(쓰기는 그대로 막힘). 보류한 업무를 다시 시도합니다.`, recommended: false, why: '' }] : [];
+          out.push({ ...base, key: `${m.id}|p|${d.sig}`, kind: 'permission', task: `보류한 업무 · ${d.agent} · ${d.tool}`, question: `${d.agent}이(가) ${what} 권한이 없어 이 업무를 보류했습니다. 허용할까요?`, explain: `거부된 요청: ${d.target}`, doc: '', issue: '', choices: [...allow, { label: '허용하지 않고 보류 유지', effect: '이 업무는 계속 보류하고 나머지 작업만 진행합니다.', recommended: false, why: '' }], waiting: blocked, denial: d,
+            urgent: false, held: '권한이 없어 이 업무만 보류했습니다(나머지는 계속 진행).', resumes: `${d.agent}의 보류한 업무(허용하면 다음 계획부터 다시 시도)`, grants: allow.length ? allow[0].effect : undefined });
         }
-        for (const g of m.gaps ?? []) {
-          if (!g.options?.length) continue;
-          // 사람이 정할 결정은 검토 지점에 모아 보여 준다. 진행 중에는 그 결정 없이는 아무것도 못 할 때만 바로 묻는다.
-          if (m.checkpoint || m.pauseKind === 'restart' || (!all && ['planning', 'running', 'evaluating'].includes(m.status) && !g.blocking)) continue;
-          out.push({ ...base, key: `${m.id}|g|${g.doc}|${g.issue}`, kind: 'gap', task: g.doc || '문서 미지정', question: g.issue, explain: g.explain ?? g.need ?? '', doc: g.doc, issue: g.issue, choices: asChoices(g.choices, g.options), waiting: m.status === 'waiting_user' });
+        for (const g of m.pauseKind === 'restart' ? [] : m.gaps ?? []) {
+          if (shown.has(`${g.doc}|${g.issue}`)) continue; // 검토 카드에 이미 있는 결정은 한 번만
+          out.push({ ...base, key: `${m.id}|g|${g.doc}|${g.issue}`, kind: 'gap', task: g.doc || '문서 미지정', question: g.issue, explain: g.explain ?? g.need ?? '', doc: g.doc, issue: g.issue, choices: asChoices(g.choices, g.options), waiting: blocked,
+            urgent: blocked && !!g.blocking, held: g.blocking ? '이 결정에 달린 작업만 보류했습니다.' : '이 결정에 달린 부분만 보류하고 나머지는 계속 진행합니다.', resumes: '정하면 다음 계획부터 이 결정을 따릅니다.' });
         }
       }
     }
