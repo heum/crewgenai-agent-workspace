@@ -834,6 +834,14 @@ export class MissionRunner {
       const m = JSON.parse(String(r.data)) as Mission;
       // 앱 재시작은 사용자 결정이 필요한 일이 아니다: 멈춘 지점부터 자동으로 이어서 진행한다(사용자 중지·결정 대기는 그대로 둠).
       // 실행 중이던 사이클은 다시 계획하지 않고 그 실행을 이어 가며, 사용 한도 대기는 저장한 해제 시각까지 기다린다.
+      // 이전 버전이 만든 '멈춘 검토 카드': 정할 결정이 있으면 그대로 기다리고(미션을 멈춘 카드로 표시), 결정이 없으면 멈추지 않고 이어서 진행한다
+      if (m.status === 'waiting_user' && m.checkpoint && m.checkpoint.blocking === undefined) {
+        if (m.checkpoint.decisions.length) { this.save({ ...m, checkpoint: { ...m.checkpoint, blocking: true } }); continue; }
+        const next = this.save({ ...m, checkpoint: { ...m.checkpoint, blocking: false }, status: 'planning', stage: 'plan', question: null, cycle: m.cycle + 1 });
+        this.event(next, 'system', '이전 버전에서 검토 카드로 멈춰 있던 미션을 이어서 진행합니다(검토 카드는 확인함에 남아 있음).');
+        void this.loop(m.id);
+        continue;
+      }
       const restartPaused = m.status === 'waiting_user' && m.pauseKind === 'restart'; // 이전 버전이 재시작 때 멈춰 둔 미션
       if (['planning', 'running', 'evaluating'].includes(m.status) || restartPaused) {
         const status = restartPaused ? (m.currentRunId ? 'running' : 'planning') : m.status;
