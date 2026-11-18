@@ -33,24 +33,39 @@ export function loungePlan(kit: Kit, box: { x: number; y: number; w: number; h: 
   const kinds = [...STATIONS]; const extra: Parameters<Kit['station']>[0][] = ['arm', 'bean', 'sofa', 'arm', 'bean', 'arm'];
   const cap = (ks: typeof kinds) => ks.reduce((n, k) => n + kit.station(k).slots.length, 0);
   for (let i = 0; cap(kinds) < keys.length && i < 24; i++) kinds.push(extra[i % extra.length]);
+  // 라운지가 넓으면(세로로 여러 줄이 들어가면) 빈 바닥만 남지 않게 소파·의자·빈백·독서 자리를 더 놓는다(줄마다 폭의 약 70%까지, 최대 3줄)
+  { const probeH = Math.max(...kinds.map((k) => kit.station(k).h));
+    const rowsRoom = Math.min(3, Math.max(1, Math.floor((box.h + vgap) / (probeH + vgap * 2))));
+    const want = rowsRoom * box.w * 0.7; const fill: Parameters<Kit['station']>[0][] = ['sofa', 'arm', 'bean', 'nook', 'arm', 'bean'];
+    const widthOf = (ks: typeof kinds) => ks.reduce((t, k) => t + kit.station(k).w + gap, 0);
+    for (let i = 0; rowsRoom > 1 && widthOf(kinds) < want && i < 18; i++) kinds.push(fill[i % fill.length]); }
   const sts = kinds.map((k) => kit.station(k));
-  // 줄 단위로 배치(넘치면 다음 줄, 세로가 모자라면 그 스테이션은 놓지 않음)
+  // 줄 수: 폭으로 정해지는 최소 줄 수와, 세로 여유로 들어가는 줄 수(최대 3) 중 큰 쪽. 공간이 넓으면 가구를 여러 줄로 나눠 라운지 전체에 펼친다
+  const maxH = Math.max(...sts.map((x) => x.h));
+  let minRows = 1; { let w = -gap; for (const st of sts) { if (w + gap + st.w > box.w) { minRows++; w = -gap; } w += gap + st.w; } }
+  const fitRows = Math.max(1, Math.floor((box.h + vgap) / (maxH + vgap * 2)));
+  const nRows = Math.max(minRows, Math.min(3, fitRows, Math.ceil(sts.length / 2)));
+  // 스테이션을 순서대로 줄마다 고르게 나누되, 한 줄이 폭을 넘으면 다음 줄로
   const rows: { items: { st: Station; idx: number }[]; w: number; h: number }[] = [];
+  const per = Math.ceil(sts.length / nRows);
   for (let i = 0; i < sts.length; i++) {
     const st = sts[i]; let row = rows[rows.length - 1];
-    if (!row || row.w + gap + st.w > box.w) { row = { items: [], w: -gap, h: 0 }; rows.push(row); }
+    if (!row || row.items.length >= per || row.w + gap + st.w > box.w) { row = { items: [], w: -gap, h: 0 }; rows.push(row); }
     row.items.push({ st, idx: i }); row.w += gap + st.w; row.h = Math.max(row.h, st.h);
   }
   const placed: (Placed | null)[] = sts.map(() => null);
-  // 들어가는 줄만 세로 가운데에(위로 몰리고 아래가 비지 않게)
-  let used = -vgap; for (const row of rows) { if (used + vgap + row.h > box.h) break; used += vgap + row.h; }
-  let y = box.y + Math.max(0, Math.floor((box.h - used) / 2));
-  for (const row of rows) {
-    if (y + row.h > box.y + box.h) break;
-    let x = box.x + Math.max(0, Math.floor((box.w - row.w) / 2));
-    for (const it of row.items) { placed[it.idx] = { st: it.st, x, y: y + (row.h - it.st.h) }; x += it.st.w + gap; }
-    y += row.h + vgap;
-  }
+  // 들어가는 줄만 쓰고, 줄 사이·위아래 여백을 고르게 나눈다(한가운데 한 줄로 몰리고 위아래가 비지 않게)
+  const fit: typeof rows = []; let used = 0;
+  for (const row of rows) { if (used + (fit.length ? vgap : 0) + row.h > box.h) break; used += (fit.length ? vgap : 0) + row.h; fit.push(row); }
+  const spareY = Math.max(0, box.h - used); const gapY = Math.floor(spareY / (fit.length + 1));
+  let y = box.y + gapY;
+  fit.forEach((row, ri) => {
+    // 줄 안에서도 남는 폭을 가구 사이에 고르게(줄마다 조금 엇갈리게 해서 격자처럼 보이지 않게)
+    const spareX = Math.max(0, box.w - row.w); const gx = Math.min(Math.floor(spareX / (row.items.length + 1)), 40);
+    let x = box.x + Math.floor((box.w - (row.w + gx * (row.items.length - 1))) / 2) + (ri % 2 ? Math.max(0, Math.min(6, Math.floor(gx / 3), Math.floor((spareX - gx * (row.items.length - 1)) / 2))) : 0);
+    for (const it of row.items) { placed[it.idx] = { st: it.st, x, y: y + (row.h - it.st.h) }; x += it.st.w + gap + gx; }
+    y += row.h + vgap + gapY;
+  });
   const order = FILL.filter(([si, k]) => placed[si] && placed[si]!.st.slots[k]);
   // FILL에 없는 남은 자리(넓은 키트)도 뒤에 붙인다
   placed.forEach((p, si) => p?.st.slots.forEach((_, k) => { if (!order.some(([a, b]) => a === si && b === k)) order.push([si, k]); }));
