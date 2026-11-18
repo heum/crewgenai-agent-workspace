@@ -178,8 +178,8 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                   <div><span className="muted small">작업</span> {cur.task}</div>
                   {cur.waiting && <div className="muted small decision-wait">미션이 이 결정을 기다리며 멈춰 있습니다. 고르기 전에는 진행하지 않습니다.</div>}
                 </div>
-                <div className="decision-q">{cur.question}</div>
-                {cur.explain && <div className="decision-explain small">{cur.explain}</div>}
+                {cur.kind !== 'checkpoint' && <div className="decision-q">{cur.question}</div>}
+                {cur.explain && cur.kind !== 'checkpoint' && <div className="decision-explain small">{cur.explain}</div>}
                 {cur.kind === 'commit' && cur.commit && (
                   <div className="decision-commit" style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 16px', borderRadius: 10, background: 'var(--bg-soft, #f5f6f8)', lineHeight: 1.6 }}>
                     <div className="small"><span className="muted">저장소</span> {cur.commit.repo || '(연결 폴더)'}

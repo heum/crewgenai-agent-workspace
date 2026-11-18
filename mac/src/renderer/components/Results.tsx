@@ -43,7 +43,7 @@ export default function ResultsPanel({ mission: m, feedback = true, showMission 
   });
   return (
     <div className="results-panel">
-      <DemoBar projectId={m.projectId} demo={demo} onConsole={demoOpen.openConsole} />
+      <DemoBar projectId={m.projectId} demo={demo} onConsole={demoOpen.openConsole} onStart={(st) => void demoOpen.start(st)} />
       {demoOpen.ui}
       {demoOpen.act.error && <Banner>{demoOpen.act.error}</Banner>}
       <div className="results-meta">

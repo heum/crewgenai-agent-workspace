@@ -53,17 +53,19 @@ export function useDemoOpener(projectId: string, demo: ReturnType<typeof useDemo
     seen.add(id);
     return [...st.service.needs.flatMap((n) => chain(n, info, seen)), st];
   };
-  const open = (d: ResultDemo): Promise<void | undefined> => act.run(async () => {
+  /** startOnly: 시연 환경 목록의 '켜기' — 승인(처음 한 번)과 켜기만 하고 화면은 열지 않는다 */
+  const open = (d: ResultDemo, startOnly = false): Promise<void | undefined> => act.run(async () => {
     const info = await ws().demoInfo(projectId); demo.setInfo(info);
     const need = chain(d.service, info);
     if (!need.length) throw new Error(`시연 목록에 '${d.service}' 서비스가 없습니다.`);
     const unapproved = need.find((x) => !x.approved);
-    if (unapproved) { setApprove({ st: unapproved, then: () => void open(d) }); return; }
+    if (unapproved) { setApprove({ st: unapproved, then: () => void open(d, startOnly) }); return; }
     const target = need[need.length - 1];
     if (target.status !== 'running') {
       setNote(`'${target.service.name}'을(를) 켜는 중입니다(최대 ${target.service.startupSec}초)…`);
       try { demo.setInfo(await ws().demoStart(projectId, d.service)); } finally { setNote(null); }
     }
+    if (startOnly) return;
     if (d.api) { setConsoleFor({ service: d.service, api: d.api }); return; }
     const st = (await ws().demoInfo(projectId)).services.find((x) => x.service.id === d.service);
     if (!st?.url) throw new Error('이 서비스에는 열 화면 주소가 없습니다.');
@@ -81,7 +83,8 @@ export function useDemoOpener(projectId: string, demo: ReturnType<typeof useDemo
       {consoleFor && demo.info && <ApiConsole projectId={projectId} info={demo.info} service={consoleFor.service} focus={consoleFor.api} onClose={() => setConsoleFor(null)} />}
     </>
   );
-  return { open, act, ui, openConsole: (service: string) => setConsoleFor({ service, api: '' }) };
+  return { open, act, ui, openConsole: (service: string) => setConsoleFor({ service, api: '' }),
+    start: (st: DemoState) => open({ service: st.service.id, path: '', api: '', steps: '', expected: '', data: st.service.data }, true) };
 }
 
 export function DemoBlock({ d, info, onOpen, busy }: { d: ResultDemo; info: DemoInfo | null; onOpen: () => void; busy: boolean }) {
@@ -101,7 +104,7 @@ export function DemoBlock({ d, info, onOpen, busy }: { d: ResultDemo; info: Demo
   );
 }
 
-export function DemoBar({ projectId, demo, onConsole }: { projectId: string; demo: ReturnType<typeof useDemo>; onConsole: (service: string) => void }) {
+export function DemoBar({ projectId, demo, onConsole, onStart }: { projectId: string; demo: ReturnType<typeof useDemo>; onConsole: (service: string) => void; onStart?: (st: DemoState) => void }) {
   const act = useAction();
   const [log, setLog] = useState<{ name: string; text: string } | null>(null);
   const info = demo.info;
@@ -118,6 +121,7 @@ export function DemoBar({ projectId, demo, onConsole }: { projectId: string; dem
             <StatusPill st={st} />
             {st.url && <span className="muted small mono">{st.url.replace('http://', '')}</span>}
             <span className="demo-svc-actions">
+              {onStart && (st.status === 'stopped' || st.status === 'needs_approval') && <button className="btn-link small" onClick={() => onStart(st)} title={st.approved ? '이 서비스를 켭니다' : '처음 한 번 실행 명령을 확인·승인한 뒤 켭니다'}>{st.approved ? '켜기' : '승인하고 켜기'}</button>}
               {st.status === 'running' && st.url && <button className="btn-link small" onClick={() => void act.run(() => ws().openLocalUrl(st.url!))}>열기</button>}
               {st.service.port && info.apis.some((a) => a.service === st.service.id) && <button className="btn-link small" onClick={() => onConsole(st.service.id)}>API 시연</button>}
               {st.ours && st.status !== 'stopped' && <button className="btn-link small" onClick={() => void act.run(async () => { demo.setInfo(await ws().demoStop(projectId, st.service.id)); })}>중지</button>}
