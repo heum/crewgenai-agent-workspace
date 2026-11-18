@@ -580,6 +580,8 @@ export interface Mission {
   limits?: MissionLimits | null;
   /** 시간 상한을 재는 시작 시각(이어서 진행하면 새로 잰다) */
   limitStart?: string | null;
+  /** 사용자 답을 기다리기 시작한 시각(기다린 시간은 시간 상한에서 뺀다) */
+  waitingSince?: string | null;
   /** 사용량(오퍼레이터·직원 CLI 보고값) */
   usage?: MissionUsage | null;
   /** 실행 준비 확인을 통과했는지(통과 전에는 직원에게 작업을 배정하지 않는다) */

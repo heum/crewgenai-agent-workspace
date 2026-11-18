@@ -57,6 +57,22 @@ describe('오퍼레이터 루프', () => {
     svc.close();
   });
 
+  it('시간 상한: 사용자 답을 기다린 시간은 빼고 잰다', async () => {
+    const { svc, p } = setup();
+    svc.saveSettings({ missionMaxCycles: 1 });
+    const m0 = await svc.startMission(p.id, '문서를 정리하라', { minutes: 90, staff: null });
+    const w = await waitMission(svc, m0.id, ['waiting_user', 'done', 'failed']);
+    expect(w.checkpoint?.reason).toBe('budget');
+    // 80분 전에 시작했지만 그중 40분은 사용자 답을 기다림 → 실제로 잰 시간 40분이라 상한 전
+    const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    (svc.missions as unknown as { save: (m: object) => void }).save({ ...svc.missions.get(w.id), limitStart: ago(80), waitingSince: ago(40) });
+    svc.missions.review(w.id, [], '', 'continue');
+    const next = await waitMission(svc, w.id, ['waiting_user', 'done', 'failed']);
+    expect(next.checkpoint?.reason ?? next.status).not.toBe('limit');
+    expect(Date.now() - Date.parse(svc.missions.get(w.id).limitStart!)).toBeLessThan(45 * 60_000);
+    svc.close();
+  });
+
   it('실행 준비 확인에서 막히면(구현 담당 없음) 직원에게 작업을 배정하지 않고 막힌 것을 보고한다', async () => {
     const { svc, p } = setup();
     const reader = svc.store.listAgents(p.id).find((a) => a.active && a.code !== '00' && !a.tools.includes('Edit') && !a.tools.includes('Write'))!;

@@ -253,7 +253,12 @@ export class MissionRunner {
     this.d.emit({ type: 'mission', mission: redactDeep(m) });
     return m;
   }
-  private set(id: string, patch: Partial<Mission>): Mission { return this.save({ ...this.get(id), ...patch }); }
+  private set(id: string, patch: Partial<Mission>): Mission {
+    const cur = this.get(id);
+    // 사용자 답을 기다리기 시작한 시각(시간 상한에서 기다린 시간은 빼려고)
+    const waiting = patch.status === 'waiting_user' && cur.status !== 'waiting_user' ? { waitingSince: now() } : {};
+    return this.save({ ...cur, ...patch, ...waiting });
+  }
   private event(m: Mission, kind: MissionEvent['kind'], text: string, data: unknown = null): void {
     const r = this.d.store.db.prepare('SELECT COALESCE(MAX(seq),0) s FROM mission_events WHERE mission_id=?').get(m.id) as Row;
     const ev: MissionEvent = { missionId: m.id, seq: Number(r.s) + 1, at: now(), kind, cycle: m.cycle, text: redact(text), data: data === null ? '' : JSON.stringify(redactDeep(data), null, 2) };
@@ -396,7 +401,10 @@ export class MissionRunner {
     const cycle = ran ? m.cycle + 1 : m.cycle;
     const fresh = m.checkpoint?.reason === 'limit' || m.checkpoint?.reason === 'blocked';
     if (fresh && action === 'continue' && m.limits?.minutes) this.event(m, 'system', `사용자가 이어서 진행: 시간 상한 ${m.limits.minutes}분을 지금부터 새로 잽니다.`);
-    const next = this.set(id, { ...(fresh ? { limitStart: now(), readyChecked: m.checkpoint?.reason === 'blocked' ? false : m.readyChecked } : {}), checkpoint: null, pauseKind: null, sinceReview: 0, status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
+    // 사용자 답을 기다린 시간은 시간 상한에 넣지 않는다(그동안 작업·토큰 사용이 없음): 시작 시각을 기다린 만큼 뒤로 민다
+    const waited = !fresh && m.limits?.minutes && m.status === 'waiting_user' && m.waitingSince ? Math.max(0, Date.now() - Date.parse(m.waitingSince)) : 0;
+    const shifted = waited ? { limitStart: new Date(Date.parse(m.limitStart ?? m.createdAt) + waited).toISOString() } : {};
+    const next = this.set(id, { ...shifted, ...(fresh ? { limitStart: now(), readyChecked: m.checkpoint?.reason === 'blocked' ? false : m.readyChecked } : {}), checkpoint: null, pauseKind: null, sinceReview: 0, status: 'planning', stage: 'plan', question: null, questionOptions: null, questionChoices: null, gaps: null, denials: null, blockers: null, parkedSigs: [], idleCycles: 0, cycle, maxCycles: Math.max(m.maxCycles, cycle + this.d.maxCycles() - 1), ...(keep === 'pending' ? { gaps: m.gaps ?? null, denials: m.denials ?? null, blockers: m.blockers ?? null, parkedSigs: m.parkedSigs ?? [] } : keep ?? {}) });
     void this.loop(id);
     return next;
   }
@@ -847,7 +855,7 @@ export class MissionRunner {
         const project = this.d.store.getProject(m.projectId);
         const agents = this.staffFor(m);
         // 시간 상한: 넘었으면 새 작업을 배정하지 않고 지금까지의 결과·막힌 것을 한 번에 보고한다
-        if (this.overTime(m)) { await this.pauseReport(id, 'limit'); return; }
+        if (this.overTime(m, this.cycleMargin(m))) { await this.pauseReport(id, 'limit'); return; } // 남은 시간이 거의 없으면 계획(토큰)도 하지 않는다
         // 실행 준비 확인: 통과 전에는 직원에게 개발 작업을 배정하지 않는다
         if (!m.readyChecked) {
           const rc = await this.readyCheck(m, project.plan, agents);
@@ -1132,10 +1140,13 @@ export class MissionRunner {
     const ids = m.limits?.staff;
     return ids?.length ? all.filter((a) => a.code === '00' || ids.includes(a.id)) : all;
   }
-  private overTime(m: Mission): boolean {
+  /** margin: 남은 시간이 이만큼(밀리초)도 안 되면 넘은 것으로 본다(새 사이클을 시작해 봐야 곧 멈추므로) */
+  private overTime(m: Mission, margin = 0): boolean {
     const min = m.limits?.minutes; if (!min) return false;
-    const t0 = Date.parse(m.limitStart ?? m.createdAt); return Number.isFinite(t0) && Date.now() - t0 >= min * 60_000;
+    const t0 = Date.parse(m.limitStart ?? m.createdAt); return Number.isFinite(t0) && Date.now() - t0 >= min * 60_000 - margin;
   }
+  /** 새 사이클을 시작하지 않을 남은 시간: 상한의 10%(최대 10분) */
+  private cycleMargin(m: Mission): number { return Math.min(10 * 60_000, (m.limits?.minutes ?? 0) * 6_000); }
   private addUsage(id: string, items: { costUsd: number | null; usage: Record<string, number> | null }[]) {
     const m = this.get(id); const u = { ...(m.usage ?? emptyUsage()) };
     for (const it of items) {
