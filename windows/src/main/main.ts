@@ -254,6 +254,8 @@ void app.whenReady().then(async () => {
     dbFile: join(dataDir, 'workspace.db'), mockScript: join(resDir, 'mock-claude.cjs'), mockCodexScript: join(resDir, 'mock-codex.cjs'), emit, secretStore, promptsDir: join(resDir, 'docs', 'prompts'),
     tracer: (sv) => createTracer(() => { const st = sv.settings(); return { enabled: st.langsmithEnabled, apiKey: sv.langsmithKey(), endpoint: st.langsmithEndpoint, project: st.langsmithProject }; }, log),
   });
+  // 멈춘 실행을 자동으로 이어 가기 전에 Claude CLI 위치를 먼저 찾는다(찾기 전에 이어 가면 'CLI 경로 없음'으로 실패)
+  if (svc.settings().executor === 'claude') await svc.cliStatus(false).catch(() => null);
   await svc.engine.recoverOnStartup();
   await svc.missions.recoverProcesses();
   svc.missions.recoverOnStartup();
