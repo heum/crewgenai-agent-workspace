@@ -165,6 +165,17 @@ export function scopeRule(scope: string): string {
   return s === '' || s === '.' ? 'Edit(./**)' : `Edit(./${s}/**)`;
 }
 
+/**
+ * 비밀값이 들어가는 환경 파일만 읽기 금지. 저장소에 함께 올리는 견본(.env.example·.env.sample·.env.template)은 비밀값이 없으므로 읽을 수 있다.
+ * (거부 규칙이 허용보다 우선이라 '.env.*' 전체를 막으면 견본도 못 읽고, 허용 명령을 더해도 풀리지 않는다)
+ */
+export const SECRET_ENV = ['.env', '.env.local', '.env.*.local', '.env.local.*', '.env.prod*', '.env.dev*', '.env.stag*', '.env.test*', '.env.secret*', '.env.keys', '.env.vault', '.env.me', '.env.*.prod*'];
+const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist|defaults)$/;
+/** 명령이 읽기 금지 환경 파일을 건드리는가(견본 제외) */
+export function touchesSecretEnv(command: string): boolean {
+  return (command.match(/(?:^|[\s'"=/])(\.env(?:\.[\w.-]+)?)(?=$|[\s'";|&)])/g) ?? []).map((m) => m.replace(/^[\s'"=/]/, '')).some((f) => !ENV_TEMPLATE.test(f));
+}
+
 export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const writer = spec.tools.includes('Edit') || spec.tools.includes('Write');
   // Windows: Claude의 Bash OS 격리(샌드박스)를 쓸 수 없으므로 Bash 도구를 주지 않는다(격리 없는 셸 실행을 막는다)
@@ -172,7 +183,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const allow: string[] = ['Read', 'Grep', 'Glob'];
   if (writer) allow.push(...spec.editScopes.map(scopeRule));
   // Bash 허용 명령 규칙은 넣지 않는다(Windows판은 Bash 도구를 주지 않음)
-  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'];
+  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', ...SECRET_ENV.map((p) => `Read(./${p})`), 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'];
   // Bash 도구를 주지 않으므로 Bash 샌드박스 설정은 넣지 않는다(Windows에서는 샌드박스를 지원하지 않음)
   const settings = { permissions: { allow, deny, defaultMode: 'dontAsk' }, disableAllHooks: true, disableSkillShellExecution: true }; // 훅·스킬 셸 실행 끔: 스킬·플러그인이 권한 통제 밖에서 명령을 실행하지 못하게
   const args = [

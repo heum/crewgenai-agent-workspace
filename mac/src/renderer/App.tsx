@@ -53,10 +53,14 @@ export default function App() {
     window.addEventListener('crewgenai:goto-mission', go);
     return () => window.removeEventListener('crewgenai:goto-mission', go);
   }, []);
-  const openAttention = (it: AttentionItem) => {
+  // '지금 확인': 결정 팝업에 그 항목이 있으면 화면을 옮기지 않고 팝업으로 연다. 팝업으로 다룰 수 없는 항목만 해당 화면으로 이동
+  const goAttention = (it: AttentionItem) => {
     setSelectedId(it.projectId);
     if (it.missionId) { setTab('mission'); setFocusMission({ id: it.missionId, n: Date.now() }); }
     else if (it.runId) { setFocusRunId(it.runId); setFocusKey(Date.now()); setTab(it.kind === 'review' ? 'review' : 'run'); }
+  };
+  const openAttention = (it: AttentionItem) => {
+    window.dispatchEvent(new CustomEvent('crewgenai:open-decisions', { detail: { missionId: it.missionId ?? null, fallback: () => goAttention(it) } }));
   };
 
   useEffect(() => {

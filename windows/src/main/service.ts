@@ -352,7 +352,8 @@ export class Service {
   }
 
   /** 사용자가 버튼으로 고를 결정 목록(오퍼레이터 질문의 선택지, 근거 부족 항목의 선택지). 추천은 안내만 하고 고르지 않는다. */
-  pendingDecisions(): PendingDecision[] {
+  /** all: 사용자가 '지금 확인'으로 직접 열 때는 진행 중이라 팝업을 미뤄 둔 권한 보류·미결 항목도 함께 보여 준다 */
+  pendingDecisions(all = false): PendingDecision[] {
     const out: PendingDecision[] = [];
     const asChoices = (choices: MissionChoice[] | null | undefined, options: string[] | null | undefined): MissionChoice[] =>
       choices?.length ? choices : (options ?? []).map((label) => ({ label, effect: '', recommended: false, why: '' }));
@@ -378,7 +379,7 @@ export class Service {
         }
         // 권한 때문에 보류한 업무: 허용하면 그 직원에게만 허용하고 다시 시도한다(허용 안 하면 보류 유지)
         // 권한 보류는 그 업무만 빼고 나머지가 계속 진행되므로 진행 중에는 팝업으로 띄우지 않고 검토 지점·확인 대기에 모아 보여 준다
-        const showDenials = !['planning', 'running', 'evaluating'].includes(m.status) && m.pauseKind !== 'restart';
+        const showDenials = (all || !['planning', 'running', 'evaluating'].includes(m.status)) && m.pauseKind !== 'restart';
         for (const d of showDenials ? m.denials ?? [] : []) {
           const what = d.kind === 'command' ? `명령 '${d.suggestion ?? d.target}'` : d.kind === 'path' ? `경로 '${d.suggestion ?? d.target}' 읽기` : `${d.tool} 사용`;
           const allow: MissionChoice[] = d.suggestion && d.kind !== 'other' ? [{ label: d.kind === 'command' ? `${d.agent}에게 '${d.suggestion}' 허용` : `참고 자료로 '${d.suggestion}' 추가`, effect: d.kind === 'command' ? `이 직원만 이 명령을 쓸 수 있게 되고, 보류한 업무를 다시 시도합니다(격리 복사본 안에서 실행).` : `이 경로를 읽기 전용 참고 자료로 열고, 보류한 업무를 다시 시도합니다.`, recommended: false, why: '' }] : [];
@@ -387,7 +388,7 @@ export class Service {
         for (const g of m.gaps ?? []) {
           if (!g.options?.length) continue;
           // 사람이 정할 결정은 검토 지점에 모아 보여 준다. 진행 중에는 그 결정 없이는 아무것도 못 할 때만 바로 묻는다.
-          if (m.checkpoint || m.pauseKind === 'restart' || (['planning', 'running', 'evaluating'].includes(m.status) && !g.blocking)) continue;
+          if (m.checkpoint || m.pauseKind === 'restart' || (!all && ['planning', 'running', 'evaluating'].includes(m.status) && !g.blocking)) continue;
           out.push({ ...base, key: `${m.id}|g|${g.doc}|${g.issue}`, kind: 'gap', task: g.doc || '문서 미지정', question: g.issue, explain: g.explain ?? g.need ?? '', doc: g.doc, issue: g.issue, choices: asChoices(g.choices, g.options), waiting: m.status === 'waiting_user' });
         }
       }

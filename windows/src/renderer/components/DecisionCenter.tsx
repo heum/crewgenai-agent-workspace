@@ -1,7 +1,8 @@
 // 결정 팝업: 사용자가 정해야 하는 것이 생기면 어느 탭에서든 팝업으로 알리고, 그 자리에서 버튼으로 고르게 한다.
 // 추천안은 '추천' 표시와 이유만 보여 주고 자동으로 고르지 않는다. 닫아도 오른쪽 아래 '결정 대기'로 다시 열 수 있다.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CommitPreview, LiveEvent, PendingDecision } from '../../shared/types';
+import type { CommitPreview, LiveEvent, Mission, PendingDecision } from '../../shared/types';
+import ReviewCheckpoint from './ReviewCheckpoint';
 import { useAction, ws } from '../api';
 import { Banner } from './common';
 
@@ -14,11 +15,13 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const seen = useRef<Set<string>>(new Set()); // 이미 팝업으로 보여 준 결정(닫으면 같은 결정으로 다시 띄우지 않음)
   const handled = useRef<Set<string>>(new Set()); // 이번에 정한 권한 항목(보류 유지 포함) — 다시 묻지 않음
   const act = useAction();
+  const explicit = useRef(false); // '지금 확인'으로 직접 연 동안에는 진행 중이라 미뤄 둔 항목도 계속 보여 준다
+  useEffect(() => { if (!open) explicit.current = false; }, [open]);
 
   useEffect(() => {
     let t: ReturnType<typeof setTimeout> | null = null;
     const load = () => {
-      ws().pendingDecisions().then((all) => {
+      ws().pendingDecisions(explicit.current).then((all) => {
         const list = all.filter((x) => !handled.current.has(x.key));
         setItems(list);
         const fresh = list.filter((d) => !seen.current.has(d.key));
@@ -28,12 +31,35 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     load();
     const off = ws().onLive((e: LiveEvent) => { if (e.type === 'mission') { if (t) clearTimeout(t); t = setTimeout(load, 400); } });
     // 다른 화면(사무실의 '확인 필요' 등)에서 결정 팝업을 연다
-    const openNow = () => { ws().pendingDecisions().then((all) => { const list = all.filter((x) => !handled.current.has(x.key)); for (const d of list) seen.current.add(d.key); setItems(list); setIdx(0); setDone(null); setOpen(true); }).catch(() => {}); };
+    // detail.missionId가 있으면 그 미션의 결정부터 보여 주고, 팝업에 그 미션 항목이 없으면 detail.fallback(해당 화면으로 이동)
+    const openNow = (e: Event) => {
+      const d = (e as CustomEvent<{ missionId?: string | null; fallback?: () => void } | undefined>).detail;
+      ws().pendingDecisions(true).then((all) => {
+        const list = all.filter((x) => !handled.current.has(x.key));
+        const at = d?.missionId ? list.findIndex((x) => x.missionId === d.missionId) : 0;
+        if ((d?.missionId && at < 0) || !list.length) { d?.fallback?.(); return; }
+        explicit.current = true; for (const x of list) seen.current.add(x.key); setItems(list); setIdx(Math.max(0, at)); setDone(null); setOpen(true);
+      }).catch(() => d?.fallback?.());
+    };
     window.addEventListener('crewgenai:open-decisions', openNow);
     return () => { off(); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); };
   }, []);
 
   const cur = items[Math.min(idx, items.length - 1)] ?? null;
+  // 검토 지점은 팝업 안에서 검토 카드 그대로 보여 준다(미션 화면으로 옮겨 가지 않아도 됨)
+  const [cpMission, setCpMission] = useState<Mission | null>(null);
+  useEffect(() => {
+    if (!open || cur?.kind !== 'checkpoint') return;
+    let live = true;
+    ws().missionDetail(cur.missionId).then((d) => { if (live) setCpMission(d.mission); }).catch(() => {});
+    return () => { live = false; };
+  }, [open, cur?.key]);
+  const afterCheckpoint = async () => {
+    if (cur) handled.current.add(cur.key);
+    const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
+    setItems(list); setIdx(0); setDone('검토 결과를 보냈습니다. 미션이 이어서 진행합니다.');
+    if (!list.length) setTimeout(() => setOpen(false), 1800);
+  };
   useEffect(() => { setOwn(''); }, [cur?.key]);
   // 승인 커밋: 지금 저장소 상태로 파일·변경 줄 수·막힘을 다시 읽어 보여 준다(승인할 때 이 내용과 같아야 커밋)
   const [preview, setPreview] = useState<CommitPreview | null>(null);
@@ -47,7 +73,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const curKey = useRef<string | null>(null);
   useEffect(() => { curKey.current = cur?.key ?? null; loadPreview(); }, [cur?.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const afterCommit = async (msg: string) => {
-    const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+    const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
     for (const d of list) seen.current.add(d.key);
     setItems(list); setIdx(0); setDone(msg);
     if (!list.length) setTimeout(() => setOpen(false), 2200);
@@ -97,7 +123,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     const mine = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !!x.denial?.suggestion && x.denial.kind !== 'other');
     for (const it of mine) await resolvePermissionFor(it, true);
     await ws().retryParked(cur.missionId, mine.map((x) => x.denial!.sig)); // 허용한 항목만 푼다(다른 보류·결정은 그대로)
-    const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+    const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
     for (const d of list) seen.current.add(d.key);
     setItems(list); setIdx(0);
     setDone(`권한 ${mine.length}건을 허용했습니다. 보류한 업무를 다음 계획부터 다시 시도합니다.`);
@@ -108,7 +134,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     if (cur.kind === 'permission') {
       const allow = !label.startsWith('허용하지 않');
       await resolvePermission(allow);
-      const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+      const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
       for (const d of list) seen.current.add(d.key);
       setItems(list); setIdx(0);
       setDone(allow ? `허용했습니다. ${list.some((x) => x.kind === 'permission' && x.missionId === cur.missionId) ? '남은 권한 항목을 정하면 보류한 업무를 다시 시도합니다.' : '보류한 업무를 다음 계획부터 다시 시도합니다.'}` : '보류를 유지합니다. 나머지 작업은 계속 진행합니다.');
@@ -120,7 +146,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     if (action === 'stop') await ws().answerMission(cur.missionId, '', 'stop');
     else if (cur.kind === 'question') await ws().answerMission(cur.missionId, choice, 'continue', true);
     else await ws().decideMission(cur.missionId, [{ doc: cur.doc, issue: cur.issue, choice }], cur.waiting);
-    const list = (await ws().pendingDecisions()).filter((x) => !handled.current.has(x.key));
+    const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
     for (const d of list) seen.current.add(d.key);
     setItems(list);
     setDone(action === 'stop' ? `'${label.trim()}' — 미션을 종료했습니다.` : `'${label.trim()}'로 정했습니다. ${cur.kind === 'question' || cur.waiting ? '미션이 이 결정으로 이어서 진행합니다.' : '다음 계획부터 이 결정을 따릅니다.'}`);
@@ -138,7 +164,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       )}
       {open && (
         <div className="modal-back" role="presentation">
-          <div className="modal decision-modal" role="dialog" aria-modal="true" aria-label="결정이 필요합니다">
+          <div className={`modal decision-modal${cur?.kind === 'checkpoint' ? ' is-wide' : ''}`} role="dialog" aria-modal="true" aria-label="결정이 필요합니다">
             <div className="modal-head">
               <h2>결정이 필요합니다{items.length > 1 ? ` (${Math.min(idx, items.length - 1) + 1}/${items.length})` : ''}</h2>
               <button className="btn" onClick={() => setOpen(false)}>나중에</button>
@@ -183,12 +209,9 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                     </div>
                   </div>
                 )}
-                {cur.kind === 'checkpoint' && (
-                  <div className="row gap">
-                    <button className="btn btn-primary" onClick={() => { onOpenMission(cur.projectId, cur.missionId); setOpen(false); }}>검토 화면 열기</button>
-                    <span className="muted small">시연·확인 순서·미검증 범위·정할 것을 한 화면에서 보고 피드백을 한 번에 보냅니다.</span>
-                  </div>
-                )}
+                {cur.kind === 'checkpoint' && (cpMission?.id === cur.missionId && cpMission.checkpoint
+                  ? <ReviewCheckpoint mission={cpMission} onChanged={afterCheckpoint} />
+                  : <div className="muted small">검토 카드를 불러오는 중…</div>)}
                 {cur.kind === 'permission' && items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !!x.denial?.suggestion && x.denial.kind !== 'other').length > 1 && (
                   <div className="decision-batch small">
                     <span>이 미션의 권한 항목 {items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId).length}건: </span>

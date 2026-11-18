@@ -144,6 +144,17 @@ export function absRules(rule: string, cwd: string): string[] {
   return [rule, ...bases.map((b) => `${m[1]}(/${b}/${m[2]})`)];
 }
 
+/**
+ * 비밀값이 들어가는 환경 파일만 읽기 금지. 저장소에 함께 올리는 견본(.env.example·.env.sample·.env.template)은 비밀값이 없으므로 읽을 수 있다.
+ * (거부 규칙이 허용보다 우선이라 '.env.*' 전체를 막으면 견본도 못 읽고, 허용 명령을 더해도 풀리지 않는다)
+ */
+export const SECRET_ENV = ['.env', '.env.local', '.env.*.local', '.env.local.*', '.env.prod*', '.env.dev*', '.env.stag*', '.env.test*', '.env.secret*', '.env.keys', '.env.vault', '.env.me', '.env.*.prod*'];
+const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist|defaults)$/;
+/** 명령이 읽기 금지 환경 파일을 건드리는가(견본 제외) */
+export function touchesSecretEnv(command: string): boolean {
+  return (command.match(/(?:^|[\s'"=/])(\.env(?:\.[\w.-]+)?)(?=$|[\s'";|&)])/g) ?? []).map((m) => m.replace(/^[\s'"=/]/, '')).some((f) => !ENV_TEMPLATE.test(f));
+}
+
 export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const writer = spec.tools.includes('Edit') || spec.tools.includes('Write');
   const tools = [...new Set(spec.tools)];
@@ -154,7 +165,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   if (tools.includes('Bash')) for (const c of spec.allowedCommands.map((x) => x.trim()).filter(Boolean)) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'medium') for (const c of MEDIUM_COMMANDS) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'high') allow.push('Bash');
-  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', 'Read(./.env)', 'Read(./.env.*)', 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'].flatMap((r) => absRules(r, spec.cwd));
+  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', ...SECRET_ENV.map((p) => `Read(./${p})`), 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'].flatMap((r) => absRules(r, spec.cwd));
   if (tools.includes('Bash') && spec.commandLevel === 'high') deny.push(...highDenyRules(spec.allowedCommands));
   const settings = {
     permissions: { allow, deny, defaultMode: 'dontAsk' },

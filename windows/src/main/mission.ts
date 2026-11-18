@@ -8,6 +8,7 @@ import { accessSync, constants as fsc, existsSync, realpathSync, statSync } from
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
@@ -530,8 +531,10 @@ export class MissionRunner {
     const add = (agentId: string | null, tool: string, kind: MissionDenial['kind'], target: string) => {
       const t = target.trim().slice(0, 300);
       if (!t) return;
-      const suggestion = kind === 'command' ? commandPrefix(t) : kind === 'path' ? t : null;
-      const sig = `${agentId ?? ''}|${tool}|${kind === 'command' ? suggestion : t}`;
+      // 비밀값 환경 파일(.env·.env.local 등)을 읽으려다 막힌 명령은 허용 명령을 더해도 풀리지 않는다(보호 규칙). 허용 후보를 내지 않는다.
+      const secret = kind === 'command' && touchesSecretEnv(t);
+      const suggestion = secret ? null : kind === 'command' ? commandPrefix(t) : kind === 'path' ? t : null;
+      const sig = `${agentId ?? ''}|${tool}|${kind === 'command' && !secret ? suggestion : t}`;
       if (seen.has(sig)) return;
       seen.add(sig);
       const a = agentId ? agents.get(agentId) : undefined;
@@ -950,7 +953,11 @@ export class MissionRunner {
         await this.snapshot(m, project.plan.folder, `cycle-${m.cycle}`, `사이클 ${m.cycle} 종료(${fin.status})`);
         // 권한 거부: 실행이 실패했거나 직전 사이클과 같은 거부가 반복되면 같은 설정으로 다시 시도하지 않고 멈춘다(권한은 앱 설정으로만 바뀐다)
         if (!this.replan.has(id)) {
-          const blocks = this.permissionBlocks(run.id);
+          const all = this.permissionBlocks(run.id);
+          // 비밀값 환경 파일 읽기 거부는 보호 규칙이라 사용자가 허용할 일이 아니다: 보류·팝업 없이 오퍼레이터에게만 알린다
+          const secret = all.filter((b) => b.kind === 'command' && touchesSecretEnv(b.target));
+          if (secret.length) this.event(m, 'system', `비밀값 환경 파일(.env·.env.local 등) 읽기는 보호 규칙으로 막혀 있습니다(사용자 허용 대상 아님). 설정 값은 견본 파일(.env.example)과 코드에서 확인하세요.\n${secret.map((b) => `- ${b.agent}: ${b.target}`).join('\n')}`);
+          const blocks = all.filter((b) => !secret.includes(b));
           const cur = this.get(id);
           const prev = cur.denialSigs ?? [];
           const parked = cur.parkedSigs ?? [];

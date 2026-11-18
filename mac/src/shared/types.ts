@@ -421,7 +421,7 @@ export interface WorkspaceApi {
   codexStatus(refresh: boolean): Promise<CodexStatus>;
   listMissions(projectId: ID): Promise<Mission[]>;
   attention(): Promise<Attention>;
-  pendingDecisions(): Promise<PendingDecision[]>;
+  pendingDecisions(all?: boolean): Promise<PendingDecision[]>;
   /** 승인 커밋: 화면에 보여 줄 내용, 승인(보여 준 hash가 지금과 같을 때만), 거절 */
   commitPreview(missionId: ID, requestId: string): Promise<CommitPreview>;
   commitApprove(missionId: ID, requestId: string, shownHash: string): Promise<MissionCommitRequest>;

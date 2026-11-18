@@ -162,7 +162,7 @@ function register() {
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));
   h('attention', () => s().attention());
-  h('pendingDecisions', () => s().pendingDecisions());
+  h('pendingDecisions', (all) => s().pendingDecisions(all === true));
   h('commitPreview', (id: string, rid: string) => s().commitPreview(id, rid));
   h('commitApprove', (id: string, rid: string, hash: string) => s().commitApprove(id, rid, hash));
   h('commitDecline', (id: string, rid: string) => s().commitDecline(id, rid));

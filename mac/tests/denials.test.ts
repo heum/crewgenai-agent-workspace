@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { Mission } from '../src/shared/types';
 import { checkOutput } from '../src/main/engine/fsutil';
 import { commandPrefix } from '../src/main/mission';
+import { buildClaudeArgs, SECRET_ENV, touchesSecretEnv } from '../src/main/cli/claudeCli';
 import { gitInit, mkService, plan, sleep, tmpProject } from './helpers';
 
 async function waitMission(svc: ReturnType<typeof mkService>, id: string, statuses: Mission['status'][], ms = 60000) {
@@ -148,5 +149,23 @@ describe('폴더 산출물 — 링크 고리', () => {
     const t0 = Date.now();
     expect(checkOutput(d, { path: 'out', format: 'image', required: true }).ok).toBe(false);
     expect(Date.now() - t0).toBeLessThan(2000);
+  });
+});
+
+describe('비밀값 환경 파일 보호(견본은 읽기 허용)', () => {
+  it('비밀값 파일을 건드리는 명령만 골라낸다', () => {
+    expect(touchesSecretEnv('cat src/a.ts; cat .env.example; cat AGENTS.md | head -80')).toBe(false);
+    expect(touchesSecretEnv('cat .env.sample')).toBe(false);
+    expect(touchesSecretEnv('cat .env')).toBe(true);
+    expect(touchesSecretEnv('cat .env.local')).toBe(true);
+    expect(touchesSecretEnv('grep KEY ./app/.env.billing.local')).toBe(true);
+    expect(touchesSecretEnv("ls src/*.ts 2>/dev/null; grep -n demo -ri src --include=*.ts* | head")).toBe(false);
+  });
+  it('CLI 거부 규칙은 비밀값 파일만 막고 .env.example은 막지 않는다', () => {
+    const args = buildClaudeArgs({ prompt: 'x', appendSystemPrompt: '', cwd: '/tmp/w', tools: ['Read', 'Bash'], editScopes: [], allowedCommands: [], readDirs: [], sessionId: 's', resumeSessionId: null, jsonSchema: null, model: '', maxBudgetUsd: null });
+    const deny: string[] = JSON.parse(args[args.indexOf('--settings') + 1]).permissions.deny;
+    expect(deny).toContain('Read(./.env)'); expect(deny).toContain('Read(./.env.local)'); expect(deny).toContain('Read(./.env.*.local)'); expect(deny).toContain('Read(./.env.prod*)');
+    expect(deny).not.toContain('Read(./.env.*)');
+    expect(SECRET_ENV.some((p) => p === '.env.example')).toBe(false);
   });
 });

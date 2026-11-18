@@ -2026,3 +2026,7 @@ textarea.input {
 .chip-check.is-on { border-color: var(--accent, #2f5bea); background: color-mix(in srgb, var(--accent, #2f5bea) 10%, transparent); }
 .review-cp-usage { margin-top: 4px; }
 .review-cp-blocked { border-left: 3px solid var(--danger, #c0392b); padding-left: 10px; }
+/* 검토 지점을 결정 팝업 안에서 바로 보여 줄 때는 넓게, 본문만 스크롤 */
+.decision-modal.is-wide { width: min(1080px, 96vw); display: flex; flex-direction: column; }
+.decision-modal.is-wide .decision-body { overflow-y: auto; }
+.decision-modal .review-cp { box-shadow: none; border: 0; padding: 0; }

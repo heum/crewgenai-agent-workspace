@@ -237,7 +237,11 @@ export function levelAllows(level: CommandLevel, cmd: string, prefixes: string[]
 }
 
 /** 직원 프롬프트에 붙이는 안내 */
+const SECRET_NOTE = '\n- 비밀값 환경 파일(.env, .env.local, .env.*.local, .env.production 등)은 어떤 명령으로도 읽을 수 없다(보호 규칙). 설정 이름은 견본 파일(.env.example)과 코드에서 확인하고, 이런 파일을 읽는 명령을 다른 명령과 묶지 않는다(묶으면 전체가 거부된다).';
 export function levelNote(level: CommandLevel): string {
+  return levelNoteBase(level) + (level === 'low' ? '' : SECRET_NOTE);
+}
+function levelNoteBase(level: CommandLevel): string {
   if (level === 'high') return `## 명령 허용 범위: 높음\n- 격리 복사본 안(네트워크 없음)에서 대부분의 명령을 바로 실행할 수 있다. 다음은 막혀 있다: ${HIGH_DENY.join(', ')}.`;
   if (level === 'medium') return `## 명령 허용 범위: 중간\n- 다음으로 시작하는 명령은 바로 실행할 수 있다(격리 복사본 안, 네트워크 없음): ${MEDIUM_COMMANDS.join(', ')}.\n- 폴더를 옮길 때는 'cd 폴더'를 따로 한 번 실행한 뒤 다음 명령을 실행한다('cd 폴더 && 명령'처럼 묶으면 거부된다). 파이프(|)로 위 명령끼리 잇는 것은 된다.\n- 그 밖의 명령이 꼭 필요하면 시도하지 말고 '확인 필요'에 명령 문자열을 적는다.`;
   return '';
