@@ -31,10 +31,9 @@ export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
     if (inheritedFromHost && k === 'ANTHROPIC_BASE_URL') delete env[k];
   }
   const extraPath = ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
-  // 사용자 폴더(~/Library/Java)에만 설치된 JDK는 격리 실행 안에서 macOS의 java 실행기가 찾지 못한다(직원의 Gradle 시험이 실패하던 원인).
-  // JAVA_HOME이 없으면 이 PC의 기본 JDK를 찾아 넘기고 그 bin을 PATH 앞에 둔다.
-  const jh = env.JAVA_HOME || hostJavaHome();
-  if (jh) env.JAVA_HOME = jh;
+  // 사용자 폴더(~/Library/Java)에만 설치된 JDK는 격리 실행 안에서 macOS의 java 실행기(/usr/bin/java)가 찾지 못한다.
+  // 이 PC의 기본 JDK bin을 PATH 앞에 둔다. JAVA_HOME은 건드리지 않는다(저장소 스크립트가 JAVA_HOME이 비었을 때 자기 JDK를 고르는 경우가 있음).
+  const jh = env.JAVA_HOME ? null : hostJavaHome();
   env.PATH = [...new Set([...(jh ? [join(jh, 'bin')] : []), ...(env.PATH ?? '').split(':').filter(Boolean), ...extraPath])].join(':');
   env.NO_COLOR = '1';
   return { ...env, ...extra };
