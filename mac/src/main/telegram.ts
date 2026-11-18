@@ -8,6 +8,7 @@ import type { Mission, MissionEvent, PendingDecision, LiveEvent, MissionCommitRe
 import { RESULT_STATUS_LABEL } from '../shared/types';
 import { decisionVersion } from '../shared/decisions';
 import { redact } from './cli/claudeCli';
+import { safeFetch } from './http';
 import type { Service } from './service';
 
 // ───── 설정·상태 ─────
@@ -207,7 +208,7 @@ export class TelegramBridge {
 
   // ───── Bot API ─────
   private async rawCall<T>(token: string, method: string, body: object, timeoutSec = 20, form?: FormData): Promise<T> {
-    const f = this.d.fetchImpl ?? fetch;
+    const f = this.d.fetchImpl ?? (safeFetch as unknown as typeof fetch);
     const ac = new AbortController(); this.abort = method === 'getUpdates' ? ac : this.abort;
     const timer = setTimeout(() => ac.abort(), timeoutSec * 1000);
     try {

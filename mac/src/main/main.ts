@@ -17,6 +17,13 @@ const resDir = app.isPackaged ? process.resourcesPath : join(__dirname, '../../r
 const logFile = join(dataDir, 'app.log');
 const log = (m: string) => { try { writeFileSync(logFile, `${new Date().toISOString()} ${m}\n`, { flag: 'a' }); } catch { /* 무시 */ } };
 
+// 이 Electron의 내장 fetch(undici)가 일부 macOS에서 소켓 설정(setTypeOfService EINVAL)으로 던지는 예외는 기록만 하고 오류 창을 띄우지 않는다
+// (앱 요청은 http.ts의 safeFetch를 쓰므로 해당 없음. 다른 라이브러리가 fetch를 써도 앱이 멈추지 않게). 그 밖의 예기치 않은 오류는 그대로 알린다.
+process.on('uncaughtException', (e) => {
+  log(`uncaught: ${String((e as Error)?.stack ?? e).slice(0, 2000)}`);
+  if (/setTypeOfService/.test(String((e as Error)?.message ?? ''))) return;
+  try { dialog.showErrorBox('앱 오류', String((e as Error)?.stack ?? e).slice(0, 2000)); } catch { /* 창을 띄울 수 없음 */ }
+});
 let win: BrowserWindow | null = null;
 let tg: TelegramBridge | null = null;
 // 같은 앱을 두 번 띄우면 같은 봇을 두 곳에서 받게 되므로(충돌) 하나만 실행한다

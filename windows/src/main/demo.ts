@@ -2,6 +2,7 @@
 // 앱이 직접 켜고 끄며 상태(실행 중·시작 중·중지됨·준비 필요)를 보여 준다. 사용자는 결과물 카드의 '시연 열기'로 바로 써 본다.
 // 보안: 시연 명령은 격리(샌드박스) 밖에서 이 PC 권한으로 돈다. 그래서 서비스마다 처음 한 번(명령·폴더·환경값이 바뀌면 다시) 사용자 승인을 받는다.
 // 명령은 저장소 안의 실행 파일(링크 아님) 또는 정해진 실행기(npm·node 등)만, 주소는 이 컴퓨터(127.0.0.1)만, 환경값에 비밀값 이름은 받지 않는다.
+import { safeFetch } from './http';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
@@ -111,7 +112,7 @@ export class DemoManager {
     if (!s.port) return false;
     try {
       const ctl = AbortSignal.timeout(1500);
-      const r = await fetch(`http://127.0.0.1:${s.port}${s.health}`, { signal: ctl, redirect: 'manual' });
+      const r = await safeFetch(`http://127.0.0.1:${s.port}${s.health}`, { signal: ctl, redirect: 'manual' });
       return r.status < 500;
     } catch { return false; }
   }
@@ -208,7 +209,7 @@ export class DemoManager {
     if (!filled.startsWith('/') || filled.startsWith('//') || filled.includes('\\')) throw new Error('경로는 /로 시작하는 이 서비스 안의 경로여야 합니다.');
     const url = new URL(filled, `http://127.0.0.1:${s.port}`);
     if (url.protocol !== 'http:' || url.host !== `127.0.0.1:${s.port}`) throw new Error('시연 요청은 이 서비스(127.0.0.1)로만 보낼 수 있습니다.');
-    const r = await fetch(url, { method: req.method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(20000) });
+    const r = await safeFetch(url, { method: req.method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(20000) });
     for (const c of r.headers.getSetCookie?.() ?? []) { const [pair] = c.split(';'); const i = pair.indexOf('='); if (i > 0) { const n = pair.slice(0, i).trim(); const v = pair.slice(i + 1).trim(); if (v) jar.set(n, v); else jar.delete(n); } }
     const text = (await r.text()).slice(0, 200_000);
     if (req.capture && Object.keys(req.capture).length) {
