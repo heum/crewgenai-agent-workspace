@@ -27,10 +27,11 @@ describe('직원 기본 템플릿', () => {
         expect(a.reviewerAgentId).not.toBe(a.id);
       }
       for (const c of ro) expect(agents.find((a) => a.code === c)!.tools).toEqual(RO);
-      // 판단이 중요한 자리(총괄·설계·보안)는 Fable 5.2, 구현·리뷰는 Opus 5.5, 정리·실행은 Sonnet 5.5. 모든 직원이 스킬 사용
+      // 사용량이 많은 Fable 5.2는 설계 자리 하나만, 총괄·구현·리뷰·보안은 Opus 5.5, 정리·실행은 Sonnet 5.5. 모든 직원이 스킬 사용
       const MODELS = ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5'];
       for (const a of agents) { expect(MODELS).toContain(a.model); expect(['medium', 'high']).toContain(a.effort); expect(a.tools).toContain('Skill'); }
-      expect(agents.find((a) => a.code === '00')!.model).toBe('claude-fable-5-2');
+      expect(agents.find((a) => a.code === '00')!.model).toBe('claude-opus-5-5');
+      expect(agents.filter((a) => a.model === 'claude-fable-5-2').map((a) => a.code)).toEqual(['02']);
       expect(agents.find((a) => a.code === '00')!.instructions).toContain('스킬 이름');
       expect(new Set(agents.map((a) => a.model)).size).toBeGreaterThan(1);
       // 기본 흐름이 이 세트로도 오류 없이 만들어진다
