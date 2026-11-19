@@ -100,6 +100,7 @@
   },
   "author": "CREWGENAI",
   "overrides": {
+    "minimatch@9": "^11.0.8",
     "minimatch@10": "^11.0.8"
   }
 }

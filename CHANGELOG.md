@@ -4,6 +4,8 @@
 
 ## 미배포
 
+- 빌드 도구 의존성 보안 경고(minimatch 9.0.9, 서비스 거부 가능성, 중간) 해결: 설치 파일 만드는 도구(electron-builder 아래 @electron/universal)가 쓰는 minimatch를 11로 올림(macOS·Windows). 앱 실행 파일에는 들어가지 않는 개발용 의존성이다.
+
 ## 2026-11-19 — main 반영(3)
 
 - README·SECURITY·mac/windows 설명서: 확인함·자동 재개·텔레그램 연동 사용법과 데이터·보호 장치, 확인 범위를 최신화.
