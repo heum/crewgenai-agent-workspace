@@ -11,9 +11,9 @@ import { COMMAND_LEVELS, projectSkillDirs, workBranchName, type CommandLevel } f
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
 import type { MissionLimits } from '../shared/types';
-import type { Agent, AgentFields, AppSettings, UsagePaceView, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
+import type { Agent, AgentFields, AppSettings, UsagePaceView, DevSyncView, DevSyncRepoResult, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
-import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, workspaceRepos } from './git';
+import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, mergeDevToMain, syncRepoToDev, workspaceRepos } from './git';
 import { LearningStore } from './learning';
 import { MissionRunner } from './mission';
 import { decisionVersion } from '../shared/decisions';
@@ -100,6 +100,7 @@ export class Service {
     this.missions = new MissionRunner({
       pace: () => this.paceNow(),
       techAuto: () => this.settings().techAuto !== false,
+      devSync: () => this.settings().devSync !== false,
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
       executor: () => ({ executor: this.settings().executor, cliPath: this.cli?.path ?? this.settings().cliPath }),
       maxCycles: () => this.settings().missionMaxCycles || 5,
@@ -191,6 +192,7 @@ export class Service {
   saveSettings(p: Partial<AppSettings>, key?: string | null): AppSettings {
     const cur = this.settings();
     const next = { ...cur, ...p, missionMaxCycles: Math.min(50, Math.max(1, Math.floor(Number(p.missionMaxCycles ?? cur.missionMaxCycles)) || 5)), maxConcurrent: Math.min(16, Math.max(1, Math.floor(Number(p.maxConcurrent ?? cur.maxConcurrent)) || 1)) };
+    if (p.devSyncHour !== undefined) next.devSyncHour = Math.min(23, Math.max(0, Math.floor(Number(p.devSyncHour)) || 0));
     if (p.paceReservePct !== undefined) next.paceReservePct = Math.min(50, Math.max(0, Math.round(Number(p.paceReservePct)) || 0));
     if (p.skillDirs !== undefined) next.skillDirs = Array.isArray(p.skillDirs) ? [...new Set(p.skillDirs.filter((x) => typeof x === 'string' && isAbsolute(x)))].slice(0, 20) : undefined;
     const { langsmithKeySet: _k, ...persist } = next;
@@ -377,6 +379,14 @@ export class Service {
           if (r.status !== 'pending') continue;
           out.push({ ...base, key: `${m.id}|c|${r.id}`, kind: 'commit', task: `커밋 승인 요청 · 사이클 ${r.cycle}${r.task ? ` · ${r.task}` : ''}`, question: `${r.repo || '연결 폴더'} 저장소에 파일 ${r.files.length}개를 커밋할까요?`, explain: r.why, doc: '', issue: '', choices: [], waiting: false, commit: r });
         }
+        // main 병합 요청: 큰 단원이 끝났을 때만 묻는다(유일하게 묻는 git 작업). 승인 전에는 아무것도 병합하지 않는다
+        if (m.mergeRequest?.status === 'pending') {
+          const r = m.mergeRequest;
+          out.push({ ...base, key: `${m.id}|m|${r.id}`, kind: 'merge', task: `main 병합 · 사이클 ${r.cycle} · ${r.title}`, question: `큰 단원 '${r.title}'이(가) 끝났습니다. dev를 main에 병합할까요?`,
+            explain: r.summary, doc: '', issue: '', waiting: false, urgent: false,
+            resumes: '병합해도 개발은 계속됩니다. 병합하면 각 저장소의 dev를 main에 합쳐 push합니다(충돌한 저장소는 합치지 않고 알림).',
+            choices: [{ label: 'main에 병합', effect: '저장소마다 dev를 main에 합쳐 push', why: '', recommended: false }, { label: '아직 아님', effect: '지금은 병합하지 않고 다음 큰 단원 때 다시 묻기', why: '', recommended: false }] });
+        }
         if (['stopped', 'failed'].includes(m.status)) continue; // 완료 보고 미션도 남은 결정은 보여 준다
         // 확인함: 결정이 필요한 것은 모두 모은다(진행 중이어도). 팝업은 미션 전체가 그 결정을 기다릴 때(urgent)만 띄운다.
         const blocked = m.status === 'waiting_user' && m.pauseKind !== 'restart';
@@ -419,9 +429,9 @@ export class Service {
     const live = new Map(this.pendingDecisions().map((x) => [x.key, x]));
     const ok = (p: { key: string; choice: string; version?: string }) => {
       const it = live.get(p.key); const c = String(p.choice ?? '').trim();
-      if (!it || !c || !['question', 'gap', 'permission'].includes(it.kind)) return false;
+      if (!it || !c || !['question', 'gap', 'permission', 'merge'].includes(it.kind)) return false;
       if (p.version && p.version !== decisionVersion(it)) return false; // 보여 준 뒤 질문·선택지가 바뀜
-      if (it.kind === 'permission' && !it.choices.some((x) => x.label === c)) return false; // 권한은 보여 준 선택지만
+      if ((it.kind === 'permission' || it.kind === 'merge') && !it.choices.some((x) => x.label === c)) return false; // 권한·main 병합은 보여 준 선택지만
       return true;
     };
     const go = picks.filter(ok); const stale = picks.length - go.length;
@@ -429,6 +439,11 @@ export class Service {
     for (const missionId of [...new Set(go.map((p) => live.get(p.key)!.missionId))]) {
       const mine = go.filter((p) => live.get(p.key)!.missionId === missionId).map((p) => ({ it: live.get(p.key)!, choice: p.choice.trim() }));
       const title = mine[0].it.missionTitle;
+      for (const x of mine.filter((y) => y.it.kind === 'merge')) {
+        if (x.choice === 'main에 병합') { void this.mergeMain(missionId, via); lines.push(`· ${title}: main 병합을 시작합니다(${via}). 끝나면 결과를 알려 드립니다.`); }
+        else { this.missions.setMergeRequest(missionId, { status: 'declined', via }); lines.push(`· ${title}: main 병합은 아직 하지 않습니다(${via}).`); }
+      }
+      if (!mine.some((x) => x.it.kind !== 'merge')) continue;
       const perms = mine.filter((x) => x.it.kind === 'permission'); const allowed = perms.filter((x) => !x.choice.startsWith('허용하지 않'));
       for (const x of allowed) this.allowDenial(x.it);
       if (allowed.length) this.missions.retryParked(missionId, allowed.map((x) => x.it.denial!.sig));
@@ -683,6 +698,66 @@ export class Service {
   }
   demoReset(projectId: string, serviceId: string) { this.demo.resetSession(projectId, serviceId); }
 
+  // ───── 매일 dev 반영 ─────
+  private devSyncing = false;
+  private devSyncTimer: ReturnType<typeof setInterval> | null = null;
+  private devState(): { lastDay: string | null; lastAt: string | null; results: DevSyncRepoResult[] } { return this.store.getSetting('devSyncState', { lastDay: null, lastAt: null, results: [] }); }
+  devSyncStatus(): DevSyncView {
+    const s = this.settings(); const st = this.devState();
+    return { enabled: s.devSync !== false, hour: s.devSyncHour ?? 22, running: this.devSyncing, ...st };
+  }
+  /** 프로젝트들의 자동 수정 허용 경로에 든 저장소(실제 경로로 중복 제거) */
+  private async devSyncRepos(): Promise<{ abs: string; label: string }[]> {
+    const out = new Map<string, { abs: string; label: string }>();
+    for (const p of this.store.listProjects()) {
+      const f = p.plan.folder; if (!f || !existsSync(f)) continue;
+      const ws = await workspaceRepos(f).catch(() => null); if (!ws) continue;
+      const roots = (p.plan.writablePaths ?? []).map((w) => w.replace(/^\.\/?/, '').replace(/\/+$/, ''));
+      for (const r of ws.repos) {
+        if (!r.hasCommit) continue;
+        const rel = r.rel.replace(/\/+$/, '');
+        const writable = ws.mode === 'single' ? roots.length > 0 : roots.some((w) => w === rel || w.startsWith(`${rel}/`) || w === '' || w === '.');
+        if (!writable) continue;
+        let key = r.abs; try { key = realpathSync(r.abs); } catch { /* 그대로 */ }
+        if (!out.has(key)) out.set(key, { abs: r.abs, label: rel || p.plan.name });
+      }
+    }
+    return [...out.values()];
+  }
+  /** 하루 한 번: 비밀값을 뺀 변경을 커밋해 dev에 합치고 push(묻지 않음). main 병합은 하지 않는다 */
+  async devSyncNow(): Promise<DevSyncView> {
+    if (this.devSyncing) return this.devSyncStatus();
+    this.devSyncing = true; this.d.emit({ type: 'devSync' });
+    try {
+      const d = new Date(); const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const results: DevSyncRepoResult[] = [];
+      for (const r of await this.devSyncRepos()) results.push(await syncRepoToDev(r.abs, r.label, day));
+      this.store.setSetting('devSyncState', { lastDay: day, lastAt: new Date().toISOString(), results });
+    } finally { this.devSyncing = false; this.d.emit({ type: 'devSync' }); }
+    return this.devSyncStatus();
+  }
+  /** 승인한 main 병합: 먼저 오늘 변경을 dev에 반영한 뒤, 저장소마다 dev를 main에 합쳐 push한다 */
+  async mergeMain(missionId: string, via = '앱'): Promise<void> {
+    const m = this.missions.get(missionId); if (m.mergeRequest?.status !== 'pending') return;
+    this.missions.setMergeRequest(missionId, { status: 'merging', via });
+    try {
+      await this.devSyncNow();
+      const d = new Date(); const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const results: DevSyncRepoResult[] = [];
+      for (const r of await this.devSyncRepos()) results.push(await mergeDevToMain(r.abs, r.label, day));
+      this.missions.setMergeRequest(missionId, { status: results.some((r) => r.status === 'failed') ? 'failed' : 'done', results });
+    } catch (e) { this.missions.setMergeRequest(missionId, { status: 'failed', results: [{ repo: '(전체)', status: 'failed', note: String((e as Error).message ?? e).slice(0, 200), committed: 0, excluded: [], sha: null }] }); }
+  }
+  /** 정해진 시각이 지났고 오늘 아직 안 했으면 실행(앱이 꺼져 있었으면 켜진 뒤 실행). 앱 시작 때 main에서 켠다 */
+  startDevSyncTimer() {
+    const tick = () => {
+      const s = this.settings(); if (s.devSync === false || this.devSyncing) return;
+      const d = new Date(); const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (d.getHours() >= (s.devSyncHour ?? 22) && this.devState().lastDay !== day) void this.devSyncNow().catch(() => {});
+    };
+    this.devSyncTimer = setInterval(tick, 10 * 60 * 1000); setTimeout(tick, 60 * 1000);
+  }
+
   /** 사용량 속도 조절 판단(꺼져 있으면 null) */
   paceNow() {
     const s = this.settings();
@@ -697,7 +772,7 @@ export class Service {
     return { enabled: s.paceEnabled !== false, reservePct: s.paceReservePct ?? 10, sevenDay: w(snap?.sevenDay ?? null), fiveHour: w(snap?.fiveHour ?? null), reportedAt: snap ? iso(snap.at) : null,
       waiting: !!d?.wait, until: d?.wait ? iso(d.until) : null, text: all.wait ? all.reason : all.note };
   }
-  close() { this.offUsage(); this.demo.stopAll(); void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }
+  close() { if (this.devSyncTimer) clearInterval(this.devSyncTimer); this.offUsage(); this.demo.stopAll(); void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }
   /** 앱 종료용: 프로세스 종료를 기다린 뒤 DB를 닫는다. */
-  async closeGracefully() { this.offUsage(); this.demo.stopAll(); await this.missions.shutdown(); await this.engine.shutdownAndWait(); await gitShutdown(); this.store.close(); }
+  async closeGracefully() { if (this.devSyncTimer) clearInterval(this.devSyncTimer); this.offUsage(); this.demo.stopAll(); await this.missions.shutdown(); await this.engine.shutdownAndWait(); await gitShutdown(); this.store.close(); }
 }

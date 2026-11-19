@@ -2054,3 +2054,9 @@ textarea.input {
 .tg-code { padding: 8px 10px; border: 1px dashed var(--border, #d0d5dd); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; word-break: break-all; }
 .tg-projects, .tg-kinds { display: flex; flex-direction: column; gap: 2px; }
 .tg-scope { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-top: 1px solid var(--border, #eef0f3); }
+
+/* 직원 목록: '작업 중' 표시가 붙어도 이름이 한 글자씩 세로로 접히지 않게 한 줄로 두고, 넘치면 말줄임(권한 표시가 먼저 줄어듦) */
+.agent-item .grow { min-width: 0; }
+.agent-item-head > strong { flex: 0 1 auto; min-width: 2.5em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-item-head .tool-line { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-item .agent-busy { flex: 0 0 auto; }

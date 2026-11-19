@@ -158,6 +158,14 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       if (!list.length) setTimeout(() => setOpen(false), 1800);
       return;
     }
+    if (cur.kind === 'merge') {
+      const r = await ws().applyDecisions([{ key: cur.key, choice: label.trim(), version: decisionVersion(cur) }]);
+      const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
+      for (const d of list) seen.current.add(d.key);
+      setItems(list); setIdx(0); setDone(r.lines.join('\n') || '이미 처리된 항목입니다.');
+      if (!list.length) setTimeout(() => setOpen(false), 1800);
+      return;
+    }
     const choice = (effect?.trim() ? `${label.trim()} — ${effect.trim()}` : label.trim()).slice(0, 600);
     if (!choice) throw new Error('고를 내용을 입력하세요.');
     if (action === 'stop') await ws().answerMission(cur.missionId, '', 'stop');
@@ -172,11 +180,11 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   });
 
   // ───── 확인함: 선택 항목 일괄 적용 ─────
-  const batchable = (it: PendingDecision) => it.kind === 'question' || it.kind === 'gap' || it.kind === 'permission';
+  const batchable = (it: PendingDecision) => it.kind === 'question' || it.kind === 'gap' || it.kind === 'permission' || it.kind === 'merge';
   const answerOf = (it: PendingDecision) => (ownMap[it.key]?.trim() || sel[it.key] || '').trim();
   const picked = items.filter((it) => batchable(it) && answerOf(it));
   // 추천안으로 채우기: 추천이 있는 결정만 고른다(권한 허용은 직접 골라야 함). 고르기만 할 뿐 적용 전에는 반영되지 않는다.
-  const fillRec = () => setSel((cur) => { const n = { ...cur }; for (const it of items) { if (it.kind === 'permission' || !batchable(it) || n[it.key]) continue; const r = it.choices.find((c) => c.recommended); if (r) n[it.key] = r.label; } return n; });
+  const fillRec = () => setSel((cur) => { const n = { ...cur }; for (const it of items) { if (it.kind === 'permission' || it.kind === 'merge' || !batchable(it) || n[it.key]) continue; const r = it.choices.find((c) => c.recommended); if (r) n[it.key] = r.label; } return n; });
   // 적용은 앱 본체의 공통 처리(텔레그램과 같은 로직)로: 적용 직전에 각 항목이 아직 유효한지 다시 확인하고 유효한 것만 반영한다
   const applySelected = () => act.run(async () => {
     const r = await ws().applyDecisions(picked.map((it) => ({ key: it.key, choice: answerOf(it), version: decisionVersion(it) })));
@@ -186,7 +194,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     setDone(`${r.applied}건을 적용했습니다.${r.stale ? ` 이미 처리됐거나 내용이 바뀐 ${r.stale}건은 적용하지 않았습니다.` : ''}\n${r.lines.join('\n')}`);
   });
   const urgentN = items.filter((x) => x.urgent).length;
-  const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토' };
+  const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토', merge: 'main 병합' };
 
   if (!items.length && !open) return null;
   return (

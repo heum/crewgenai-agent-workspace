@@ -339,6 +339,8 @@ export interface AppSettings {
   gitCommits: boolean; // 직원별 git 커밋·미션 스냅샷 사용
   autoAssist?: boolean; // 자동 처리(기본 켬): 작업 브랜치 자동 생성, 저장소 시험 명령 허용, 프로젝트 스킬·쓰기 직원 스킬, 문서 저장소 최신화
   commandLevel?: 'low' | 'medium' | 'high'; // 직원 명령 허용 범위(기본 중간). 격리·네트워크 없음 안에서 묻지 않고 허용할 명령의 폭
+  devSync?: boolean; // 매일 dev 반영(기본 켬): 하루 한 번 비밀값을 뺀 변경을 커밋해 dev에 합치고 push. main 병합은 하지 않는다
+  devSyncHour?: number; // 매일 dev 반영 시각(0~23시, 기본 22)
   techAuto?: boolean; // 기술 권한 요청(명령 허용·경로 읽기)을 사용자에게 묻지 않고 앱·오퍼레이터가 처리(기본 켬). 보호 규칙은 그대로
   paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
   paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유
@@ -360,7 +362,8 @@ export type LiveEvent =
   | { type: 'mission'; mission: Mission }
   | { type: 'missionEvent'; event: MissionEvent }
   | { type: 'learning' }
-  | { type: 'telegram' };
+  | { type: 'telegram' }
+  | { type: 'devSync' };
 
 // ───────── preload가 노출하는 API ─────────
 export interface WorkspaceApi {
@@ -474,6 +477,9 @@ export interface WorkspaceApi {
   resolveStaffProposal(missionId: ID, proposalId: ID, action: 'apply' | 'dismiss', edit: StaffEdit | null): Promise<Mission>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
+  /** 매일 dev 반영 상태와 지금 실행 */
+  devSyncStatus(): Promise<DevSyncView>;
+  devSyncNow(): Promise<DevSyncView>;
   /** 사용량 속도 조절 상태: CLI가 마지막으로 알려 준 주간·5시간 사용률과 지금 판단 */
   usagePace(): Promise<UsagePaceView>;
   missionSnapshots(missionId: ID): Promise<MissionSnapshot[]>;
@@ -623,6 +629,8 @@ export interface Mission {
   results?: MissionResult[]; // 마지막 판단의 '열어 볼 결과물'(작업별)
   /** 오퍼레이터가 요청한 커밋(이미 있는 미커밋 변경). 사용자가 팝업에서 파일·메시지를 보고 승인해야만 앱이 커밋한다 */
   commitRequests?: MissionCommitRequest[];
+  /** 큰 단원이 끝나 오퍼레이터가 판단한 main 병합 요청(사용자 승인 뒤 앱이 dev → main 병합·push) */
+  mergeRequest?: MissionMergeRequest | null;
   resultsCycle?: number;
   resultsHistory?: { cycle: number; results: MissionResult[] }[]; // 최근 회차별 결과물(최신 먼저, 최대 6회차)
   idleCycles?: number; // 반영된 변경 없이 끝난 사이클이 연속 몇 번인가(상한에 넣지 않음, 이어지면 멈추고 물음)
@@ -802,7 +810,7 @@ export interface PendingDecision {
   key: string;
   projectId: ID; projectName: string;
   missionId: ID; missionTitle: string; cycle: number;
-  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint';
+  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint' | 'merge';
   task: string; // 어떤 작업·문서의 결정인지
   question: string; // 무엇을 정해야 하는지
   explain: string; // 쉬운 설명(있을 때)
@@ -834,4 +842,15 @@ export interface UsagePaceView {
   enabled: boolean; reservePct: number;
   sevenDay: { utilization: number; resetsAt: string } | null; fiveHour: { utilization: number; resetsAt: string } | null; reportedAt: string | null;
   waiting: boolean; until: string | null; text: string;
+}
+
+/** 매일 dev 반영 화면용 */
+export interface DevSyncRepoResult { repo: string; status: 'pushed' | 'nothing' | 'skipped' | 'failed'; note: string; committed: number; excluded: string[]; sha: string | null }
+export interface DevSyncView { enabled: boolean; hour: number; running: boolean; lastDay: string | null; lastAt: string | null; results: DevSyncRepoResult[] }
+
+/** main 병합 요청: 큰 단원이 끝났다고 오퍼레이터가 판단하면 확인함에서 묻는다 */
+export interface MissionMergeRequest {
+  id: string; cycle: number; title: string; summary: string; at: string;
+  status: 'pending' | 'merging' | 'done' | 'declined' | 'failed';
+  results?: DevSyncRepoResult[]; via?: string;
 }

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
@@ -118,6 +118,7 @@ const JUDGE_SCHEMA = {
   properties: { decision: { type: 'string', enum: ['continue', 'review', 'ask_user', 'done'] }, checkpoint: CHECKPOINT_SCHEMA, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
     results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' }, status: { type: 'string', enum: [...RESULT_STATUSES] },
       demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } },
+    milestone: { type: 'object', required: ['title', 'summary'], properties: { title: { type: 'string' }, summary: { type: 'string' } } },
     commitRequests: { type: 'array', items: { type: 'object', required: ['repo', 'files', 'message', 'why'], properties: { repo: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, message: { type: 'string' }, why: { type: 'string' }, task: { type: 'string' } } } } },
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
@@ -126,7 +127,7 @@ interface Plan { staffProposals?: RawStaff[]; summary: string; question: string;
 interface RawResult { status?: string; task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
 interface RawCheckpoint { title?: string; steps?: string; verified?: string; unverified?: string; features?: { name?: string; changed?: string; status?: string }[]; decisions?: { question?: string; choices?: unknown }[]; assumptions?: string[] }
-interface Judge { checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+interface Judge { milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터의 커밋 요청 정리: 형식이 맞는 것만, 이미 대기·승인된 같은 요청은 빼고, 대기 요청은 최대 5개 */
 export function cleanCommitRequests(raw: unknown, existing: MissionCommitRequest[], cycle: number): MissionCommitRequest[] {
@@ -199,6 +200,8 @@ export interface MissionDeps {
   testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
   /** 기술 권한 막힘(명령 허용·경로 읽기)을 사용자에게 묻지 않고 오퍼레이터가 다른 방법을 찾게 한다 */
   techAuto?: () => boolean;
+  /** 매일 dev 반영이 켜져 있으면 앱이 하루 한 번 알아서 커밋·push한다: 오퍼레이터는 커밋 승인 요청을 내지 않는다 */
+  devSync?: () => boolean;
   /** 사용량 속도 조절 판단(꺼져 있으면 null): 주간·5시간 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다 */
   pace?: () => PaceDecision | null;
   /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
@@ -1164,7 +1167,14 @@ export class MissionRunner {
         { const results = resolveResults(project.plan.folder, judge.results);
           const hist = [{ cycle: m.cycle, results }, ...(this.get(id).resultsHistory ?? []).filter((h) => h.cycle !== m.cycle)].slice(0, 6);
           m = this.set(id, { results, resultsCycle: m.cycle, resultsHistory: hist }); }
-        { const reqs = cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
+        // 큰 단원이 끝났다고 판단하면 main 병합을 확인함에서 묻는다(매일 dev 반영이 켜져 있을 때만, 묻는 중이면 다시 만들지 않음)
+        { const ms = judge.milestone; const cur = this.get(id).mergeRequest;
+          if (this.devSyncOn() && ms?.title?.trim() && cur?.status !== 'pending' && cur?.status !== 'merging') {
+            const mr: MissionMergeRequest = { id: randomUUID(), cycle: m.cycle, title: ms.title.trim().slice(0, 200), summary: String(ms.summary ?? '').trim().slice(0, 1200), at: now(), status: 'pending' };
+            m = this.set(id, { mergeRequest: mr });
+            this.event(m, 'system', `큰 단원이 끝나 main 병합을 확인함에서 묻습니다: ${mr.title}`);
+          } }
+        { const reqs = this.devSyncOn() ? [] : cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
           if (reqs.length) { m = this.set(id, { commitRequests: [...(this.get(id).commitRequests ?? []), ...reqs].slice(-30) }); for (const r of reqs) this.event(m, 'system', `커밋 승인 요청: ${r.repo || '(연결 폴더)'} · 파일 ${r.files.length}개 · "${r.message}" — 사용자가 승인해야 커밋합니다.`, { commitRequest: r.id }); } }
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
@@ -1321,6 +1331,15 @@ export class MissionRunner {
       '- 작업에 딱 맞는 스킬이 있으면 그 작업 instructions에 스킬 이름과 쓰는 이유를 한 줄로 적는다(예: 버그 수정은 systematic-debugging, 새 기능은 test-driven-development). 맞는 스킬이 없으면 적지 않는다.', ''];
   }
 
+  /** main 병합 요청 상태 바꾸기(승인·거절·결과) */
+  setMergeRequest(id: string, patch: Partial<MissionMergeRequest>): Mission {
+    const m = this.get(id); if (!m.mergeRequest) return m;
+    const next = this.set(id, { mergeRequest: { ...m.mergeRequest, ...patch } });
+    if (patch.status === 'declined') this.event(next, 'answer', `main 병합: 아직 하지 않음(${patch.via ?? '앱'}). 다음 큰 단원이 끝나면 다시 묻습니다.`);
+    if (patch.status === 'done' || patch.status === 'failed') this.event(next, 'system', `main 병합 ${patch.status === 'done' ? '완료' : '일부 실패'}: ${(patch.results ?? []).map((r) => `${r.repo} ${r.status === 'pushed' ? '병합함' : r.status === 'nothing' ? '이미 반영됨' : r.status === 'skipped' ? '건너뜀' : '실패'}${r.status === 'failed' || r.status === 'skipped' ? `(${r.note})` : ''}`).join(', ')}`);
+    return next;
+  }
+  private devSyncOn(): boolean { try { return this.d.devSync?.() ?? false; } catch { return false; } }
   private techAuto(): boolean { try { return this.d.techAuto?.() ?? false; } catch { return false; } }
   /** 앱이 처리한 기술 권한 막힘을 기록한다(최근 20개) */
   private addTech(id: string, lines: string[]) {
@@ -1652,6 +1671,7 @@ export class MissionRunner {
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
       ...this.limitSection(m),
       ...this.techSection(m),
+      ...(this.devSyncOn() ? ['## 커밋·main 병합', '- 앱이 하루 한 번 비밀값을 뺀 변경을 자동으로 커밋해 dev에 합치고 push한다. commitRequests는 내지 않는다(빈 배열).', `- 큰 단원(사용자가 직접 써 볼 수 있는 큰 기능 묶음·마일스톤)이 끝나 검증까지 됐다고 판단할 때만 milestone(title: 단원 이름, summary: 무엇이 끝났고 어떻게 확인했는지)을 채운다. 그러면 앱이 사용자에게 main 병합을 묻는다. 작은 진전·미검증이면 비운다.${this.get(m.id).mergeRequest?.status === 'pending' ? ' 지금 main 병합을 묻는 중이니 milestone을 다시 내지 않는다.' : ''}`, ''] : []),
       ...this.learnedSection(m.projectId),
       '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회, 검토 없이 ${this.reviewBudget()}회까지 진행)`, '',
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',

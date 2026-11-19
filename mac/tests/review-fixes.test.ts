@@ -258,7 +258,7 @@ describe('Codex 3차 반영', () => {
 describe('Bash 작성자 격리 실행(사전 차단)', () => {
   const bashAgent = (svc: ReturnType<typeof mkService>, pid: string, name = '빌드 담당') => svc.saveAgent(pid, null, agentFields('12', name, { tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'], allowedCommands: ['npm test'] }));
 
-  it('범위 밖 쓰기는 실제 프로젝트에 반영되지 않고 기록되며, 그 시도의 변경은 하나도 반영하지 않는다', async () => {
+  it('기획의 허용 경로 밖 쓰기는 실제 프로젝트에 반영되지 않고 기록된다', async () => {
     const dir = tmpProject(); const svc = mkService(dir);
     const p = svc.createProject(plan(dir));
     mkdirSync(join(dir, 'secret'), { recursive: true });
@@ -271,8 +271,26 @@ describe('Bash 작성자 격리 실행(사전 차단)', () => {
     expect(existsSync(join(dir, 'secret/leak.txt'))).toBe(false); // 실제 프로젝트에 쓰이지 않음(차단)
     const at = svc.store.runAttempts(run.id)[0];
     expect(at.outOfScopeChanges.join(' ')).toContain('secret/leak.txt');
-    expect(at.outOfScopeChanges.join(' ')).toContain('차단');
+    expect(at.outOfScopeChanges.join(' ')).toContain('허용 경로 밖');
     expect(svc.store.getRun(run.id).status).toBe('failed');
+    svc.close();
+  });
+
+  it('작업 범위 밖이어도 기획의 허용 경로 안이면 함께 반영하고 실패로 치지 않는다(예: 문서 작업 중 고친 시험 파일)', async () => {
+    const dir = tmpProject(); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    const w = bashAgent(svc, p.id);
+    const inp = n('input', '입력');
+    const a = n('agent', 'A', { agentId: w.id, instructions: '[[mock:write-outside:src/fix.test.ts]]', writeScope: ['docs'], outputs: docOut('a.md'), maxRetries: 0, maxVisits: 1 });
+    const v = svc.saveGraph(p.id, { nodes: [inp, a], edges: [e(inp, a)] }, '').version!;
+    const run = await svc.startRun(p.id, v.id);
+    await waitRun(svc, run.id, ['failed', 'succeeded']);
+    expect(existsSync(join(dir, 'src/fix.test.ts'))).toBe(true);
+    const at = svc.store.runAttempts(run.id)[0];
+    expect(at.outOfScopeChanges).toEqual([]);
+    expect(at.changedFiles).toContain('src/fix.test.ts');
+    expect(svc.store.getRun(run.id).status).toBe('succeeded');
     svc.close();
   });
 

@@ -6,7 +6,7 @@
 // - 같은 작업 트리(git dir)를 쓰는 작업은 한 줄로 세워 실행하고, 앱 종료 때 진행 중인 git 작업을 기다린다.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, sep } from 'node:path';
 import { PROTECTED_BRANCHES } from './autopilot';
@@ -609,4 +609,152 @@ export async function approvedDiff(folder: string, repo: string, files: string[]
   const lines = out.split('\n'); const kept = lines.filter((l) => !SECRET_TEXT.some((re) => re.test(l)) && !CRED_URL.test(l));
   out = kept.join('\n') + (kept.length < lines.length ? '\n(비밀값으로 보이는 줄은 뺐습니다)' : '');
   return `${skipped ? `(비밀값·필터·링크 등 ${skipped}개 파일은 보내지 않음)\n` : ''}${out.length > maxChars ? `${out.slice(0, maxChars)}\n…(이하 생략)` : out}`;
+}
+
+// ───── 매일 dev 반영(자동 커밋·push) ─────
+/** 비밀값 파일을 커밋하지 않도록 .gitignore에 더하는 규칙(없는 줄만 더한다). 견본(.env.example 등)은 다시 포함한다 */
+export const SECRET_IGNORE = ['.env', '.env.*', '!.env.example', '!.env.sample', '!.env.template', '*.pem', '*.p12', '*.pfx', '*.keystore', '*.jks', 'id_rsa*', 'id_ed25519*', 'credentials.json', '*secret*.json', '*secret*.yml', '*secret*.yaml', '*secret*.properties'];
+const IGNORE_HEAD = '# CREWGENAI: 비밀값(API 키·DB·접속 정보) 파일은 커밋하지 않는다(자동 추가)';
+const BIG_FILE = 20 * 1024 * 1024;
+
+export interface DevSyncResult { repo: string; status: 'pushed' | 'nothing' | 'skipped' | 'failed'; note: string; committed: number; excluded: string[]; sha: string | null }
+
+/** .gitignore에 비밀값 규칙이 없으면 더한다. 바꿨으면 true */
+export function ensureSecretIgnore(abs: string): boolean {
+  const p = join(abs, '.gitignore');
+  let cur = ''; try { cur = readFileSync(p, 'utf8'); } catch { cur = ''; }
+  const have = new Set(cur.split(/\r?\n/).map((l) => l.trim()));
+  const add = SECRET_IGNORE.filter((l) => !have.has(l));
+  if (!add.length) return false;
+  const block = `${cur && !cur.endsWith('\n') ? '\n' : ''}${cur ? '\n' : ''}${have.has(IGNORE_HEAD) ? '' : `${IGNORE_HEAD}\n`}${add.join('\n')}\n`;
+  writeFileSync(p, cur + block);
+  return true;
+}
+
+/** git status -z 결과의 경로들(이름 바꾸기는 새 이름) */
+async function changedPaths(abs: string): Promise<string[]> {
+  const r = await git(abs, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  if (!r.ok) return [];
+  const parts = r.raw.split('\0'); const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i]; if (e.length < 4) continue;
+    const xy = e.slice(0, 2); out.push(e.slice(3));
+    if (xy[0] === 'R' || xy[0] === 'C') i++; // 다음 항목은 원래 이름
+  }
+  return [...new Set(out)];
+}
+
+/** 커밋해도 되는 파일인가: 비밀값 이름·내용, 너무 큰 파일은 뺀다(새 파일은 전체, 바뀐 파일은 추가된 줄만 본다) */
+async function secretReason(abs: string, rel: string): Promise<string | null> {
+  if (looksSecretName(rel)) return '비밀값 파일 이름';
+  const f = join(abs, rel);
+  let st; try { st = lstatSync(f); } catch { return null; } // 지운 파일
+  if (st.isSymbolicLink() || !st.isFile()) return null;
+  if (st.size > BIG_FILE) return '20MB 넘는 큰 파일';
+  if (st.size > SCAN_MAX) return null;
+  const tracked = (await git(abs, ['ls-files', '--error-unmatch', '--', rel])).ok;
+  const text = tracked ? addedLines((await ag(abs, ['diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--', rel])).raw) : (() => { try { return readFileSync(f, 'utf8'); } catch { return ''; } })();
+  return looksSecretText(text) ? '비밀값으로 보이는 내용(API 키·비밀번호·개인 키 등)' : null;
+}
+
+const PUSH_ENV = (): Record<string, string> => (process.env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }); // 암호를 묻지 않는다
+const firstLine = (s: string) => s.split('\n').find((l) => l.trim())?.replace(/\/\/[^/@\s]+@/g, '//***@').slice(0, 160) ?? '';
+
+/**
+ * 저장소 하나를 dev에 반영한다: 비밀값을 뺀 미커밋 변경을 지금 브랜치(dev 또는 앱 작업 브랜치)에 커밋하고, dev에 합쳐 원격 dev로 push한다.
+ * 사용자 작업 트리는 바꾸지 않는다(dev와 갈라졌으면 임시 작업 폴더에서 병합). 사용자 브랜치(dev·앱 작업 브랜치가 아닌 것)는 건드리지 않는다.
+ */
+export function syncRepoToDev(abs: string, repo: string, day: string, opts: { push: boolean } = { push: true }): Promise<DevSyncResult> {
+  const res = (status: DevSyncResult['status'], note: string, extra: Partial<DevSyncResult> = {}): DevSyncResult => ({ repo, status, note, committed: 0, excluded: [], sha: null, ...extra });
+  return withRepoLock(abs, async () => {
+    const busy = await gitBusy(abs); if (busy) return res('skipped', busy);
+    const cur = (await git(abs, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).out;
+    if (!cur) return res('skipped', '브랜치가 아닌 상태(detached)라 건너뜀');
+    if (cur !== 'dev' && !cur.startsWith('feat/crewgenai-')) return res('skipped', `사용자 브랜치(${cur})에 있어 건드리지 않음`);
+    const remote = (await git(abs, ['remote'])).out.split('\n').includes('origin') ? 'origin' : '';
+    if (remote) await git(abs, ['fetch', '--quiet', '--no-tags', remote, 'dev'], PUSH_ENV(), 60000);
+    const hasLocalDev = (await git(abs, ['rev-parse', '--verify', '-q', 'refs/heads/dev'])).ok;
+    const hasRemoteDev = !!remote && (await git(abs, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/dev`])).ok;
+    if (!hasLocalDev && !hasRemoteDev) return res('skipped', 'dev 브랜치가 없어 건너뜀');
+    // 1) 비밀값 제외 규칙 → 커밋할 파일 고르기
+    const ignoreChanged = ensureSecretIgnore(abs);
+    const excluded: string[] = []; const files: string[] = [];
+    for (const p of await changedPaths(abs)) { const why = await secretReason(abs, p); if (why) excluded.push(`${p} — ${why}`); else files.push(p); }
+    let committed = 0; let sha: string | null = null;
+    if (files.length) {
+      const add = await ag(abs, ['add', '-A', '--', ...files]);
+      if (!add.ok) return res('failed', `스테이징 실패: ${firstLine(add.err)}`, { excluded });
+      const c = await ag(abs, ['commit', '--no-verify', '-q', '-m', `CREWGENAI 일일 반영 ${day}`, '-m', `비밀값 제외 ${excluded.length}개${ignoreChanged ? ', .gitignore에 비밀값 제외 규칙 추가' : ''}`]);
+      if (!c.ok && !/nothing to commit/.test(c.out + c.err)) return res('failed', `커밋 실패: ${firstLine(c.err || c.out)}`, { excluded });
+      if (c.ok) { committed = files.length; sha = (await git(abs, ['rev-parse', 'HEAD'])).out; }
+    }
+    // 2) dev에 합치기
+    const head = (await git(abs, ['rev-parse', 'HEAD'])).out;
+    // 합칠 기준 dev: 원격 dev와 로컬 dev 중 앞선 쪽(로컬 dev에만 있는 커밋을 잃지 않게). 지금 브랜치가 dev면 로컬 dev는 HEAD에 이미 들어 있다.
+    const rDev = hasRemoteDev ? (await git(abs, ['rev-parse', `refs/remotes/${remote}/dev`])).out : '';
+    const lDev = hasLocalDev && cur !== 'dev' ? (await git(abs, ['rev-parse', 'refs/heads/dev'])).out : '';
+    let devTip = rDev || lDev;
+    if (rDev && lDev && rDev !== lDev) {
+      if ((await git(abs, ['merge-base', '--is-ancestor', rDev, lDev])).ok) devTip = lDev;
+      else if (!(await git(abs, ['merge-base', '--is-ancestor', lDev, rDev])).ok) return res('skipped', '로컬 dev와 원격 dev가 갈라져 있어 건너뜀(사람이 정리해야 함)', { excluded, committed, sha });
+    }
+    let target = head;
+    if (devTip !== head && !(await git(abs, ['merge-base', '--is-ancestor', devTip, head])).ok) {
+      if ((await git(abs, ['merge-base', '--is-ancestor', head, devTip])).ok) target = devTip; // 이미 dev에 들어 있음
+      else {
+        // dev가 갈라졌다: 사용자 작업 트리를 건드리지 않고 임시 작업 폴더에서 병합한다
+        const tmp = mkdtempSync(join(tmpdir(), 'crewgenai-devsync-'));
+        try {
+          const wt = await ag(abs, ['worktree', 'add', '--detach', '--quiet', tmp, devTip]);
+          if (!wt.ok) return res('failed', `임시 작업 폴더를 만들지 못함: ${firstLine(wt.err)}`, { excluded, committed, sha });
+          const m = await ag(tmp, ['merge', '--no-edit', '--no-ff', '-q', '-m', `CREWGENAI 일일 반영 ${day}: ${cur} → dev`, head]);
+          if (!m.ok) { await ag(tmp, ['merge', '--abort']); return res('failed', `dev와 충돌해 합치지 못함(커밋은 ${cur}에 남김): ${firstLine(m.err || m.out)}`, { excluded, committed, sha }); }
+          target = (await git(tmp, ['rev-parse', 'HEAD'])).out;
+        } finally { await git(abs, ['worktree', 'remove', '--force', tmp]); rmSync(tmp, { recursive: true, force: true }); await git(abs, ['worktree', 'prune']); }
+      }
+    }
+    // 로컬 dev도 같은 위치로(다른 작업 폴더에서 dev를 쓰고 있지 않을 때만)
+    if (cur !== 'dev') await git(abs, ['branch', '-f', 'dev', target]);
+    else if (target !== head) { const ff = await ag(abs, ['merge', '--ff-only', '-q', target]); if (!ff.ok) return res('failed', `dev를 최신으로 맞추지 못함: ${firstLine(ff.err)}`, { excluded, committed, sha }); }
+    // 3) push
+    if (!remote || !opts.push) return res(committed ? 'pushed' : 'nothing', remote ? 'push 안 함(설정)' : '원격 저장소 없음 — 로컬 dev에만 반영', { excluded, committed, sha });
+    if (hasRemoteDev && target === rDev) return res('nothing', committed ? '이미 dev에 반영됨' : '바뀐 것 없음', { excluded, committed, sha });
+    const p = await git(abs, ['push', '--quiet', remote, `${target}:refs/heads/dev`], PUSH_ENV(), 120000);
+    if (!p.ok) return res('failed', `push 실패: ${firstLine(p.err)}`, { excluded, committed, sha });
+    return res('pushed', `${committed ? `파일 ${committed}개 커밋, ` : ''}dev ${(rDev || devTip).slice(0, 8)} → ${target.slice(0, 8)} push`, { excluded, committed, sha });
+  }).catch((e) => res('failed', firstLine((e as Error).message)));
+}
+
+/**
+ * 사용자가 승인한 main 병합: 원격 dev를 main에 합쳐 push한다(가능하면 fast-forward, 갈라졌으면 임시 작업 폴더에서 병합 커밋).
+ * 사용자 작업 트리는 바꾸지 않는다. 충돌이면 합치지 않고 실패로 알린다.
+ */
+export function mergeDevToMain(abs: string, repo: string, day: string): Promise<DevSyncResult> {
+  const res = (status: DevSyncResult['status'], note: string, sha: string | null = null): DevSyncResult => ({ repo, status, note, committed: 0, excluded: [], sha });
+  return withRepoLock(abs, async () => {
+    if (!(await git(abs, ['remote'])).out.split('\n').includes('origin')) return res('skipped', '원격 저장소(origin)가 없어 건너뜀');
+    const f = await git(abs, ['fetch', '--quiet', '--no-tags', 'origin', 'dev', 'main'], PUSH_ENV(), 60000);
+    if (!f.ok) return res('skipped', `dev·main을 받아 오지 못해 건너뜀: ${firstLine(f.err)}`);
+    const dev = (await git(abs, ['rev-parse', 'refs/remotes/origin/dev'])).out; const main = (await git(abs, ['rev-parse', 'refs/remotes/origin/main'])).out;
+    if (!dev || !main) return res('skipped', 'dev 또는 main 브랜치가 없어 건너뜀');
+    if (dev === main || (await git(abs, ['merge-base', '--is-ancestor', dev, main])).ok) return res('nothing', 'main에 이미 들어 있음');
+    let target = dev;
+    if (!(await git(abs, ['merge-base', '--is-ancestor', main, dev])).ok) {
+      const tmp = mkdtempSync(join(tmpdir(), 'crewgenai-main-'));
+      try {
+        const wt = await ag(abs, ['worktree', 'add', '--detach', '--quiet', tmp, main]);
+        if (!wt.ok) return res('failed', `임시 작업 폴더를 만들지 못함: ${firstLine(wt.err)}`);
+        const m = await ag(tmp, ['merge', '--no-edit', '--no-ff', '-q', '-m', `CREWGENAI main 병합 ${day}: dev → main`, dev]);
+        if (!m.ok) { await ag(tmp, ['merge', '--abort']); return res('failed', `main과 충돌해 합치지 못함(사람이 정리해야 함): ${firstLine(m.err || m.out)}`); }
+        target = (await git(tmp, ['rev-parse', 'HEAD'])).out;
+      } finally { await git(abs, ['worktree', 'remove', '--force', tmp]); rmSync(tmp, { recursive: true, force: true }); await git(abs, ['worktree', 'prune']); }
+    }
+    const p = await git(abs, ['push', '--quiet', 'origin', `${target}:refs/heads/main`], PUSH_ENV(), 120000);
+    if (!p.ok) return res('failed', `push 실패: ${firstLine(p.err)}`);
+    // 로컬 main이 뒤처져 있고 지금 브랜치가 아니면 같이 옮긴다
+    const cur = (await git(abs, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).out;
+    const lMain = (await git(abs, ['rev-parse', '--verify', '-q', 'refs/heads/main'])).out;
+    if (cur !== 'main' && lMain && (await git(abs, ['merge-base', '--is-ancestor', lMain, target])).ok) await git(abs, ['branch', '-f', 'main', target]);
+    return res('pushed', `main ${main.slice(0, 8)} → ${target.slice(0, 8)} push`, target);
+  }).catch((e) => res('failed', firstLine((e as Error).message)));
 }

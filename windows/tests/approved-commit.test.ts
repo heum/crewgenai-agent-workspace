@@ -153,7 +153,7 @@ describe('승인 커밋', () => {
 
 describe('오퍼레이터 판단 → 승인 커밋 요청', () => {
   it('판단의 commitRequests가 미션에 대기 요청으로 쌓이고 기록이 남으며, 다음 판단에는 목록으로 알려 같은 요청을 다시 내지 않는다. 승인 전에는 커밋하지 않는다', async () => {
-    const dir = tmpProject(); const g = gitInit(dir); const svc = mkService(dir);
+    const dir = tmpProject(); const g = gitInit(dir); const svc = mkService(dir); svc.saveSettings({ devSync: false }); // 커밋 승인 요청은 매일 dev 반영을 끈 경우에만
     writeFileSync(join(dir, 'pending.txt'), '사용자 미커밋 변경\n');
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);

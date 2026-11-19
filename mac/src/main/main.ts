@@ -234,6 +234,8 @@ function register() {
   h('resumeMission', (id) => s().missions.resume(String(id)));
   h('retryMissionLimit', (id) => s().missions.retryLimitNow(id));
   h('usagePace', () => s().usagePace());
+  h('devSyncStatus', () => s().devSyncStatus());
+  h('devSyncNow', () => s().devSyncNow());
   h('missionSnapshots', (id) => s().missions.snapshots(id));
   h('rollbackMission', (id, tag) => s().missions.rollback(id, tag));
   h('addDirective', (id, text, mode) => s().missions.addDirective(id, text, mode === 'now' ? 'now' : mode === 'priority' ? 'priority' : 'next'));
@@ -312,6 +314,7 @@ void app.whenReady().then(async () => {
   await svc.engine.recoverOnStartup();
   await svc.missions.recoverProcesses();
   svc.missions.recoverOnStartup();
+  svc.startDevSyncTimer(); // 매일 dev 반영(정해진 시각, 꺼져 있었으면 켜진 뒤)
   await svc.recoverCommits().catch(() => null); // 커밋하던 중 꺼진 승인 요청을 실제 커밋 여부로 정리
   tg = new TelegramBridge({ svc, token: tgToken, capture: captureLocal, onStatus: () => { if (win && !win.isDestroyed()) win.webContents.send('ws:live', { type: 'telegram' }); } });
   tg.start();

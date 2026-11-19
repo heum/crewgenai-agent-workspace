@@ -1,7 +1,7 @@
 import LearningsModal from './LearningsModal';
 import TelegramSettings from './TelegramSettings';
 import { useEffect, useState } from 'react';
-import type { AppSettings, CliStatus, CodexStatus, Project, Attention, SkillSource, UsagePaceView } from '../../shared/types';
+import type { AppSettings, CliStatus, CodexStatus, Project, Attention, SkillSource, UsagePaceView, DevSyncView } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
 import { Markdown } from '../markdown';
 import type { QueueInfo } from '../App';
@@ -208,6 +208,12 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
   useEffect(() => { ws().skillSources(null).then(setSkills).catch(() => setSkills({ dirs: [], sources: [] })); }, []);
   const [pace, setPace] = useState<UsagePaceView | null>(null);
   useEffect(() => { ws().usagePace().then(setPace).catch(() => setPace(null)); }, []);
+  const [dev, setDev] = useState<DevSyncView | null>(null);
+  useEffect(() => {
+    const load = () => ws().devSyncStatus().then(setDev).catch(() => setDev(null));
+    void load(); const off = ws().onLive((e) => { if (e.type === 'devSync') void load(); });
+    return off;
+  }, []);
   const setSkillDirs = (dirs: string[]) => act.run(async () => { setSkills(await ws().skillSources(dirs)); setSkillsTouched(true); });
   const addSkillDir = () => act.run(async () => { const p = await ws().pickSkillFolder(); if (p && skills && !skills.dirs.includes(p)) { setSkills(await ws().skillSources([...skills.dirs, p])); setSkillsTouched(true); } });
   const save = () =>
@@ -227,6 +233,8 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           autoAssist: s.autoAssist !== false,
           testLocalSockets: s.testLocalSockets === true,
           techAuto: s.techAuto !== false,
+          devSync: s.devSync !== false,
+          devSyncHour: s.devSyncHour ?? 22,
           paceEnabled: s.paceEnabled !== false,
           paceReservePct: s.paceReservePct ?? 10,
           commandLevel: s.commandLevel ?? 'medium',
@@ -287,6 +295,33 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" disabled={s.autoAssist === false} checked={s.testLocalSockets === true} onChange={(e) => setS({ ...s, testLocalSockets: e.target.checked })} /> 시험 명령에 로컬 소켓 허용 (Gradle·Spring 시험에 필요)
       </label>
       <p className="muted small">켜면 Gradle 시험이 격리 환경에서 돕니다. 대신 격리된 시험도 이 PC에서 켜져 있는 로컬 서비스(예: localhost의 프록시·DB·개발 서버)에 접속할 수 있게 됩니다. 외부 인터넷은 계속 막힙니다. 끄면 Gradle 시험은 ‘실행 못 함’으로 기록됩니다.</p>
+      <h3>매일 dev 반영</h3>
+      <label className="check">
+        <input type="checkbox" checked={s.devSync !== false} onChange={(e) => setS({ ...s, devSync: e.target.checked })} /> 하루 한 번 묻지 않고 커밋해 dev에 합치고 push (권장)
+      </label>
+      <ul className="muted small auto-list">
+        <li>프로젝트의 자동 수정 허용 경로에 든 저장소마다, dev나 앱 작업 브랜치(feat/crewgenai-…)에 있으면 미커밋 변경을 커밋하고 dev에 합쳐 원격 dev로 push합니다. 사용자 브랜치·dev가 없는 저장소·충돌은 건너뛰고 아래에 이유를 보여 줍니다.</li>
+        <li>API 키·DB·접속 정보 같은 비밀값은 커밋하지 않습니다: .gitignore에 비밀값 제외 규칙을 더하고, 비밀값으로 보이는 이름·내용의 파일은 빼고 목록으로 보여 줍니다.</li>
+        <li>main 병합은 하지 않습니다(큰 단원이 끝났을 때만 확인함에서 묻습니다). 커밋 승인 요청도 더는 오지 않습니다.</li>
+      </ul>
+      <Field label="반영 시각(시)" hint="이 시각이 지나면 하루 한 번. 앱이 꺼져 있었으면 켜진 뒤 실행">
+        <input className="input" type="number" min={0} max={23} value={s.devSyncHour ?? 22} onChange={(e) => setS({ ...s, devSyncHour: Math.min(23, Math.max(0, Number(e.target.value) || 0)) })} />
+      </Field>
+      {dev && (
+        <div className="small">
+          <div className="row gap">
+            <span className="muted">{dev.running ? '반영하는 중…' : dev.lastAt ? `마지막 반영: ${fmtDate(dev.lastAt)}` : '아직 반영한 적 없음'}</span>
+            <button className="btn small" disabled={dev.running} onClick={() => void ws().devSyncNow().then(setDev).catch(() => {})}>지금 반영</button>
+          </div>
+          {dev.results.length > 0 && (
+            <ul className="muted auto-list">
+              {dev.results.map((r) => (
+                <li key={r.repo}><b>{r.repo}</b> — {r.status === 'pushed' ? '반영함' : r.status === 'nothing' ? '바뀐 것 없음' : r.status === 'skipped' ? '건너뜀' : '실패'}: {r.note}{r.excluded.length ? ` · 비밀값 제외 ${r.excluded.length}개(${r.excluded.slice(0, 3).join(', ')}${r.excluded.length > 3 ? ' …' : ''})` : ''}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <h3>기술 권한 요청</h3>
       <label className="check">
         <input type="checkbox" checked={s.techAuto !== false} onChange={(e) => setS({ ...s, techAuto: e.target.checked })} /> 명령 허용·경로 읽기 같은 기술 권한은 묻지 않고 앱이 처리 (권장)

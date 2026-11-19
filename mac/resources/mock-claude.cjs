@@ -197,6 +197,7 @@ async function main() {
       if (!reviewed && cyc < 3) Object.assign(dec, { decision: 'review', summary: '전체 화면과 핵심 흐름 준비', nextFocus: '피드백 반영', checkpoint: { title: '회사 관리 전체 흐름', steps: '1. 목록 열기 → 2. 회사 선택 → 3. 메모 저장 → 다시 열어 저장값 확인', verified: '목록·상세·저장을 시연 환경에서 실제로 실행', unverified: '권한별 화면은 준비 중', features: [{ name: '회사 목록·상세', changed: '실제 API 연결', status: 'reviewable' }], decisions: [{ question: '삭제 기능을 1차에 넣을까요?', choices: [{ label: '넣는다', effect: '삭제 버튼과 확인 창을 만든다', recommended: false, why: '' }, { label: '2차로 미룬다', effect: '이번에는 숨긴다', recommended: true, why: '정책이 아직 없음' }] }], assumptions: ['메모는 최대 500자로 가정'] } });
       else Object.assign(dec, { decision: 'done', summary: '피드백 반영 완료', question: '', nextFocus: '' });
     }
+    if (prompt.includes('[[mock:milestone]]') && prompt.includes('## 커밋·main 병합') && !prompt.includes('지금 main 병합을 묻는 중')) dec.milestone = { title: '첫 화면 완성', summary: '첫 화면과 시험이 통과' };
     if (prompt.includes('[[mock:commit-request]]') && !prompt.includes('## 커밋 요청(최근)')) dec.commitRequests = [{ repo: '', files: ['pending.txt'], message: '대기 변경 커밋', why: '다음 작업에 필요' }];
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(dec), structured_output: dec, permission_denials: [] });
     process.exit(0);

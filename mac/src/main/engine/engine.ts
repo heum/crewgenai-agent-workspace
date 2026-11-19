@@ -21,7 +21,8 @@ import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, f
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { buildReport } from './report';
-import { effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
+import { allowedRoots, effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
+import { looksSecretName } from '../git';
 import { laneBlocks } from './lanes';
 import { prepareSkillBundle, unpinSkillBundle } from '../skills';
 
@@ -1053,10 +1054,17 @@ export class Engine {
       ];
       if (isolate && iso) {
         // 격리 실행: 범위 밖 변경은 실제 프로젝트에 반영하지 않는다(차단). 범위 안 변경은 전부 반영하거나, 충돌·위험 경로가 있으면 하나도 반영하지 않는다.
-        const outside = changed.filter((f) => !inOwn(f));
-        const res = done.cancelled || done.timedOut || outside.length ? { applied: [], conflicts: [], blocked: [] } : applyIsolated(plan.folder, workDir, changed.filter(inOwn), iso.base);
+        // 작업 수정 경로 밖이어도 기획의 자동 수정 허용 경로 안이고, 같은 시간에 다른 작업이 맡은 곳이 아니며, 비밀값 파일이 아니면 반영한다
+        // (예: 문서 작업 중 고친 시험 파일). 허용 경로 밖 변경만 막는다. 막힌 변경이 있어도 나머지 정상 변경은 반영한다.
+        const roots = allowedRoots(plan);
+        const othersHas = (f: string) => others.some((o) => join(base, f) === o || join(base, f).startsWith(o + '/'));
+        const outsideAll = changed.filter((f) => !inOwn(f));
+        const extend = role === 'author' ? outsideAll.filter((f) => roots.some((w) => within(f, w)) && !othersHas(f) && !looksSecretName(f)) : [];
+        const outside = outsideAll.filter((f) => !extend.includes(f));
+        const res = done.cancelled || done.timedOut ? { applied: [], conflicts: [], blocked: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base);
+        if (extend.length && !done.cancelled && !done.timedOut) addEv('system', `작업 범위 밖이지만 기획의 허용 경로 안이라 함께 반영했습니다(${extend.length}개): ${extend.slice(0, 5).join(', ')}`, '');
         attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];
-        attempt.outOfScopeChanges = outside.map((f) => `${f} (격리 실행에서 차단, 반영 안 함)`);
+        attempt.outOfScopeChanges = outside.map((f) => `${f} (${roots.some((w) => within(f, w)) ? '다른 작업이 맡은 곳이거나 비밀값 파일' : '기획의 허용 경로 밖'}이라 반영 안 함)`);
         cleanupIsolated(workDir);
       } else {
         attempt.changedFiles = changed.filter(inOwn);
