@@ -2111,3 +2111,9 @@ textarea.input {
 .agent-item-head .tool-line { flex: 1 1 0; }
 .md-details { margin: 6px 0; }
 .md-details > summary { cursor: pointer; font-weight: 600; color: var(--sub); }
+
+/* 처리가 끝난 기록(내가 고른 결정·처리한 직원 제안): 주의 표시 없이 같은 모양의 접는 줄로 */
+.answer-card.staff-card.quiet { border: 0; background: none; padding: 0; box-shadow: none; margin: 0; }
+.decision-log { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 12px; margin-top: 8px; }
+.decision-log > summary { color: var(--sub); }
+.decision-log[open] > summary { margin-bottom: 6px; }

@@ -57,13 +57,22 @@ export function loungePlan(kit: Kit, box: { x: number; y: number; w: number; h: 
   // 들어가는 줄만 쓰고, 줄 사이·위아래 여백을 고르게 나눈다(한가운데 한 줄로 몰리고 위아래가 비지 않게)
   const fit: typeof rows = []; let used = 0;
   for (const row of rows) { if (used + (fit.length ? vgap : 0) + row.h > box.h) break; used += (fit.length ? vgap : 0) + row.h; fit.push(row); }
-  const spareY = Math.max(0, box.h - used); const gapY = Math.floor(spareY / (fit.length + 1));
+  const spareY = Math.max(0, box.h - used); const gapY = Math.floor(Math.max(0, spareY - (fit.length === 1 ? (rowGap ?? 0) : 0)) / (fit.length + 1));
   let y = box.y + gapY;
   fit.forEach((row, ri) => {
-    // 줄 안에서도 남는 폭을 가구 사이에 고르게(줄마다 조금 엇갈리게 해서 격자처럼 보이지 않게)
-    const spareX = Math.max(0, box.w - row.w); const gx = Math.min(Math.floor(spareX / (row.items.length + 1)), 40);
-    let x = box.x + Math.floor((box.w - (row.w + gx * (row.items.length - 1))) / 2) + (ri % 2 ? Math.max(0, Math.min(6, Math.floor(gx / 3), Math.floor((spareX - gx * (row.items.length - 1)) / 2))) : 0);
-    for (const it of row.items) { placed[it.idx] = { st: it.st, x, y: y + (row.h - it.st.h) }; x += it.st.w + gap + gx; }
+    // 가구를 2~3개씩 묶음(소파 곁 의자, 빈백 둘 등)으로 모으고, 묶음 사이를 넓게 띄워 한 줄로 늘어서 보이지 않게 한다.
+    // 묶음마다 앞뒤로 엇갈리게(세로 여유가 있으면) 놓아 실제 휴게실처럼 보이게 한다.
+    const n = row.items.length; const size = n >= 7 ? 3 : 2; const groups = Math.max(1, Math.ceil(n / size));
+    const spareX = Math.max(0, box.w - row.w); const gx = groups > 1 ? Math.min(Math.floor(spareX / (groups + 1)), 60) : 0;
+    const tagRoom = rowGap ?? 0; // 아래쪽 이름표 자리
+    const zz = fit.length === 1 ? Math.max(0, Math.floor((spareY - tagRoom) / 3)) : Math.min(Math.floor(gapY / 2), 8); // 엇갈림 폭
+    let x = box.x + Math.floor((box.w - (row.w + gx * (groups - 1))) / 2);
+    row.items.forEach((it, i) => {
+      const g = Math.floor(i / size);
+      const dy = zz ? (g % 2 ? zz : -Math.floor(zz / 2)) * (ri % 2 ? -1 : 1) : 0;
+      placed[it.idx] = { st: it.st, x, y: Math.max(box.y, Math.min(box.y + box.h - it.st.h - tagRoom, y + (row.h - it.st.h) + dy)) };
+      x += it.st.w + gap + ((i + 1) % size === 0 ? gx : 0);
+    });
     y += row.h + vgap + gapY;
   });
   const order = FILL.filter(([si, k]) => placed[si] && placed[si]!.st.slots[k]);

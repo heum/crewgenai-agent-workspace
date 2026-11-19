@@ -156,8 +156,17 @@ export const Pix = memo(function Pix({ r, x, y, className }: { r: Rect[]; x: num
   return className ? <g className={className}>{body}</g> : body;
 });
 
-function Floor({ x, y, w, h, kind }: { x: number; y: number; w: number; h: number; kind: 'wood' | 'warm' | 'tile' | 'carpet' }) {
+function Floor({ x, y, w, h, kind }: { x: number; y: number; w: number; h: number; kind: 'wood' | 'warm' | 'tile' | 'carpet' | 'lounge' }) {
   const r: JSX.Element[] = [];
+  if (kind === 'lounge') {
+    // 라운지: 밝은 헤링본 원목 바닥(업무 공간의 짙은 마루와 구분)
+    r.push(<rect key="b" x={x} y={y} width={w} height={h} fill="#ecd3ad" />);
+    for (let yy = y, i = 0; yy < y + h; yy += 4, i++) for (let xx = x + ((i % 2) * 6); xx < x + w; xx += 12) {
+      r.push(<rect key={`a${yy}-${xx}`} x={xx} y={yy} width={6} height={4} fill="#e4c79d" />);
+      r.push(<rect key={`l${yy}-${xx}`} x={xx} y={yy + 3} width={6} height={1} fill="#d8b98c" />);
+    }
+    return <g>{r}</g>;
+  }
   if (kind === 'carpet') {
     // 리뷰룸: 짙은 청회색 카펫에 잔잔한 마름모 무늬
     r.push(<rect key="b" x={x} y={y} width={w} height={h} fill="#3f5068" />);
@@ -223,7 +232,7 @@ export function Scene({ people, staff, layout: L, plan, mood, selected, waving, 
       <style>{`.ofc-city{fill:${mood.city};transition:fill 1.6s ease}.ofc-citylights{opacity:${mood.cityLights};transition:opacity 1.6s ease}`}</style>
       {/* 바닥·벽 */}
       <Floor x={0} y={WALL} w={W} h={L.band - WALL} kind="wood" />
-      <Floor x={lounge.x} y={lounge.y} w={lounge.w + 2} h={lounge.h} kind="warm" />
+      <Floor x={lounge.x} y={lounge.y} w={lounge.w + 2} h={lounge.h} kind="lounge" />
       <Floor x={review.x} y={review.y} w={review.w} h={review.h} kind="carpet" />
       <rect x={0} y={0} width={W} height={WALL} fill="#f1e8d3" /><rect x={0} y={0} width={W} height={1} fill="#dccfb1" />
       <rect x={0} y={WALL - 3} width={W} height={3} fill="#9a6538" /><rect x={0} y={WALL - 3} width={W} height={1} fill="#e2b07a" />
@@ -253,7 +262,22 @@ export function Scene({ people, staff, layout: L, plan, mood, selected, waving, 
           {at && p.pose === 'code' && <rect className="ofc-anim ofc-blink" x={d.x + 12} y={d.y + 11} width={1} height={1} fill="#e8fff0" />}
         </g>
       ); })}
-      <rect x={0} y={L.band - 2} width={lounge.w + 2} height={2} fill="#9a6538" /><rect x={0} y={L.band - 2} width={lounge.w + 2} height={1} fill="#c99560" />
+      {/* 라운지 경계: 낮은 화분 칸막이 */}
+      <rect x={0} y={L.band - 3} width={lounge.w + 2} height={4} fill="#7a5233" /><rect x={0} y={L.band - 3} width={lounge.w + 2} height={1} fill="#a87a4f" />
+      {Array.from({ length: Math.floor((lounge.w - 4) / 10) }, (_, i) => <g key={`hd${i}`}><rect x={2 + i * 10} y={L.band - 6} width={8} height={4} fill={i % 3 === 1 ? '#5f9a4c' : '#6fae57'} /><rect x={3 + i * 10} y={L.band - 7} width={3} height={2} fill="#87c46c" /></g>)}
+      {/* 라운지 러그: 가구 묶음마다 그 아래에 작은 러그(테라코타·세이지·머스터드 번갈아) */}
+      {(() => {
+        const sts = [...plan.lounge.stations].sort((a, b) => a.x - b.x);
+        const groups: { x0: number; y0: number; x1: number; y1: number }[] = [];
+        for (const st of sts) {
+          const g = groups[groups.length - 1];
+          const b = { x0: st.x, y0: st.y, x1: st.x + st.st.w, y1: st.y + st.st.h };
+          if (g && b.x0 - g.x1 <= 10 && Math.abs(b.y0 - g.y0) <= 16) { g.x1 = Math.max(g.x1, b.x1); g.y0 = Math.min(g.y0, b.y0); g.y1 = Math.max(g.y1, b.y1); } else groups.push(b);
+        }
+        const pal = [['#d08a68', '#b56f4f', '#e6a787'], ['#9fb59a', '#879f82', '#c3d3be'], ['#d9b25e', '#bf9643', '#ecd08e']];
+        return groups.map((g, k) => { const c = pal[k % pal.length]; const rx = g.x0 - 4; const ry = g.y0 + Math.floor((g.y1 - g.y0) * 0.45); const rw = g.x1 - g.x0 + 8; const rh = Math.max(10, g.y1 - ry + 4);
+          return <g key={`rug${k}`}><rect x={rx} y={ry} width={rw} height={rh} fill={c[1]} /><rect x={rx + 1} y={ry + 1} width={rw - 2} height={rh - 2} fill={c[0]} /><rect x={rx + 3} y={ry + 3} width={rw - 6} height={rh - 6} fill="none" stroke={c[2]} strokeWidth={1} /></g>; });
+      })()}
       {/* 리뷰룸 꾸밈: 벽 판넬·나무 몰딩, 유리 칸막이, 가장자리 띠, 화분 */}
       <rect x={review.x} y={review.y} width={review.w} height={8} fill="#e8dfca" /><rect x={review.x} y={review.y + 8} width={review.w} height={1} fill="#7a5233" /><rect x={review.x} y={review.y + 7} width={review.w} height={1} fill="#b98654" />
       {Array.from({ length: Math.floor((review.w - 4) / 14) }, (_, i) => <rect key={`wp${i}`} x={review.x + 4 + i * 14} y={review.y + 2} width={10} height={4} fill="#ddd2b8" />)}
