@@ -75,9 +75,17 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     if (cur) handled.current.add(cur.key);
     const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
     setItems(list); setIdx(0); setDone('검토 결과를 보냈습니다. 미션이 이어서 진행합니다.');
-    if (!list.length) setTimeout(() => setOpen(false), 1800);
   };
   useEffect(() => { setOwn(''); }, [cur?.key]);
+  // 정한 뒤 더 정할 항목이 없으면 5초 뒤 확인함을 저절로 닫는다(남은 초를 보여 주고, '나중에'로 바로 닫을 수도 있음)
+  const [closeIn, setCloseIn] = useState(0);
+  useEffect(() => {
+    if (!open || !done || items.length) { setCloseIn(0); return; }
+    setCloseIn(5);
+    const iv = setInterval(() => setCloseIn((x) => Math.max(0, x - 1)), 1000);
+    const t = setTimeout(() => setOpen(false), 5000);
+    return () => { clearInterval(iv); clearTimeout(t); };
+  }, [open, done, items.length]);
   // 승인 커밋: 지금 저장소 상태로 파일·변경 줄 수·막힘을 다시 읽어 보여 준다(승인할 때 이 내용과 같아야 커밋)
   const [preview, setPreview] = useState<CommitPreview | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
@@ -93,7 +101,6 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
     for (const d of list) seen.current.add(d.key);
     setItems(list); setIdx(0); setDone(msg);
-    if (!list.length) setTimeout(() => setOpen(false), 2200);
   };
   const approveCommit = () => act.run(async () => {
     if (!cur?.commit || !preview) return;
@@ -144,7 +151,6 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     for (const d of list) seen.current.add(d.key);
     setItems(list); setIdx(0);
     setDone(`권한 ${mine.length}건을 허용했습니다. 보류한 업무를 다음 계획부터 다시 시도합니다.`);
-    if (!list.length) setTimeout(() => setOpen(false), 1800);
   });
   const choose = (label: string, action?: 'stop', effect?: string) => act.run(async () => {
     if (!cur) return;
@@ -155,7 +161,6 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       for (const d of list) seen.current.add(d.key);
       setItems(list); setIdx(0);
       setDone(allow ? `허용했습니다. ${list.some((x) => x.kind === 'permission' && x.missionId === cur.missionId) ? '남은 권한 항목을 정하면 보류한 업무를 다시 시도합니다.' : '보류한 업무를 다음 계획부터 다시 시도합니다.'}` : '보류를 유지합니다. 나머지 작업은 계속 진행합니다.');
-      if (!list.length) setTimeout(() => setOpen(false), 1800);
       return;
     }
     if (cur.kind === 'merge') {
@@ -163,7 +168,6 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
       for (const d of list) seen.current.add(d.key);
       setItems(list); setIdx(0); setDone(r.lines.join('\n') || '이미 처리된 항목입니다.');
-      if (!list.length) setTimeout(() => setOpen(false), 1800);
       return;
     }
     const choice = (effect?.trim() ? `${label.trim()} — ${effect.trim()}` : label.trim()).slice(0, 600);
@@ -176,7 +180,6 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     setItems(list);
     setDone(action === 'stop' ? `'${label.trim()}' — 미션을 종료했습니다.` : `'${label.trim()}'로 정했습니다. ${cur.kind === 'question' || cur.waiting ? '미션이 이 결정으로 이어서 진행합니다.' : '다음 계획부터 이 결정을 따릅니다.'}`);
     setIdx(0);
-    if (!list.length) setTimeout(() => setOpen(false), 1800);
   });
 
   // ───── 확인함: 선택 항목 일괄 적용 ─────
@@ -216,7 +219,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
             {view === 'list' ? (
               <div className="decision-body inbox">
                 {done && <div className="decision-done" style={{ whiteSpace: 'pre-line' }}>{done}</div>}
-                {!items.length && <div className="muted">남은 항목이 없습니다.</div>}
+                {!items.length && <div className="muted">남은 항목이 없습니다.{closeIn > 0 ? ` ${closeIn}초 뒤 닫힙니다.` : ''}</div>}
                 {items.length > 0 && <div className="row gap inbox-tools"><button className="btn btn-sm" onClick={fillRec}>추천안으로 채우기</button><span className="muted small">채우기·고르기만으로는 아무것도 승인·반영되지 않습니다. 아래 '선택 항목 일괄 적용'을 눌러야 적용됩니다. 고르지 않은 항목은 그대로 남습니다.</span></div>}
                 <ul className="inbox-list">
                   {items.map((it, i) => (
@@ -329,7 +332,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
               </div>
               </>
             ) : (
-              <div className="decision-body">{done && <div className="decision-done">{done}</div>}<div className="muted">남은 결정이 없습니다.</div></div>
+              <div className="decision-body">{done && <div className="decision-done">{done}</div>}<div className="muted">남은 결정이 없습니다.{closeIn > 0 ? ` ${closeIn}초 뒤 닫힙니다.` : ''}</div></div>
             )}
           </div>
         </div>
