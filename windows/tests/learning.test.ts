@@ -9,7 +9,7 @@ async function waitFor<T>(fn: () => T | undefined | null | false, ms = 60000): P
   for (;;) { const v = fn(); if (v) return v as T; if (Date.now() - t0 > ms) throw new Error('시간 초과'); await sleep(50); }
 }
 function setup() {
-  const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+  const dir = tmpProject(); gitInit(dir); const svc = mkService(dir); svc.saveSettings({ techAuto: false }); // 권한을 사용자에게 묻는 방식(설정을 끈 경우)
   const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
   svc.loadAgentTemplates(p.id);
   return { dir, svc, p };

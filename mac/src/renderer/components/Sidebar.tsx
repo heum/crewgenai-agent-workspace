@@ -226,6 +226,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           gitCommits: s.gitCommits,
           autoAssist: s.autoAssist !== false,
           testLocalSockets: s.testLocalSockets === true,
+          techAuto: s.techAuto !== false,
           paceEnabled: s.paceEnabled !== false,
           paceReservePct: s.paceReservePct ?? 10,
           commandLevel: s.commandLevel ?? 'medium',
@@ -286,6 +287,11 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" disabled={s.autoAssist === false} checked={s.testLocalSockets === true} onChange={(e) => setS({ ...s, testLocalSockets: e.target.checked })} /> 시험 명령에 로컬 소켓 허용 (Gradle·Spring 시험에 필요)
       </label>
       <p className="muted small">켜면 Gradle 시험이 격리 환경에서 돕니다. 대신 격리된 시험도 이 PC에서 켜져 있는 로컬 서비스(예: localhost의 프록시·DB·개발 서버)에 접속할 수 있게 됩니다. 외부 인터넷은 계속 막힙니다. 끄면 Gradle 시험은 ‘실행 못 함’으로 기록됩니다.</p>
+      <h3>기술 권한 요청</h3>
+      <label className="check">
+        <input type="checkbox" checked={s.techAuto !== false} onChange={(e) => setS({ ...s, techAuto: e.target.checked })} /> 명령 허용·경로 읽기 같은 기술 권한은 묻지 않고 앱이 처리 (권장)
+      </label>
+      <p className="muted small">직원이 허용되지 않은 명령·경로를 쓰려다 막히면 확인함에 올리지 않고, 오퍼레이터가 허용된 방법(파일 도구·허용 명령·저장소 시험 명령)으로 다시 계획합니다. 보호 규칙(비밀값 파일 읽기 금지, 외부 네트워크 차단, 수정 범위 밖 쓰기 금지)은 그대로입니다. 끄면 예전처럼 권한 허용을 확인함에서 묻습니다.</p>
       <h3>사용량 속도 조절 (Max 요금제)</h3>
       <label className="check">
         <input type="checkbox" checked={s.paceEnabled !== false} onChange={(e) => setS({ ...s, paceEnabled: e.target.checked })} /> 주간 한도를 초기화 시각까지 나눠 쓰기 (권장)

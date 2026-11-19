@@ -99,6 +99,7 @@ export class Service {
     });
     this.missions = new MissionRunner({
       pace: () => this.paceNow(),
+      techAuto: () => this.settings().techAuto !== false,
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
       executor: () => ({ executor: this.settings().executor, cliPath: this.cli?.path ?? this.settings().cliPath }),
       maxCycles: () => this.settings().missionMaxCycles || 5,

@@ -5,16 +5,16 @@ import { mkService, plan, tmpProject } from './helpers';
 const RO = ['Read', 'Grep', 'Glob', 'Skill']; // 읽기 전용(수정·명령 없음), 스킬은 사용
 
 describe('직원 기본 템플릿', () => {
-  it('세트 목록은 개발팀 표준(12명)과 범용 소규모(7명)이고, 특정 업무(조달 등)에 묶인 직원이 없다', () => {
+  it('세트 목록은 개발팀 표준(13명)과 범용 소규모(7명)이고, 특정 업무(조달 등)에 묶인 직원이 없다', () => {
     const dir = tmpProject(); const svc = mkService(dir);
     const sets = svc.agentTemplateSets();
-    expect(sets.map((s) => [s.id, s.agents.length])).toEqual([['dev', 12], ['general', 7]]);
+    expect(sets.map((s) => [s.id, s.agents.length])).toEqual([['dev', 13], ['general', 7]]);
     const text = JSON.stringify(sets);
     for (const w of ['공고', '조달', '회사정보', '가입·무료']) expect(text).not.toContain(w);
     svc.close();
   });
 
-  for (const [setId, count, ro] of [['dev', 12, ['07', '08']], ['general', 7, ['05']]] as const) {
+  for (const [setId, count, ro] of [['dev', 13, ['07', '08']], ['general', 7, ['05']]] as const) {
     it(`${setId}: 직원마다 역할·맡는 일·하지 않는 일·공통 규칙·보고 형식이 있고, 검토자는 읽기 전용이며 검토 담당이 배정된다`, () => {
       const dir = tmpProject(); const svc = mkService(dir);
       const p = svc.createProject(plan(dir));
@@ -50,7 +50,7 @@ describe('직원 기본 템플릿', () => {
     const after = svc.loadAgentTemplates(p.id, 'dev');
     expect(after.find((a) => a.code === '00')!.instructions).toBe('사용자가 고친 지시');
     expect(after.find((a) => a.code === '03')!.name).toBe('작성·구현'); // 범용 세트의 03 유지
-    expect(after.length).toBe(12); // 개발팀 세트의 07~11만 추가
+    expect(after.length).toBe(13); // 개발팀 세트의 07~12만 추가
     svc.close();
   });
 });

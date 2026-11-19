@@ -339,6 +339,7 @@ export interface AppSettings {
   gitCommits: boolean; // 직원별 git 커밋·미션 스냅샷 사용
   autoAssist?: boolean; // 자동 처리(기본 켬): 작업 브랜치 자동 생성, 저장소 시험 명령 허용, 프로젝트 스킬·쓰기 직원 스킬, 문서 저장소 최신화
   commandLevel?: 'low' | 'medium' | 'high'; // 직원 명령 허용 범위(기본 중간). 격리·네트워크 없음 안에서 묻지 않고 허용할 명령의 폭
+  techAuto?: boolean; // 기술 권한 요청(명령 허용·경로 읽기)을 사용자에게 묻지 않고 앱·오퍼레이터가 처리(기본 켬). 보호 규칙은 그대로
   paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
   paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유
   testLocalSockets?: boolean; // 자동 처리 시험 명령에 로컬 소켓 허용(기본 끔). 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다
@@ -613,6 +614,8 @@ export interface Mission {
   questionChoices?: MissionChoice[] | null; // 선택지 설명(고르면 달라지는 것·추천과 이유). 추천은 안내일 뿐 자동으로 고르지 않는다
   denials?: MissionDenial[] | null; // 권한 거부로 멈춘 경우 거부 항목
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
+  /** 앱이 처리한 기술 권한 막힘(사용자에게 묻지 않음): 오퍼레이터가 다른 방법으로 계획하도록 알린다 */
+  techNotes?: string[] | null;
   blockers?: MissionBlocker[] | null; // 에이전트가 스스로 풀 수 없는 실패로 멈춘 경우
   failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
   /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */

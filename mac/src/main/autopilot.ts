@@ -238,8 +238,10 @@ export function levelAllows(level: CommandLevel, cmd: string, prefixes: string[]
 
 /** 직원 프롬프트에 붙이는 안내 */
 const SECRET_NOTE = '\n- 비밀값 환경 파일(.env, .env.local, .env.*.local, .env.production 등)은 어떤 명령으로도 읽을 수 없다(보호 규칙). 설정 이름은 견본 파일(.env.example)과 코드에서 확인하고, 이런 파일을 읽는 명령을 다른 명령과 묶지 않는다(묶으면 전체가 거부된다).';
+/** 허용 규칙에 걸리지 않게 명령을 쓰는 법: 변수 대입(F=경로)으로 시작하는 명령은 허용 목록과 맞지 않아 거부된다 */
+const SHELL_NOTE = '\n- 명령을 변수 대입(F=경로; grep … $F)으로 시작하지 말고 경로를 직접 적는다(예: grep 패턴 /경로/파일). 변수 대입으로 시작하는 명령은 거부된다. 긴 명령 출력이 파일로 저장됐다고 나오면 그 파일 경로를 직접 grep·tail로 읽는다(읽기 허용됨).';
 export function levelNote(level: CommandLevel): string {
-  return levelNoteBase(level) + (level === 'low' ? '' : SECRET_NOTE);
+  return levelNoteBase(level) + (level === 'low' ? '' : SECRET_NOTE + SHELL_NOTE);
 }
 function levelNoteBase(level: CommandLevel): string {
   if (level === 'high') return `## 명령 허용 범위: 높음\n- 격리 복사본 안(네트워크 없음)에서 대부분의 명령을 바로 실행할 수 있다. 다음은 막혀 있다: ${HIGH_DENY.join(', ')}.`;

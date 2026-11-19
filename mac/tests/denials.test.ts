@@ -18,6 +18,11 @@ async function waitMission(svc: ReturnType<typeof mkService>, id: string, status
   }
 }
 
+async function until<T>(f: () => T | null | undefined | false, ms = 60000): Promise<T> {
+  const t0 = Date.now();
+  for (;;) { const v = f(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('시간 초과'); await sleep(50); }
+}
+
 describe('권한 거부', () => {
   it('허용 명령 접두어 후보를 만든다', () => {
     expect(commandPrefix('shasum -a 256 /x/y.html')).toBe('shasum -a 256');
@@ -31,8 +36,24 @@ describe('권한 거부', () => {
     expect(commandPrefix('npx --no-install playwright --version')).toBe('npx --no-install');
   });
 
-  it('권한 때문에 막힌 업무는 보류하고, 할 일이 그것뿐이면 멈춰 거부된 명령·경로와 고칠 곳을 보여 준다', async () => {
+  it('기본(앱이 처리): 권한에 막혀도 사용자에게 묻거나 보류하지 않고, 막힌 방법을 오퍼레이터에게 알려 다른 방법으로 다시 계획한다', async () => {
     const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    expect(svc.settings().techAuto).not.toBe(false);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    const m0 = await svc.startMission(p.id, '[[mock:deny:bash:shasum -a 256 /Users/someone/repo/a.html]] 해시를 구하라');
+    const m = await until(() => { const x = svc.missions.get(m0.id); return (x.techNotes?.length ?? 0) > 0 && x.stage !== 'execute' ? x : null; });
+    expect(m.denials ?? null).toBeNull();
+    expect(m.parkedSigs ?? []).toEqual([]);
+    expect(m.techNotes!.join('\n')).toContain('shasum -a 256');
+    expect(svc.attention().items.some((x) => x.missionId === m0.id && x.kind === 'denied')).toBe(false);
+    expect(svc.pendingDecisions().some((d) => d.missionId === m0.id && d.kind === 'permission')).toBe(false);
+    await svc.missions.stop(m0.id);
+    svc.close();
+  });
+
+  it('권한 때문에 막힌 업무는 보류하고, 할 일이 그것뿐이면 멈춰 거부된 명령·경로와 고칠 곳을 보여 준다', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir); svc.saveSettings({ techAuto: false }); // 권한을 사용자에게 묻는 방식(설정을 끈 경우)
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     const m0 = await svc.startMission(p.id, '[[mock:deny:bash:shasum -a 256 /Users/someone/repo/a.html]] [[mock:deny:read:/Users/someone/repo/b.html]] 해시를 구하라');
@@ -55,7 +76,7 @@ describe('권한 거부', () => {
   });
 
   it('막힌 업무만 보류하고 나머지 작업은 계속해 완료 보고까지 간다(확인 필요에 남음)', async () => {
-    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir); svc.saveSettings({ techAuto: false }); // 권한을 사용자에게 묻는 방식(설정을 끈 경우)
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     const m0 = await svc.startMission(p.id, '[[mock:two-tasks]] [[mock:deny:bash:shasum -a 256 /Users/someone/repo/a.html]] 해시와 보조 문서');
@@ -77,7 +98,7 @@ describe('권한 거부', () => {
   });
 
   it('보류한 업무를 오퍼레이터가 다시 계획해 같은 거부가 나도 묻고 멈추지 않고, 보류를 유지한 채 나머지를 계속한다', async () => {
-    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir); svc.saveSettings({ techAuto: false }); // 권한을 사용자에게 묻는 방식(설정을 끈 경우)
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     const m0 = await svc.startMission(p.id, '[[mock:ignore-parked]] [[mock:two-tasks]] [[mock:deny:bash:shasum -a 256 /x/a.html]] 해시');
@@ -92,7 +113,7 @@ describe('권한 거부', () => {
   });
 
   it('실행 전 점검: 허용되지 않은 명령이 필요한 작업은 돌리지 않고 확인 필요로 빼며, 나머지는 진행한다', async () => {
-    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir); svc.saveSettings({ techAuto: false }); // 권한을 사용자에게 묻는 방식(설정을 끈 경우)
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     // 하나뿐이면 실행하지 않고 묻는다
@@ -114,7 +135,7 @@ describe('권한 거부', () => {
   });
 
   it('근거가 부족한 부분이 있어도 할 수 있는 작업이 있으면 멈추지 않고 진행한다(확인 필요로 남김)', async () => {
-    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir); svc.saveSettings({ techAuto: false }); // 권한을 사용자에게 묻는 방식(설정을 끈 경우)
     const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
     svc.loadAgentTemplates(p.id);
     const m0 = await svc.startMission(p.id, '[[mock:gaps-with-tasks]] 문서를 정리하라');

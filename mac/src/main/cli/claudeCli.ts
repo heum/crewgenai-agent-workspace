@@ -5,7 +5,7 @@
 // - 이벤트 해석, 세션 ID, 프로세스 그룹 단위 취소
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { highDenyRules, MEDIUM_COMMANDS, type CommandLevel } from '../autopilot';
-import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CliStatus, ToolName } from '../../shared/types';
@@ -113,6 +113,7 @@ export interface ClaudeRunSpec {
   editScopes: string[]; // cwd 기준 상대 경로. '' 또는 '.'은 프로젝트 전체
   allowedCommands: string[];
   readDirs: string[]; // 프로젝트 밖 참고 자료 폴더(읽기)
+  ownOutputs?: boolean; // 격리 작업 폴더의 자기 CLI 출력 기록 폴더를 읽기 전용으로 연다(직원 실행)
   sessionId: string | null; // 새 세션 ID
   resumeSessionId: string | null; // 이어서 작업할 세션
   jsonSchema: object | null;
@@ -164,6 +165,35 @@ export function absRules(rule: string, cwd: string): string[] {
  * 비밀값이 들어가는 환경 파일만 읽기 금지. 저장소에 함께 올리는 견본(.env.example·.env.sample·.env.template)은 비밀값이 없으므로 읽을 수 있다.
  * (거부 규칙이 허용보다 우선이라 '.env.*' 전체를 막으면 견본도 못 읽고, 허용 명령을 더해도 풀리지 않는다)
  */
+/** 작업 폴더의 CLI 세션 기록 폴더(~/.claude/projects/<실제 경로를 '-'로 바꾼 이름>). 격리 작업 폴더일 때만 만들고 돌려준다 */
+export function ownSessionDir(cwd: string, home: string = homedir()): string | null {
+  let real = cwd; try { real = realpathSync(cwd); } catch { /* 그대로 */ }
+  const name = real.replace(/[^a-zA-Z0-9]/g, '-');
+  if (!name.includes('crewgenai-iso-')) return null; // 사용자 폴더에서 도는 실행은 열지 않는다
+  const dir = join(home, '.claude', 'projects', name);
+  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { return null; }
+  return dir;
+}
+
+/**
+ * Claude 설정 폴더(~/.claude) 읽기 금지. 단, 직원 실행이 남긴 자기 출력 파일(격리 작업 폴더의 세션 기록·긴 명령 출력 tool-results)은 읽게 한다.
+ * 긴 시험 출력은 CLI가 이 폴더의 파일로 따로 저장하고 직원이 그 파일을 grep으로 읽는데, 전부 막으면 매번 거부돼 쓸모없는 허용 요청이 생긴다.
+ * 그 밖(인증·설정·다른 작업 세션 기록 등)은 지금처럼 막는다: 폴더 항목마다 막고, 사용자 세션 기록(격리 작업 폴더가 아닌 것)도 하나씩 막는다.
+ */
+export function claudeHomeDenies(home: string = homedir()): string[] {
+  const base = join(home, '.claude');
+  const rule = (p: string) => [`Read(/${p})`, `Read(/${p}/**)`];
+  const names = new Set(['.credentials.json', 'settings.json', 'settings.local.json', 'history.jsonl', 'CLAUDE.md', 'skills', 'plugins', 'todos', 'shell-snapshots', 'session-env', 'sessions', 'file-history']);
+  try { for (const n of readdirSync(base)) names.add(n); } catch { /* 없으면 기본 목록만 */ }
+  names.delete('projects');
+  const out = [...names].flatMap((n) => rule(join(base, n)));
+  const proj = join(base, 'projects');
+  // 앞으로 생길 사용자 세션 기록(홈 아래 작업 폴더)도 막는다
+  out.push(`Read(/${proj}/-Users*/**)`, `Read(/${proj}/-home*/**)`);
+  try { for (const n of readdirSync(proj)) if (!n.includes('crewgenai-iso-')) out.push(...rule(join(proj, n))); } catch { /* 없음 */ }
+  return out;
+}
+
 export const SECRET_ENV = ['.env', '.env.local', '.env.*.local', '.env.local.*', '.env.prod*', '.env.dev*', '.env.stag*', '.env.test*', '.env.secret*', '.env.keys', '.env.vault', '.env.me', '.env.*.prod*'];
 const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist|defaults)$/;
 /** 명령이 읽기 금지 환경 파일을 건드리는가(견본 제외) */
@@ -176,12 +206,14 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
   const tools = [...new Set(spec.tools)];
   // 작업 폴더를 포함하는 상위 폴더는 참고 폴더로 열지 않는다(열면 쓰기 금지가 작업 폴더까지 막거나, 빼면 상위 전체가 쓰기 영역이 된다). 링크를 푼 실제 경로로도 비교한다.
   const readDirs = spec.readDirs.filter((d) => !contains(d, spec.cwd));
+  // Bash를 쓰는 직원: 긴 명령 출력은 CLI가 이 작업 폴더의 세션 기록 폴더(~/.claude/projects/<작업 폴더>/…/tool-results)에 저장한다. 그 폴더만 읽기 전용으로 연다.
+  if (tools.includes('Bash') && spec.ownOutputs) { const own = ownSessionDir(spec.cwd); if (own && !readDirs.includes(own)) readDirs.push(own); }
   const allow: string[] = ['Read', 'Grep', 'Glob'];
   if (writer) allow.push(...spec.editScopes.map(scopeRule).flatMap((r) => absRules(r, spec.cwd)));
   if (tools.includes('Bash')) for (const c of spec.allowedCommands.map((x) => x.trim()).filter(Boolean)) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'medium') for (const c of MEDIUM_COMMANDS) allow.push(`Bash(${c})`, `Bash(${c} *)`);
   if (tools.includes('Bash') && spec.commandLevel === 'high') allow.push('Bash');
-  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', ...SECRET_ENV.map((p) => `Read(./${p})`), 'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.claude/**)'].flatMap((r) => absRules(r, spec.cwd));
+  const deny = ['Edit(./.git/**)', 'Edit(./.claude/**)', ...SECRET_ENV.map((p) => `Read(./${p})`), 'Read(~/.ssh/**)', 'Read(~/.aws/**)', ...claudeHomeDenies()].flatMap((r) => absRules(r, spec.cwd));
   if (tools.includes('Bash') && spec.commandLevel === 'high') deny.push(...highDenyRules(spec.allowedCommands));
   const settings = {
     permissions: { allow, deny, defaultMode: 'dontAsk' },

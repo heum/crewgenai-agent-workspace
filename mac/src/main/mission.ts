@@ -13,7 +13,7 @@ import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
 import type { Engine } from './engine/engine';
-import { allowedRoots, escapes, normRel, validateGraph } from './engine/validate';
+import { allowedRoots, escapes, normRel, validateGraph, within } from './engine/validate';
 import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
@@ -73,6 +73,8 @@ const CHECKPOINT_SCHEMA = { type: 'object', properties: { title: { type: 'string
 /** 진전 없는 사이클이 이만큼 이어지면 멈추고 묻는다 */
 const IDLE_LIMIT = 4;
 const GAP_CAP = 40; // 미결 결정 보관 한도(답하지 않은 결정을 잘라 내 잃지 않게 넉넉히)
+/** 계획 검사 실패 때 오퍼레이터에게 다시 계획하게 하는 횟수(사이클마다) */
+const PLAN_FIX_TRIES = 2;
 const NETWORK_RETRY_MS = 10 * 60_000; // 일시적인 연결 장애 뒤 다시 시도 간격
 /** 오류 구분: 사용 한도는 따로(OperatorLimit) 처리하고, 로그인 만료·연결 장애·그 밖의 오류를 나눈다(모든 오류를 한도로 보지 않음) */
 export function classifyError(msg: string): 'auth' | 'network' | 'other' {
@@ -195,6 +197,8 @@ export interface MissionDeps {
   autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
   commandLevel?: () => CommandLevel; // 명령 허용 범위
   testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
+  /** 기술 권한 막힘(명령 허용·경로 읽기)을 사용자에게 묻지 않고 오퍼레이터가 다른 방법을 찾게 한다 */
+  techAuto?: () => boolean;
   /** 사용량 속도 조절 판단(꺼져 있으면 null): 주간·5시간 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다 */
   pace?: () => PaceDecision | null;
   /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
@@ -240,6 +244,7 @@ export class MissionRunner {
   private procs = new Map<string, ProcessHandle>();
   private closed = false;
   private replan = new Set<string>(); // '지금 반영' 추가 지시를 받은 미션
+  private planFix = new Map<string, { cycle: number; tries: number; error: string }>(); // 계획 검사 실패 → 오퍼레이터가 고쳐 다시 계획
   private wakeLimit = new Set<string>(); // 사용 한도 대기 중 '지금 다시 시도'
 
   constructor(private d: MissionDeps) {
@@ -922,6 +927,12 @@ export class MissionRunner {
           m = this.set(id, { readyChecked: true });
         }
 
+        // 기술 권한을 앱이 처리하는 설정이면, 전에 확인함에 올라간 권한 보류는 오퍼레이터 몫으로 옮기고 확인함에서 뺀다
+        if (this.techAuto() && m.denials?.length) {
+          this.addTech(id, m.denials.map((d) => `${d.agent}: 막힌 ${d.kind === 'path' ? '경로' : d.kind === 'command' ? '명령' : '도구'} '${d.target.slice(0, 160)}'`));
+          this.event(m, 'system', `권한 보류 ${m.denials.length}건을 확인함에서 빼고, 오퍼레이터가 허용된 방법으로 다시 계획하게 했습니다(사용자에게 묻지 않음).`);
+          m = this.set(id, { denials: null, parkedSigs: (m.parkedSigs ?? []).filter((s) => !(m.denials ?? []).some((d) => d.sig === s)) });
+        }
         // 일시정지: 다음 계획·새 작업 배정 전의 안전한 지점에서 기다린다
         await this.waitWhilePaused(id);
         if (this.closed || this.get(id).status === 'stopped') return;
@@ -1001,6 +1012,22 @@ export class MissionRunner {
 
         // 2) 실행 전 권한 점검: 허용되지 않은 명령·경로가 필요한 작업은 돌리지 않고 확인 필요로 뺀다
         const pre = this.preflight(project.plan, agents, plan.tasks);
+        if (pre.held.length && this.techAuto()) {
+          // 기술 권한은 사용자에게 묻지 않는다: 막히는 작업은 이번 사이클에서 빼고, 오퍼레이터가 허용된 방법으로 다시 짜게 한다
+          const lines = pre.held.map((h) => `${h.task.title}: 허용되지 않은 ${h.denials.map((d) => `${d.kind === 'path' ? '경로' : '명령'} '${d.target.slice(0, 120)}'`).join(', ')}`);
+          this.addTech(id, lines);
+          if (!pre.keep.length) {
+            const prevFix = this.planFix.get(id); const tries = prevFix && prevFix.cycle === m.cycle ? prevFix.tries + 1 : 1;
+            if (tries <= PLAN_FIX_TRIES) {
+              this.planFix.set(id, { cycle: m.cycle, tries, error: `모든 작업이 허용되지 않은 명령·경로를 필요로 함 — ${lines.join(' / ')}` });
+              this.event(m, 'system', `계획한 작업이 모두 허용되지 않은 방법을 써서, 허용된 방법으로 다시 계획하게 합니다(${tries}/${PLAN_FIX_TRIES}).`);
+              continue;
+            }
+          } else {
+            this.event(m, 'system', `허용되지 않은 방법이 필요한 작업은 이번 사이클에서 빼고 오퍼레이터가 다른 방법으로 다시 계획합니다(사용자에게 묻지 않음).\n- ${lines.join('\n- ')}`);
+            plan.tasks = pre.keep; pre.held = [];
+          }
+        }
         if (pre.held.length) {
           const ds = pre.held.flatMap((h) => h.denials);
           const list = pre.held.map((h) => `- ${h.task.title}: ${h.denials.map((d) => d.target).join(', ')}`).join('\n');
@@ -1020,10 +1047,20 @@ export class MissionRunner {
         // 3) 사이클 흐름 구성·실행
         const built = this.buildCycleGraph(m, project.plan, agents, plan);
         if ('error' in built) {
+          // 계획 검사 실패는 오퍼레이터가 고칠 일이다: 이유를 알려 주고 같은 사이클을 다시 계획하게 한다(2번까지). 그래도 안 되면 사용자에게 묻는다.
+          const prevFix = this.planFix.get(id);
+          const tries = prevFix && prevFix.cycle === m.cycle ? prevFix.tries + 1 : 1;
+          if (tries <= PLAN_FIX_TRIES) {
+            this.planFix.set(id, { cycle: m.cycle, tries, error: built.error });
+            this.event(m, 'system', `계획 검사에서 걸려 오퍼레이터에게 고쳐서 다시 계획하게 합니다(${tries}/${PLAN_FIX_TRIES}): ${built.error}`);
+            continue;
+          }
+          this.planFix.delete(id);
           this.event(m, 'question', `계획을 실행 가능한 흐름으로 만들지 못했습니다: ${built.error}`);
-          this.set(id, { status: 'waiting_user', stage: 'ask_user', question: `오퍼레이터 계획에 문제가 있습니다(${built.error}). 지시를 보완해 주세요.` });
+          this.set(id, { status: 'waiting_user', stage: 'ask_user', question: `오퍼레이터가 ${PLAN_FIX_TRIES}번 다시 계획했지만 앱의 계획 검사를 통과하지 못했습니다(${built.error}). 기획의 자동 수정 허용 경로를 넓히거나, 다르게 진행할 방법을 적어 주세요.` });
           return;
         }
+        this.planFix.delete(id);
         const saved = this.d.store.saveGraph(m.projectId, built.graph, `미션 ${m.id.slice(0, 8)} 사이클 ${m.cycle}`);
         if (!this.hasSnapshot(id)) await this.snapshot(m, project.plan.folder, 'start', '미션 시작 전');
         // 스냅샷을 기다리는 동안 중단·종료·'지금 반영' 추가 지시가 들어왔으면 이 계획으로 실행하지 않는다
@@ -1055,6 +1092,13 @@ export class MissionRunner {
           const secret = all.filter((b) => b.kind === 'command' && touchesSecretEnv(b.target));
           if (secret.length) this.event(m, 'system', `비밀값 환경 파일(.env·.env.local 등) 읽기는 보호 규칙으로 막혀 있습니다(사용자 허용 대상 아님). 설정 값은 견본 파일(.env.example)과 코드에서 확인하세요.\n${secret.map((b) => `- ${b.agent}: ${b.target}`).join('\n')}`);
           const blocks = all.filter((b) => !secret.includes(b));
+          if (blocks.length && this.techAuto()) {
+            // 기술 권한은 사용자에게 묻지 않는다: 보류·확인함 없이 오퍼레이터에게 알려 다음 계획에서 다른 방법을 쓰게 한다
+            this.addTech(id, blocks.map((b) => `${b.agent}: 막힌 ${b.kind === 'path' ? '경로' : b.kind === 'command' ? '명령' : '도구'} '${b.target.slice(0, 160)}'`));
+            this.event(m, 'system', `직원이 허용되지 않은 방법을 쓰려다 막혔습니다. 사용자에게 묻지 않고 다음 계획에서 허용된 방법으로 바꿉니다.\n${blocks.map((b) => `- ${b.agent} · ${b.tool}: ${b.target.slice(0, 160)}`).join('\n')}`);
+            this.set(id, { denialSigs: blocks.map((b) => b.sig) });
+            blocks.length = 0;
+          }
           const cur = this.get(id);
           const prev = cur.denialSigs ?? [];
           const parked = cur.parkedSigs ?? [];
@@ -1276,6 +1320,30 @@ export class MissionRunner {
       '- 작업에 딱 맞는 스킬이 있으면 그 작업 instructions에 스킬 이름과 쓰는 이유를 한 줄로 적는다(예: 버그 수정은 systematic-debugging, 새 기능은 test-driven-development). 맞는 스킬이 없으면 적지 않는다.', ''];
   }
 
+  private techAuto(): boolean { try { return this.d.techAuto?.() ?? false; } catch { return false; } }
+  /** 앱이 처리한 기술 권한 막힘을 기록한다(최근 20개) */
+  private addTech(id: string, lines: string[]) {
+    const prev = this.get(id).techNotes ?? [];
+    this.set(id, { techNotes: [...prev.filter((x) => !lines.includes(x)), ...lines].slice(-20) });
+  }
+  /** 막힌 방법: 오퍼레이터가 같은 방법을 다시 계획하지 않게 */
+  private techSection(m: Mission): string[] {
+    const ns = m.techNotes ?? [];
+    if (!ns.length) return [];
+    return ['## 막힌 방법(앱 권한 밖 — 사용자에게 묻지 않는다)', ...ns.map((x) => `- ${x}`),
+      '- 같은 명령·경로를 다시 쓰는 작업을 계획하지 않는다. 파일 읽기·쓰기 도구, 직원의 허용 명령, 저장소의 시험 명령처럼 허용된 방법으로 같은 목표를 이루게 지시한다.',
+      '- 출력이 길면 명령 출력 파일을 따로 읽지 말고 처음부터 grep·tail로 줄이거나 결과를 작업 폴더의 파일로 저장해 읽게 한다.',
+      '- 허용된 방법으로는 불가능하면 그 작업은 건너뛰고 판단 요약에 이유를 적는다(사용자 질문으로 올리지 않는다). 권한 허용은 사용자에게 요청하지 않는다.', ''];
+  }
+
+  /** 직전 계획이 앱 검사에서 걸렸으면 이유를 알려 고쳐서 다시 내게 한다 */
+  private planFixSection(m: Mission): string[] {
+    const f = this.planFix.get(m.id);
+    if (!f || f.cycle !== m.cycle) return [];
+    return ['## 직전 계획이 앱 검사에서 걸림(이번 계획에서 반드시 고칠 것)', `- ${f.error}`,
+      '- 각 작업의 outputs는 그 작업의 writeScope 안에 두고, writeScope는 자동 수정 허용 경로 안에서 작업끼리 겹치지 않게 정한다. 담당·검토 담당이 휴가 중이면 다른 직원을 고른다.', ''];
+  }
+
   private limitSection(m: Mission): string[] {
     return ['## 실행 범위(앱이 집행함)',
       ...(m.limits?.staff ? ['- 참여 직원은 위 \'사용 가능한 직원\'(지정된 직원)뿐이다. 다른 직원 투입·직원 추가 제안은 하지 않는다.'] : []),
@@ -1431,6 +1499,9 @@ export class MissionRunner {
       if (!reviewer) throw new Error('독립 재검토를 맡을 다른 직원이 없습니다.');
       const scope = (t.writeScope.length ? t.writeScope : [`${plan.outputDir}/mission`]).map(normRel).filter((x) => x && !escapes(x));
       const outs = t.outputs.map((o) => ({ path: normRel(o.path), format: o.format, required: true })).filter((o) => o.path && !escapes(o.path));
+      // 산출물이 작업의 수정 경로 밖이지만 기획의 자동 수정 허용 경로 안이면 그 파일(경로)만 수정 경로에 더한다(권한은 넓어지지 않음).
+      // 예) 수정 경로 web/src에 시험 파일 web/tests/x.test.mjs를 산출물로 낸 경우. 허용 경로 밖이면 그대로 두어 검사에서 걸린다.
+      for (const o of outs) if (!scope.some((sc) => within(o.path, sc)) && roots.some((w) => within(o.path, w))) scope.push(o.path);
       const x = 120 + i * 360;
       const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true });
       const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800 });
@@ -1488,6 +1559,8 @@ export class MissionRunner {
       ...this.learnedSection(m.projectId),
       `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회)`, '',
       ...this.limitSection(m),
+      ...this.planFixSection(m),
+      ...this.techSection(m),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
       '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}`), '',
@@ -1606,6 +1679,7 @@ export class MissionRunner {
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
       ...this.limitSection(m),
+      ...this.techSection(m),
       ...this.learnedSection(m.projectId),
       '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회, 검토 없이 ${this.reviewBudget()}회까지 진행)`, '',
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
