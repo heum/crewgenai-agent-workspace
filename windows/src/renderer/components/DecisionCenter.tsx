@@ -20,22 +20,30 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   const seen = useRef<Set<string>>(new Set()); // 이미 팝업으로 보여 준 결정(닫으면 같은 결정으로 다시 띄우지 않음)
   const handled = useRef<Set<string>>(new Set()); // 이번에 정한 권한 항목(보류 유지 포함) — 다시 묻지 않음
   const act = useAction();
+  const busyRef = useRef(false); busyRef.current = act.busy; // 이 화면에서 적용하는 중에 사라진 항목은 '다른 곳에서 처리'로 보지 않는다
   const explicit = useRef(false); // '지금 확인'으로 직접 연 동안에는 진행 중이라 미뤄 둔 항목도 계속 보여 준다
   useEffect(() => { if (!open) explicit.current = false; }, [open]);
+  const openRef = useRef(false); openRef.current = open;
+  const itemsRef = useRef<PendingDecision[]>([]); itemsRef.current = items;
 
   useEffect(() => {
     let t: ReturnType<typeof setTimeout> | null = null;
     const load = () => {
-      ws().pendingDecisions(explicit.current).then((all) => {
+      ws().pendingDecisions(explicit.current || openRef.current).then((all) => {
         const list = all.filter((x) => !handled.current.has(x.key));
+        // 확인함을 연 동안 사라진 항목은 이 화면 밖(텔레그램 등)에서 처리된 것이다 — 알려 주고, 다 처리됐으면 저절로 닫힌다
+        const keys = new Set(list.map((x) => x.key));
+        const gone = openRef.current && !busyRef.current ? itemsRef.current.filter((x) => !keys.has(x.key)) : [];
         setItems(list);
+        if (gone.length) { setIdx(0); if (!list.length) setView('list'); setDone(`다른 곳(텔레그램 등)에서 ${gone.length}건이 처리되었습니다.`); }
         const fresh = list.filter((d) => !seen.current.has(d.key));
         for (const d of fresh) seen.current.add(d.key);
-        // 미션 전체가 기다리는 새 결정만 팝업(확인함 요약)으로 알린다. 나머지는 확인함 배지에 쌓는다.
-        if (fresh.some((d) => d.urgent)) { setView('list'); setDone(null); setOpen(true); }
+        // 새 확인 항목이 생기면 바로 팝업(확인함 목록)으로 띄워 고를 수 있게 한다
+        if (fresh.length && !openRef.current) { setView('list'); setDone(null); setIdx(0); setOpen(true); }
       }).catch(() => {});
     };
     load();
+    const poll = setInterval(() => { if (openRef.current) load(); }, 5000); // 연 동안에는 다른 곳에서 처리된 것도 놓치지 않게 5초마다 다시 확인
     const off = ws().onLive((e: LiveEvent) => { if (e.type === 'mission') { if (t) clearTimeout(t); t = setTimeout(load, 400); } });
     // 다른 화면(사무실의 '확인 필요' 등)에서 결정 팝업을 연다
     // detail.missionId가 있으면 그 미션의 결정부터 보여 주고, 팝업에 그 미션 항목이 없으면 detail.fallback(해당 화면으로 이동)
@@ -59,7 +67,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       ws().pendingDecisions(true).then((all) => { const list = all.filter((x) => !handled.current.has(x.key)); if (list.length) { setItems(list); setView('list'); setDone(null); setOpen(true); } }).catch(() => {});
     };
     window.addEventListener('blur', onBlur); window.addEventListener('focus', onFocus);
-    return () => { off(); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); window.removeEventListener('blur', onBlur); window.removeEventListener('focus', onFocus); };
+    return () => { off(); clearInterval(poll); if (t) clearTimeout(t); window.removeEventListener('crewgenai:open-decisions', openNow); window.removeEventListener('blur', onBlur); window.removeEventListener('focus', onFocus); };
   }, []);
 
   const cur = items[Math.min(idx, items.length - 1)] ?? null;
