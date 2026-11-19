@@ -101,6 +101,15 @@ export function reviewPlan(kit: Kit, box: { x: number; y: number; w: number; h: 
     pods.push({ key: g.key, x, y, pod, author: g.author, shown: show.map((r, i) => ({ key: r.key, x: x + pod.reviewers[i].x, y: y + pod.reviewers[i].y })), hidden: g.reviewers.slice(n).map((r) => r.key) });
     x += pod.w + gap; rowH = Math.max(rowH, pod.h);
   }
+  // 줄마다 가운데로 모으고, 남는 세로 공간이 있으면 조금 내려 방 가운데쯤 앉힌다(이름표가 방 밖으로 나가지 않게)
+  const rows = new Map<number, PodPlaced[]>(); for (const p of pods) rows.set(p.y, [...(rows.get(p.y) ?? []), p]);
+  const bottom = pods.reduce((m, p) => Math.max(m, p.y + p.pod.h), box.y);
+  const dy = Math.max(0, Math.min(14, Math.floor((box.y + box.h - bottom - (rowGap ?? 0)) / 3)));
+  for (const row of rows.values()) {
+    const right = row.reduce((m, p) => Math.max(m, p.x + p.pod.w), box.x);
+    const dx = Math.max(0, Math.floor((box.x + box.w - right) / 2));
+    for (const p of row) { p.x += dx; p.y += dy; for (const s of p.shown) { s.x += dx; s.y += dy; } }
+  }
   return { pods, overflow };
 }
 export type { Piece };

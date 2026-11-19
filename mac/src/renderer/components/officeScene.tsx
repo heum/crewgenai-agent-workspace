@@ -55,14 +55,19 @@ export function layoutFor(staff: number, Wavail: number, Havail: number, offCoun
   const need = WALL + 4 + (rows - 1) * row + DESK_H + 4 + BAND_MIN;
   const H = Math.max(Math.floor(Havail), need);
   const extra = H - need;
-  const pitch = row + (rows > 1 ? Math.min(10, Math.floor((extra * 0.3) / (rows - 1))) : 0);
-  const deskTop = WALL + 4 + Math.min(8, Math.floor(extra * 0.08));
+  // 라운지는 장면 높이의 38%까지만 쓰고, 남는 높이는 업무 공간(책상 줄 사이·앞 통로)에 준다
+  const loungeCap = Math.max(BAND_MIN, Math.round(H * 0.38));
+  const workExtra = Math.max(0, extra - Math.max(0, loungeCap - BAND_MIN));
+  const deskTop = WALL + 4 + Math.min(14, Math.floor(workExtra * 0.15));
+  const pitch = row + (rows > 1 ? Math.min(22, Math.floor((workExtra * 0.5) / (rows - 1))) : 0);
+  const used = (deskTop - WALL - 4) + (rows > 1 ? (pitch - row) * (rows - 1) : 0);
+  const aisle = Math.min(18, Math.max(0, workExtra - used));
   const desks = Array.from({ length: staff }, (_, i) => ({ x: x0 + (i % cols) * COL, y: deskTop + Math.floor(i / cols) * pitch }));
-  const band = deskTop + (rows - 1) * pitch + DESK_H + 4;
+  const band = deskTop + (rows - 1) * pitch + DESK_H + 4 + aisle;
   // 리뷰룸 폭: 동시에 열린 그룹 수에 맞춰(최대 장면 폭의 절반)
   // 리뷰룸 폭: 실제 그룹·참여자 수로 필요한 탁자 폭을 더해 정한다(최대 장면 폭의 55%, 넘치면 줄을 바꿔 앉음)
   const podsW = (reviewGroups.length ? reviewGroups : [1]).reduce((t, n) => t + K.pod(Math.max(1, n), []).w + 5, 6);
-  const RW = Math.max(110, Math.min(Math.floor(W * 0.55), podsW));
+  const RW = Math.max(150, Math.min(Math.floor(W * 0.5), podsW + 30)); // 탁자 둘레에 여백을 둬 이름표가 방 밖으로 나가지 않게
   const review: Box = { x: W - RW, y: band, w: RW, h: H - band };
   const lounge: Box = { x: 0, y: band, w: W - RW - 2, h: H - band };
   return { scale, W, H, fits: need <= Math.floor(Havail), cols, rows, desks, band, lounge, review, wall: wallItems(W, offCount), tableY: band };
@@ -128,7 +133,7 @@ export function placePeople(people: Person[], staff: Person[], L: Layout): Plan 
   });
   const groups = reviewGroups(people);
   const pad = 3;
-  const rbox = { x: L.review.x + pad, y: L.review.y + 9, w: L.review.w - 2 * pad, h: L.review.h - 11 };
+  const rbox = { x: L.review.x + pad + 6, y: L.review.y + 12, w: L.review.w - 2 * pad - 12, h: L.review.h - 15 };
   const gin: ReviewGroupIn[] = groups.map((g) => ({ key: g.key, author: g.author?.key ?? null, reviewers: g.reviewers.map((r) => ({ key: r.key, external: r.external })) }));
   const review = reviewPlan(K, rbox, gin, Math.ceil(TAG_PX / L.scale) + 2);
   const byKey = new Map(people.map((p) => [p.key, p]));
@@ -151,8 +156,14 @@ export const Pix = memo(function Pix({ r, x, y, className }: { r: Rect[]; x: num
   return className ? <g className={className}>{body}</g> : body;
 });
 
-function Floor({ x, y, w, h, kind }: { x: number; y: number; w: number; h: number; kind: 'wood' | 'warm' | 'tile' }) {
+function Floor({ x, y, w, h, kind }: { x: number; y: number; w: number; h: number; kind: 'wood' | 'warm' | 'tile' | 'carpet' }) {
   const r: JSX.Element[] = [];
+  if (kind === 'carpet') {
+    // 리뷰룸: 짙은 청회색 카펫에 잔잔한 마름모 무늬
+    r.push(<rect key="b" x={x} y={y} width={w} height={h} fill="#3f5068" />);
+    for (let yy = y + 3, i = 0; yy < y + h; yy += 6, i++) for (let xx = x + 3 + (i % 2) * 3; xx < x + w - 1; xx += 6) r.push(<rect key={`d${yy}-${xx}`} x={xx} y={yy} width={1} height={1} fill="#566a85" />);
+    return <g>{r}</g>;
+  }
   if (kind === 'tile') {
     r.push(<rect key="b" x={x} y={y} width={w} height={h} fill="#dfe5dc" />);
     for (let yy = y + 8; yy < y + h; yy += 9) r.push(<rect key={`y${yy}`} x={x} y={yy} width={w} height={1} fill="#ccd4ca" />);
@@ -213,7 +224,7 @@ export function Scene({ people, staff, layout: L, plan, mood, selected, waving, 
       {/* 바닥·벽 */}
       <Floor x={0} y={WALL} w={W} h={L.band - WALL} kind="wood" />
       <Floor x={lounge.x} y={lounge.y} w={lounge.w + 2} h={lounge.h} kind="warm" />
-      <Floor x={review.x} y={review.y} w={review.w} h={review.h} kind="tile" />
+      <Floor x={review.x} y={review.y} w={review.w} h={review.h} kind="carpet" />
       <rect x={0} y={0} width={W} height={WALL} fill="#f1e8d3" /><rect x={0} y={0} width={W} height={1} fill="#dccfb1" />
       <rect x={0} y={WALL - 3} width={W} height={3} fill="#9a6538" /><rect x={0} y={WALL - 3} width={W} height={1} fill="#e2b07a" />
       {wins.map((w, i) => (
@@ -243,6 +254,13 @@ export function Scene({ people, staff, layout: L, plan, mood, selected, waving, 
         </g>
       ); })}
       <rect x={0} y={L.band - 2} width={lounge.w + 2} height={2} fill="#9a6538" /><rect x={0} y={L.band - 2} width={lounge.w + 2} height={1} fill="#c99560" />
+      {/* 리뷰룸 꾸밈: 벽 판넬·나무 몰딩, 유리 칸막이, 가장자리 띠, 화분 */}
+      <rect x={review.x} y={review.y} width={review.w} height={8} fill="#e8dfca" /><rect x={review.x} y={review.y + 8} width={review.w} height={1} fill="#7a5233" /><rect x={review.x} y={review.y + 7} width={review.w} height={1} fill="#b98654" />
+      {Array.from({ length: Math.floor((review.w - 4) / 14) }, (_, i) => <rect key={`wp${i}`} x={review.x + 4 + i * 14} y={review.y + 2} width={10} height={4} fill="#ddd2b8" />)}
+      <rect x={review.x + 1} y={review.y + 9} width={review.w - 2} height={review.h - 10} fill="none" stroke="#2f3d50" strokeWidth={1} />
+      <rect x={review.x - 2} y={review.y} width={3} height={review.h} fill="#b7d7e6" opacity={0.85} /><rect x={review.x - 2} y={review.y} width={1} height={review.h} fill="#6b7f90" /><rect x={review.x} y={review.y} width={1} height={review.h} fill="#e8f5fb" />
+      {Array.from({ length: Math.floor(review.h / 24) }, (_, i) => <rect key={`gp${i}`} x={review.x - 2} y={review.y + 12 + i * 24} width={3} height={1} fill="#6b7f90" />)}
+      <Pix r={retroPlant()} x={review.x + review.w - 16} y={review.y + review.h - 22} />
       {/* 휴식 공간: 자리 묶음마다 가구 뒤 → 사람 → 가구 앞 */}
       {plan.lounge.stations.map((st, i) => {
         const inside = placed.filter((x) => x.zone === 'lounge' && x.x >= st.x - 2 && x.x < st.x + st.st.w && x.y >= st.y - 4 && x.y < st.y + st.st.h);
