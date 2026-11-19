@@ -38,7 +38,7 @@ export function WorkNode({ data, selected }: NodeProps<FlowNode>) {
       <div className="wnode-kind" style={{ color }}>
         {NODE_KIND_LABEL[node.kind]}
       </div>
-      <div className="wnode-label">{node.label || '(이름 없음)'}</div>
+      <div className="wnode-label" title={node.label}>{node.label || '(이름 없음)'}</div>
       {(node.kind === 'agent' || node.kind === 'review') && <div className="wnode-sub">{agentName ?? '담당 미지정'}</div>}
       {node.kind === 'check' && <div className="wnode-sub mono ellipsis">{node.command.join(' ') || '명령 미지정'}</div>}
       {status && (
@@ -48,6 +48,9 @@ export function WorkNode({ data, selected }: NodeProps<FlowNode>) {
         </div>
       )}
       <Handle type="source" position={Position.Bottom} />
+      {/* 실패 시 되돌아가는 선: 카드 오른쪽으로 들고 나게 해 진행 선과 겹치지 않게 */}
+      <Handle type="source" id="fail-out" position={Position.Right} className="wnode-side" style={{ top: '72%' }} isConnectable={false} />
+      <Handle type="target" id="fail-in" position={Position.Right} className="wnode-side" style={{ top: '28%' }} isConnectable={false} />
     </div>
   );
 }
@@ -79,6 +82,7 @@ export function edgeView(e: GraphEdge): Edge {
     target: e.target,
     label: st.label || undefined,
     data: { kind: e.kind },
+    ...(e.kind === 'fail' ? { sourceHandle: 'fail-out', targetHandle: 'fail-in', type: 'smoothstep', pathOptions: { offset: 22, borderRadius: 10 } } : {}),
     animated: false,
     style: { stroke: st.color, strokeWidth: 2, strokeDasharray: st.dash },
     labelStyle: { fill: st.color, fontWeight: 600, fontSize: 11 },

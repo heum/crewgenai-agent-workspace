@@ -826,7 +826,12 @@ textarea.input {
   font-size: 13px;
   margin: 2px 0;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3; /* 제목은 3줄까지(전체는 마우스를 올리거나 선택해 확인) — 카드 높이를 고르게 해 겹치지 않게 */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+.wnode .wnode-side { opacity: 0; pointer-events: none; }
 .wnode-sub {
   color: var(--sub);
   font-size: 11px;
@@ -2065,3 +2070,7 @@ textarea.input {
 .composer-files { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; }
 .file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-chip .btn-link { padding: 0 2px; font-weight: 700; }
+
+/* 실행 탭 산출물 목록: '미리보기'·'Finder'가 한 글자씩 세로로 접히지 않게 */
+.artifact-list li .btn-link, .run-artifacts li .btn-link { white-space: nowrap; flex: 0 0 auto; }
+.artifact-list li .grow, .run-artifacts li .grow { min-width: 0; }

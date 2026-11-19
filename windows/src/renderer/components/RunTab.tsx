@@ -1,4 +1,4 @@
-import { autoLayout, needsLayout } from '../../shared/layout';
+import { autoLayout } from '../../shared/layout';
 import { useEffect, useMemo, useState } from 'react';
 import { Background, Controls, ReactFlow, ReactFlowProvider } from '@xyflow/react';
 import type { Agent, AppSettings, Artifact, Attempt, AttemptEvent, CliStatus, GraphNode, Project, Run, RunDetail, RunStatus } from '../../shared/types';
@@ -129,7 +129,7 @@ function RunDetailView({ runId, agents, onOpenReview, onNewRun }: { runId: strin
   const flowNodes = useMemo(
     () =>
       d
-        ? toFlowNodes((needsLayout(d.graph) ? autoLayout(d.graph) : d.graph).nodes, agents, (n) => ({ status: stateById.get(n.id)?.status ?? 'waiting', visits: stateById.get(n.id)?.visits ?? 0 })).map((n) => ({
+        ? toFlowNodes(autoLayout(d.graph).nodes, agents, (n) => ({ status: stateById.get(n.id)?.status ?? 'waiting', visits: stateById.get(n.id)?.visits ?? 0 })).map((n) => ({
             ...n,
             selected: n.id === selNode,
             draggable: false,

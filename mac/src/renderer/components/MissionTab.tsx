@@ -1,7 +1,7 @@
 // 운영 — 오퍼레이터 루프(미션) 화면
 // 사용자 지시 → 오퍼레이터 계획 → 담당 Agent 수행 → Codex 리뷰 → Claude 재검토 → 오퍼레이터 판단 → (반복 | 사용자 확인 | 완료)
 import type { ReactNode } from 'react';
-import { autoLayout, needsLayout } from '../../shared/layout';
+import { autoLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionResult, MissionRef, RefSnippet, StaffProposal, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
@@ -1003,7 +1003,7 @@ function CycleFlow({ detail, agents }: { detail: RunDetail; agents: Agent[] }) {
   const [selNode, setSelNode] = useState<string | null>(null);
   const flowNodes = useMemo(
     () =>
-      toFlowNodes((needsLayout(detail.graph) ? autoLayout(detail.graph) : detail.graph).nodes, agents, (n) => {
+      toFlowNodes(autoLayout(detail.graph).nodes, agents, (n) => {
         const st = detail.nodes.find((x) => x.nodeId === n.id);
         return { status: st?.status ?? 'waiting', visits: st?.visits ?? 0 };
       }).map((n) => ({ ...n, selected: n.id === selNode })),
