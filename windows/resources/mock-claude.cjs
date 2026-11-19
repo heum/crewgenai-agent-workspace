@@ -161,6 +161,7 @@ async function main() {
         writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [],
         ...(needCmd ? { needs: { commands: [needCmd], readPaths: [] } } : {}) }] };
     if (!ask && user.includes('[[mock:two-tasks]]')) plan.tasks.push({ title: `보조 문서 ${cyc}`, agentCode: code, instructions: `${mdir}-b/cycle-${cyc}.md를 작성한다.`, writeScope: [`${mdir}-b`], outputs: [{ path: `${mdir}-b/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: '작성', checkCommand: [] });
+    if (!ask && user.includes('[[mock:ref]]')) plan.references = [{ url: 'https://example.com/board', why: '화면 구성 참고' }, { url: 'http://192.168.0.10/admin', why: '사설망(막혀야 함)' }];
     // 산출물을 작업 수정 경로 옆(같은 허용 경로 안)에 낸다: 앱이 그 파일을 수정 경로에 더해야 한다
     if (!ask && user.includes('[[mock:out-sibling]]')) plan.tasks[0].outputs = [{ path: `docs/tests/cycle-${cyc}.md`, format: 'markdown' }];
     // 처음 계획은 허용 경로 밖을 쓴다(앱 검사 실패) → 앱이 이유를 알려 주면 고쳐서 다시 낸다

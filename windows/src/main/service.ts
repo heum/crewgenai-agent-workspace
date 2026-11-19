@@ -25,9 +25,12 @@ import { NodeSqliteSaver } from './engine/checkpointer';
 import { Engine, type Tracer } from './engine/engine';
 import { DEFAULT_TEMPLATE_SET, TEMPLATE_SETS, defaultGraph, type TemplateSetId } from './engine/templates';
 import { escapes, normRel, validateGraph } from './engine/validate';
+import { refDirFor } from './refs';
 import { DEFAULT_PACE, onUsage, paceDecision, restoreUsage, usageSnapshot, type UsageSnapshot } from './pace';
 
 export interface ServiceDeps {
+  /** 참고 사이트 스냅샷 저장(Electron 창으로 공개 페이지를 열어 저장). 없으면 참고 사이트를 쓰지 않는다 */
+  captureRef?: (url: string, dir: string) => Promise<{ title: string; finalUrl: string }>;
   dbFile: string;
   mockScript: string;
   mockCodexScript?: string;
@@ -84,6 +87,7 @@ export class Service {
     // 실행 이벤트를 화면으로 보내면서 미션 루프 다이어그램의 현재 단계도 갱신한다
     const emit = (e: LiveEvent) => { d.emit(e); try { this.missions?.onLive(e); } catch { /* 미션 갱신 실패는 실행에 영향 없음 */ } };
     this.engine = new Engine({
+      referenceRoot: join(dirname(d.dbFile), 'references'),
       store: this.store, checkpointer: saver, emit, mockScript: d.mockScript, mockCodexScript: d.mockCodexScript,
       codex: () => ({ path: this.codex?.path ?? this.settings().codexPath, model: this.settings().codexModel || 'gpt-6.1-sol', effort: this.settings().codexEffort || 'high' }),
       executor: () => ({ executor: this.settings().executor, cliPath: this.cli?.path ?? this.settings().cliPath, authMethod: this.cli?.authMethod ?? null }),
@@ -99,6 +103,7 @@ export class Service {
     });
     this.missions = new MissionRunner({
       pace: () => this.paceNow(),
+      captureRef: d.captureRef ? async (url, missionId) => { const dir = refDirFor(join(dirname(d.dbFile), 'references'), missionId, url); const r = await d.captureRef!(url, dir); return { ...r, dir }; } : undefined,
       techAuto: () => this.settings().techAuto !== false,
       devSync: () => this.settings().devSync !== false,
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,

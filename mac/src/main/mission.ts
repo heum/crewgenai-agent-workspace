@@ -21,6 +21,7 @@ import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, w
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
 import { DEMO_FILE, readManifest } from './demo';
 import type { PaceDecision } from './pace';
+import { publicWebUrl } from './refs';
 
 /** 사용자가 고를 선택지: 고르면 무엇이 달라지는지(effect), 추천 여부와 이유. 추천은 안내일 뿐 자동으로 고르지 않는다. */
 const CHOICE_ITEMS = { type: 'array', items: { type: 'object', required: ['label', 'effect', 'recommended', 'why'], properties: {
@@ -107,6 +108,7 @@ const PLAN_SCHEMA = {
     summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS,
     gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, choices: CHOICE_ITEMS, explain: { type: 'string' }, kind: { type: 'string', enum: ['decide', 'assume'] }, assumption: { type: 'string' }, blocking: { type: 'boolean' },
       refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
+    references: { type: 'array', items: { type: 'object', required: ['url', 'why'], properties: { url: { type: 'string' }, why: { type: 'string' } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
       properties: { title: { type: 'string' }, agentCode: { type: 'string' }, instructions: { type: 'string' }, writeScope: { type: 'array', items: { type: 'string' } },
         outputs: { type: 'array', items: { type: 'object', required: ['path', 'format'], properties: { path: { type: 'string' }, format: { type: 'string', enum: ['markdown', 'json', 'html', 'text', 'code', 'image', 'any'] } } } },
@@ -124,7 +126,7 @@ const JUDGE_SCHEMA = {
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
-interface Plan { staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
+interface Plan { references?: { url?: string; why?: string }[]; staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
 interface RawResult { status?: string; task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
 interface RawCheckpoint { title?: string; steps?: string; verified?: string; unverified?: string; features?: { name?: string; changed?: string; status?: string }[]; decisions?: { question?: string; choices?: unknown }[]; assumptions?: string[] }
@@ -202,6 +204,8 @@ export interface MissionDeps {
   techAuto?: () => boolean;
   /** 매일 dev 반영이 켜져 있으면 앱이 하루 한 번 알아서 커밋·push한다: 오퍼레이터는 커밋 승인 요청을 내지 않는다 */
   devSync?: () => boolean;
+  /** 참고 사이트 스냅샷 저장(앱이 공개 페이지를 열어 화면 사진·본문을 저장). 저장 폴더를 돌려준다 */
+  captureRef?: (url: string, missionId: string) => Promise<{ title: string; dir: string; finalUrl: string }>;
   /** 사용량 속도 조절 판단(꺼져 있으면 null): 주간·5시간 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다 */
   pace?: () => PaceDecision | null;
   /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
@@ -966,6 +970,8 @@ export class MissionRunner {
         if (this.get(id).status === 'stopped') return;
         this.event(m, 'operator_plan', `사이클 ${m.cycle} 계획: ${plan.summary} (작업 ${plan.tasks.length}개)`, plan);
         this.collectStaff(id, plan.staffProposals, agents);
+        await this.captureRefs(id, plan.references);
+        if (this.closed || this.get(id).status === 'stopped') return;
         const gaps = (Array.isArray(plan.gaps) ? plan.gaps : []).filter((g) => g && (String(g.issue ?? '').trim() || String(g.need ?? '').trim()))
           .slice(0, 12).map((g): MissionGap => {
             const pc = pickChoices((g as { choices?: unknown }).choices, g.options); const o = pc.opts; const explain = String(g.explain ?? '').trim().slice(0, 1200);
@@ -1338,6 +1344,34 @@ export class MissionRunner {
     if (patch.status === 'done' || patch.status === 'failed') this.event(next, 'system', `main 병합 ${patch.status === 'done' ? '완료' : '일부 실패'}: ${(patch.results ?? []).map((r) => `${r.repo} ${r.status === 'pushed' ? '병합함' : r.status === 'nothing' ? '이미 반영됨' : r.status === 'skipped' ? '건너뜀' : '실패'}${r.status === 'failed' || r.status === 'skipped' ? `(${r.note})` : ''}`).join(', ')}`);
     return next;
   }
+  /** 오퍼레이터가 요청한 참고 사이트를 앱이 열어 저장한다(이미 저장한 주소는 다시 열지 않음, 미션당 최대 20개) */
+  private async captureRefs(id: string, refs: Plan['references']) {
+    const want = [...new Set((Array.isArray(refs) ? refs : []).map((r) => String(r?.url ?? '').trim()).filter((u) => /^https?:\/\//i.test(u)))].slice(0, 5);
+    if (!want.length || !this.d.captureRef) return;
+    const have = this.get(id).refSnapshots ?? [];
+    for (const url of want.filter((u) => !have.some((h) => h.url === u))) {
+      if (!publicWebUrl(url)) { // 이 컴퓨터·사설망 주소는 열지 않는다
+        this.set(id, { refSnapshots: [...(this.get(id).refSnapshots ?? []), { url, title: '', dir: '', at: now(), error: '공개 웹 주소가 아님(이 컴퓨터·사설망 주소는 열지 않음)' }].slice(-20) });
+        this.event(this.get(id), 'system', `참고 사이트로 열지 않았습니다(공개 웹 주소가 아님): ${url}`); continue;
+      }
+      try {
+        const r = await this.d.captureRef(url, id);
+        this.set(id, { refSnapshots: [...(this.get(id).refSnapshots ?? []), { url, title: r.title, dir: r.dir, at: now() }].slice(-20) });
+        this.event(this.get(id), 'system', `참고 사이트를 저장했습니다(로그인 없이 본 공개 화면): ${r.title || url} — 직원은 화면 사진(page.png)과 본문·링크(page.md)를 읽습니다.`);
+      } catch (e) {
+        this.set(id, { refSnapshots: [...(this.get(id).refSnapshots ?? []), { url, title: '', dir: '', at: now(), error: redact(String((e as Error).message ?? e)).slice(0, 200) }].slice(-20) });
+        this.event(this.get(id), 'system', `참고 사이트를 열지 못했습니다: ${url} (${redact(String((e as Error).message ?? e)).slice(0, 160)})`);
+      }
+    }
+  }
+  /** 참고 사이트: 저장된 스냅샷 목록과 요청 방법 */
+  private refSection(m: Mission): string[] {
+    const ok = (m.refSnapshots ?? []).filter((r) => r.dir);
+    return ['## 참고 사이트(외부 레퍼런스)',
+      '- 사용자 지시·답변이 외부 사이트를 참고하라고 하면(주소나 사이트 이름) references에 공개 주소(https://…)를 적는다. 앱이 로그인 없이 그 화면을 열어 화면 사진·본문·링크를 저장하고, 직원은 저장본만 읽는다(직원은 인터넷에 접속하지 않음). 로그인이 필요한 화면·내려받기는 안 된다. 한 번에 5개까지.',
+      ...(ok.length ? ['- 이미 저장한 스냅샷(작업 instructions에 이 경로를 적어 직원이 page.png·page.md를 읽게 한다):', ...ok.slice(-10).map((r) => `  - ${r.title || r.url} (${r.url}) → ${r.dir}`)] : []),
+      ''];
+  }
   private devSyncOn(): boolean { try { return this.d.devSync?.() ?? false; } catch { return false; } }
   private techAuto(): boolean { try { return this.d.techAuto?.() ?? false; } catch { return false; } }
   /** 앱이 처리한 기술 권한 막힘을 기록한다(최근 20개) */
@@ -1511,6 +1545,10 @@ export class MissionRunner {
     const roots = allowedRoots(plan);
     const chains: { first: GraphNode; last: GraphNode }[] = [];
     const refused: string[] = [];
+    // 참고 사이트 스냅샷(앱이 저장): 모든 작성 작업에 읽기 전용으로 연다
+    const snaps = (this.get(m.id).refSnapshots ?? []).filter((r) => r.dir).slice(-5);
+    const refIn = snaps.map((r) => r.dir);
+    const refNote = snaps.length ? `\n\n[참고 사이트 스냅샷(읽기 전용, 로그인 없이 본 공개 화면)]\n${snaps.map((r) => `- ${r.title || r.url} (${r.url}): ${r.dir}/page.png(화면 사진), ${r.dir}/page.md(본문·링크)`).join('\n')}\n화면 구성·정보 배치·용어를 참고하되 그대로 베끼지 않는다(문구·디자인은 우리 서비스에 맞게 다시 쓴다).` : '';
     p.tasks.forEach((t, i) => {
       const author = by(t.agentCode) ?? by('00');
       if (!author) throw new Error(`담당 직원 ${t.agentCode}를 찾을 수 없습니다.`);
@@ -1522,7 +1560,7 @@ export class MissionRunner {
       // 예) 수정 경로 web/src에 시험 파일 web/tests/x.test.mjs를 산출물로 낸 경우. 허용 경로 밖이면 그대로 두어 검사에서 걸린다.
       for (const o of outs) if (!scope.some((sc) => within(o.path, sc)) && roots.some((w) => within(o.path, w))) scope.push(o.path);
       const x = 120 + i * 360;
-      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true });
+      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn });
       const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800 });
       const rv = mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria,
         instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 재작업(changes_requested)은 완료 조건을 충족하지 못했거나, 근거 문서와 다르게 만들었거나, P0·P1(정확성·보안·요구 위반) 지적이 타당할 때만 요청한다. P2 같은 경미한 지적·표현·완성도 지적은 재작업 사유가 아니다. 승인하되 summary에 "남은 경미 지적"으로 적는다. 근거 없는 지적은 이유를 들어 기각한다.' });
@@ -1587,6 +1625,7 @@ export class MissionRunner {
       ...this.docsSection(plan, m.projectId),
       '## 지금까지의 판단·질문·사용자 답변', this.history(m), '',
       ...this.decisionsSection(m),
+      ...this.refSection(m),
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
       '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',

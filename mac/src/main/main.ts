@@ -9,6 +9,7 @@ import { createTracer } from './langsmith';
 import { Service } from './service';
 import { TelegramBridge } from './telegram';
 import { loadTemplates } from './docset';
+import { publicWebUrl } from './refs';
 
 app.setName('CREWGENAI 개발팀 관리');
 const dataDir = process.env.CREWGENAI_DATA_DIR || app.getPath('userData');
@@ -76,6 +77,35 @@ async function captureLocal(url: string): Promise<Buffer> {
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   try { await w.loadURL(url); await new Promise((r) => setTimeout(r, 2500)); return (await w.webContents.capturePage()).toPNG(); }
   finally { w.destroy(); }
+}
+
+/**
+ * 참고 사이트 스냅샷: 공개 페이지를 새 빈 세션(로그인·쿠키 없음)으로 열어 전체 화면 사진과 본문·링크를 저장한다.
+ * 이 컴퓨터·사설망 주소 요청, 내려받기, 새 창, 권한 요청은 막는다. 직원은 저장된 파일만 읽는다(직원 실행은 계속 네트워크 없음).
+ */
+async function captureReference(url: string, dir: string): Promise<{ title: string; finalUrl: string }> {
+  if (!publicWebUrl(url)) throw new Error('공개 웹 주소(http·https)만 참고할 수 있습니다.');
+  const ses = session.fromPartition(`crewgenai-ref-${Date.now()}-${Math.random().toString(16).slice(2)}`); // 저장되지 않는 새 세션
+  ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: !(publicWebUrl(d.url) || /^(data:|blob:|about:blank)/.test(d.url)) }));
+  ses.setPermissionRequestHandler((_w, _p, cb) => cb(false));
+  ses.on('will-download', (e) => e.preventDefault());
+  const w = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, session: ses, offscreen: false } });
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  w.webContents.on('will-navigate', (e, u) => { if (!publicWebUrl(u)) e.preventDefault(); });
+  try {
+    await Promise.race([w.loadURL(url), new Promise((_, rej) => setTimeout(() => rej(new Error('30초 안에 열리지 않았습니다.')), 30000))]);
+    await new Promise((r) => setTimeout(r, 3000)); // 스크립트로 그려지는 화면을 기다린다
+    const info = await w.webContents.executeJavaScript(`(() => ({ title: document.title, h: Math.min(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0), 8000),
+      text: (document.body ? document.body.innerText : '').slice(0, 40000),
+      links: [...document.querySelectorAll('a[href]')].slice(0, 300).map((a) => [(a.innerText || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').slice(0, 60), a.href]).filter((x) => x[0]).slice(0, 150) }))()`, true) as { title: string; h: number; text: string; links: [string, string][] };
+    w.setContentSize(1440, Math.max(900, info.h)); await new Promise((r) => setTimeout(r, 800));
+    const png = (await w.webContents.capturePage()).toPNG();
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, 'page.png'), png);
+    const finalUrl = w.webContents.getURL();
+    writeFileSync(join(dir, 'page.md'), [`# ${info.title || finalUrl}`, '', `- 주소: ${finalUrl}`, `- 저장: ${new Date().toLocaleString('ko-KR')} (로그인 없이 본 공개 화면)`, '- 화면 사진: page.png (가로 1440, 세로 최대 8000px)', '', '## 본문', '', info.text, '', '## 링크(최대 150개)', '', ...info.links.map(([t, h]) => `- ${t} — ${h}`)].join('\n'));
+    return { title: (info.title || '').slice(0, 200), finalUrl };
+  } finally { w.destroy(); }
 }
 
 let svc: Service;
@@ -306,7 +336,7 @@ app.on('before-quit', (e) => {
 
 void app.whenReady().then(async () => {
   svc = new Service({
-    dbFile: join(dataDir, 'workspace.db'), mockScript: join(resDir, 'mock-claude.cjs'), mockCodexScript: join(resDir, 'mock-codex.cjs'), emit, secretStore, promptsDir: join(resDir, 'docs', 'prompts'),
+    dbFile: join(dataDir, 'workspace.db'), captureRef: captureReference, mockScript: join(resDir, 'mock-claude.cjs'), mockCodexScript: join(resDir, 'mock-codex.cjs'), emit, secretStore, promptsDir: join(resDir, 'docs', 'prompts'),
     tracer: (sv) => createTracer(() => { const st = sv.settings(); return { enabled: st.langsmithEnabled, apiKey: sv.langsmithKey(), endpoint: st.langsmithEndpoint, project: st.langsmithProject }; }, log),
   });
   // 멈춘 실행을 자동으로 이어 가기 전에 Claude CLI 위치를 먼저 찾는다(찾기 전에 이어 가면 'CLI 경로 없음'으로 실패)

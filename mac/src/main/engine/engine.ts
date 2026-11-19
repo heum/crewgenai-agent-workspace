@@ -51,6 +51,8 @@ export interface EngineOptions {
   learningsFor?: (projectId: string) => string;
   /** 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(설정)와 사본을 둘 이 사용자 전용 폴더 */
   skills?: (projectFolder: string) => { dirs: string[]; cacheDir: string };
+  /** 앱이 저장한 참고 사이트 스냅샷 폴더: 단계 입력에 이 안의 경로가 있으면 직원에게 읽기 전용으로 연다 */
+  referenceRoot?: string;
   /** 자동 처리(사람 손 줄이기): 쓰기 직원 스킬 기본 사용, 저장소 시험 명령 자동 허용, 보호 브랜치 대신 작업 브랜치에 커밋 */
   autoAssist?: () => boolean;
   /** 시험 명령에 로컬 소켓 허용(설정, 기본 끔): 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다 */
@@ -939,7 +941,9 @@ export class Engine {
     // 참고 자료: 프로젝트 밖 '폴더'만 --add-dir로(읽기) 연다. '파일'은 그 파일만 읽기 전용 사본으로 준다(부모 폴더 전체를 열지 않음).
     // 프로젝트를 포함하는 상위 폴더는 열지 않는다(상위 전체가 Bash 쓰기 영역이 되므로).
     const projReal = realFolder(plan.folder);
-    const refs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs])].filter((p) => isAbsolute(p) && !within(p, plan.folder) && existsSync(p) && !isAppTempPath(p));
+    const refRoot = this.o.referenceRoot;
+    const snapRefs = refRoot ? node.inputs.filter((p) => isAbsolute(p) && within(p, refRoot) && existsSync(p)) : [];
+    const refs = [...new Set([...agent.references, ...plan.referenceDocs, ...plan.priorOutputs, ...snapRefs])].filter((p) => isAbsolute(p) && !within(p, plan.folder) && existsSync(p) && !isAppTempPath(p));
     const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
     const ancestor = (p: string) => { const r = realFolder(p); return projReal === r || projReal.startsWith(r + '/'); };
     const readDirs = refs.filter((p) => isDir(p) && !ancestor(p));

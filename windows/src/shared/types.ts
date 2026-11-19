@@ -631,6 +631,8 @@ export interface Mission {
   commitRequests?: MissionCommitRequest[];
   /** 큰 단원이 끝나 오퍼레이터가 판단한 main 병합 요청(사용자 승인 뒤 앱이 dev → main 병합·push) */
   mergeRequest?: MissionMergeRequest | null;
+  /** 앱이 저장한 참고 사이트 스냅샷(화면 사진·본문·링크, 앱 데이터 폴더). 직원은 읽기만 한다 */
+  refSnapshots?: { url: string; title: string; dir: string; at: string; error?: string }[];
   resultsCycle?: number;
   resultsHistory?: { cycle: number; results: MissionResult[] }[]; // 최근 회차별 결과물(최신 먼저, 최대 6회차)
   idleCycles?: number; // 반영된 변경 없이 끝난 사이클이 연속 몇 번인가(상한에 넣지 않음, 이어지면 멈추고 물음)
