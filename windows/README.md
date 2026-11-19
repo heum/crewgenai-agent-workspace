@@ -68,6 +68,7 @@ npm start
    - 앱은 `where`로 찾고, 없으면 `%USERPROFILE%\.local\bin\claude.exe`, `%APPDATA%\npm\claude.cmd`를 확인한다.
    - 찾지 못하면 **CLI 직접 선택**으로 `claude.exe`(또는 `claude.cmd`)를 지정한다.
 3. **실행 엔진 확인** — **설정(⚙)** 에서 실행 엔진이 **실제 Claude CLI**인지 확인한다. 모의 실행은 시험용이다.
+4. **텔레그램(선택)** — **설정 > 텔레그램**에서 봇 토큰을 넣고 내 계정을 연결한다. 토큰은 Windows 데이터 보호(DPAPI)로 암호화해 저장한다. 방법: [README의 텔레그램](../README.md#10-텔레그램--휴대폰에서-확인결정-선택)
 
 ## 3. 기본 사용 흐름
 
@@ -112,6 +113,7 @@ npm run dist
 - Windows 코드 서명이 없다.
 - Claude의 Bash 도구를 쓰지 않는다(위 3 참고).
 - 실제 Claude·Codex로 미션을 끝까지 돌린 확인은 아직 없다. CI(Windows)에서 자동 시험과 설치 프로그램 빌드까지 확인한다.
+- 텔레그램 연동은 Windows에서 실제 봇으로 확인하지 않았다(자동 시험만).
 - 시험 스크립트(`scripts/smoke`, `scripts/verify-install.sh`)는 macOS용이라 Windows에서는 쓰지 않는다.
 
 ## 공개 범위
