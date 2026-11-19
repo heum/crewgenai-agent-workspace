@@ -19,6 +19,7 @@ import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
 import { DEMO_FILE, readManifest } from './demo';
+import type { PaceDecision } from './pace';
 
 /** 사용자가 고를 선택지: 고르면 무엇이 달라지는지(effect), 추천 여부와 이유. 추천은 안내일 뿐 자동으로 고르지 않는다. */
 const CHOICE_ITEMS = { type: 'array', items: { type: 'object', required: ['label', 'effect', 'recommended', 'why'], properties: {
@@ -194,6 +195,8 @@ export interface MissionDeps {
   autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
   commandLevel?: () => CommandLevel; // 명령 허용 범위
   testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
+  /** 사용량 속도 조절 판단(꺼져 있으면 null): 주간·5시간 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다 */
+  pace?: () => PaceDecision | null;
   /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
   skillNames?: (folder: string) => string[];
   /** 앱이 직접 하는 시연 확인(승인된 서비스만 켜고 상태·안전한 API 확인) */ demoVerify?: (projectId: string) => Promise<string[]>;
@@ -926,6 +929,9 @@ export class MissionRunner {
         // 오퍼레이터 호출이 사용 한도에 걸려 기다리던 중(앱 재시작 포함)이면, 해제 시각까지 Claude를 부르지 않고 기다린다
         await this.waitOperatorLimit(id);
         if (this.closed || this.get(id).status === 'stopped') return;
+        // 사용량 속도 조절: 주간·5시간 사용률이 쓸 몫보다 앞서 있으면 새 사이클 시작 전에 기다린다(진행 중 단계는 끊지 않음)
+        await this.waitPace(id);
+        if (this.closed || this.get(id).status === 'stopped') return;
         m = this.get(id);
 
         // 재시작·한도 대기로 멈춘 사이클 실행이 있으면 다시 계획하지 않고 그 실행을 이어서 진행한다(완료 단계는 다시 실행하지 않음)
@@ -1235,6 +1241,20 @@ export class MissionRunner {
     return null;
   }
   /** 오퍼레이터 사용 한도 대기(앱이 관리): 해제 시각까지 Claude를 부르지 않는다. '지금 다시 시도'·중지·추가 지시로 깨어난다. */
+  /** 사용량 속도 조절 대기: 한도에 걸린 것이 아니므로 실패·알림 없이 미루기만 한다. '지금 다시 시도'로 앞당길 수 있다 */
+  private async waitPace(id: string) {
+    let d: PaceDecision | null = null;
+    try { d = this.d.pace?.() ?? null; } catch { d = null; }
+    const cur = this.get(id);
+    if (!d?.wait) { if (cur.limitWait?.source === 'pace') this.set(id, { limitWait: null, limitUntil: null }); return; }
+    const prev = cur.limitWait?.source === 'pace' ? cur.limitWait : null;
+    const until = new Date(d.until).toISOString();
+    if (!prev || prev.nextAt !== until) this.event(cur, 'system', `사용량 속도 조절 — ${d.reason}. 그때까지 새 사이클을 시작하지 않고 Claude를 부르지 않습니다(설정 > 사용량 속도 조절, '지금 다시 시도'로 앞당길 수 있음).`, { until: d.until });
+    this.set(id, { limitUntil: until, limitWait: { source: 'pace', reason: d.reason, resetKnown: true, nextAt: until, tries: prev ? prev.tries + 1 : 0, lastAt: prev ? now() : null, lastResult: prev ? '다시 확인했지만 아직 쓸 몫보다 앞섬' : null, target: `사이클 ${cur.cycle + (this.resumableRun(cur) ? 0 : 1)}` } });
+    await this.waitOperatorLimit(id);
+    if (!this.closed && this.get(id).limitWait?.source === 'pace') this.set(id, { limitWait: null });
+  }
+
   private async waitOperatorLimit(id: string) {
     const until = Date.parse(this.get(id).limitUntil ?? '');
     if (!Number.isFinite(until) || until <= Date.now() || this.get(id).currentRunId && this.d.engine.limitOf(this.get(id).currentRunId!)) return;

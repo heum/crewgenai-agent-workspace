@@ -10,6 +10,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, extname, join } from 'node:path';
 import type { CliStatus, ToolName } from '../../shared/types';
+import { noteRateLimit } from '../pace';
 
 export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -296,6 +297,7 @@ export function interpretLine(line: string, sink: StreamSink): ParsedEvent | nul
   }
   if (m.type === 'rate_limit_event') {
     const info = (m.rate_limit_info ?? {}) as Record<string, unknown>;
+    try { noteRateLimit(info); } catch { /* 사용률 기록 실패는 실행에 영향 없음 */ }
     const status = String(info.status ?? '');
     const at = toMs(info.resetsAt);
     if (status === 'rejected') sink.limit = { resetsAt: at, text: `사용 한도 도달(${String(info.rateLimitType ?? '종류 미상')})` };

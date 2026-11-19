@@ -233,6 +233,7 @@ function register() {
   h('pauseMission', (id) => s().missions.pause(String(id)));
   h('resumeMission', (id) => s().missions.resume(String(id)));
   h('retryMissionLimit', (id) => s().missions.retryLimitNow(id));
+  h('usagePace', () => s().usagePace());
   h('missionSnapshots', (id) => s().missions.snapshots(id));
   h('rollbackMission', (id, tag) => s().missions.rollback(id, tag));
   h('addDirective', (id, text, mode) => s().missions.addDirective(id, text, mode === 'now' ? 'now' : mode === 'priority' ? 'priority' : 'next'));

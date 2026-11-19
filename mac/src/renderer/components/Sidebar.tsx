@@ -1,7 +1,7 @@
 import LearningsModal from './LearningsModal';
 import TelegramSettings from './TelegramSettings';
 import { useEffect, useState } from 'react';
-import type { AppSettings, CliStatus, CodexStatus, Project, Attention, SkillSource } from '../../shared/types';
+import type { AppSettings, CliStatus, CodexStatus, Project, Attention, SkillSource, UsagePaceView } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
 import { Markdown } from '../markdown';
 import type { QueueInfo } from '../App';
@@ -206,6 +206,8 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
   const [skills, setSkills] = useState<{ dirs: string[]; sources: SkillSource[] } | null>(null);
   const [skillsTouched, setSkillsTouched] = useState(false);
   useEffect(() => { ws().skillSources(null).then(setSkills).catch(() => setSkills({ dirs: [], sources: [] })); }, []);
+  const [pace, setPace] = useState<UsagePaceView | null>(null);
+  useEffect(() => { ws().usagePace().then(setPace).catch(() => setPace(null)); }, []);
   const setSkillDirs = (dirs: string[]) => act.run(async () => { setSkills(await ws().skillSources(dirs)); setSkillsTouched(true); });
   const addSkillDir = () => act.run(async () => { const p = await ws().pickSkillFolder(); if (p && skills && !skills.dirs.includes(p)) { setSkills(await ws().skillSources([...skills.dirs, p])); setSkillsTouched(true); } });
   const save = () =>
@@ -224,6 +226,8 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           gitCommits: s.gitCommits,
           autoAssist: s.autoAssist !== false,
           testLocalSockets: s.testLocalSockets === true,
+          paceEnabled: s.paceEnabled !== false,
+          paceReservePct: s.paceReservePct ?? 10,
           commandLevel: s.commandLevel ?? 'medium',
           ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
@@ -282,6 +286,25 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" disabled={s.autoAssist === false} checked={s.testLocalSockets === true} onChange={(e) => setS({ ...s, testLocalSockets: e.target.checked })} /> 시험 명령에 로컬 소켓 허용 (Gradle·Spring 시험에 필요)
       </label>
       <p className="muted small">켜면 Gradle 시험이 격리 환경에서 돕니다. 대신 격리된 시험도 이 PC에서 켜져 있는 로컬 서비스(예: localhost의 프록시·DB·개발 서버)에 접속할 수 있게 됩니다. 외부 인터넷은 계속 막힙니다. 끄면 Gradle 시험은 ‘실행 못 함’으로 기록됩니다.</p>
+      <h3>사용량 속도 조절 (Max 요금제)</h3>
+      <label className="check">
+        <input type="checkbox" checked={s.paceEnabled !== false} onChange={(e) => setS({ ...s, paceEnabled: e.target.checked })} /> 주간 한도를 초기화 시각까지 나눠 쓰기 (권장)
+      </label>
+      <ul className="muted small auto-list">
+        <li>Claude CLI가 호출마다 알려 주는 실제 사용률(주간·5시간)로 판단합니다. 추정하지 않습니다.</li>
+        <li>주간 창에서 지난 시간 비율만큼만 씁니다(주 초반 5%는 바로 허용). 앞서 있으면 따라잡을 때까지 새 사이클을 시작하지 않고, 5시간 사용률이 90% 이상이면 그 창이 풀릴 때까지 쉽니다. 진행 중인 단계는 끊지 않습니다.</li>
+        <li>사용률은 계정 전체 값이라, 직접 쓰는 Claude 사용량도 포함됩니다. 그래서 아래 몫은 앱이 쓰지 않고 남깁니다.</li>
+      </ul>
+      <Field label="직접 쓸 몫·여유 (%)" hint="주간 한도 중 앱이 쓰지 않고 남길 몫. 0~50">
+        <input className="input" type="number" min={0} max={50} value={s.paceReservePct ?? 10} onChange={(e) => setS({ ...s, paceReservePct: Number(e.target.value) })} />
+      </Field>
+      {pace && (
+        <p className="muted small">
+          지금: {pace.sevenDay ? `주간 ${Math.round(pace.sevenDay.utilization * 100)}% (초기화 ${fmtDate(pace.sevenDay.resetsAt)})` : '주간 사용률 미보고'}
+          {pace.fiveHour ? ` · 5시간 ${Math.round(pace.fiveHour.utilization * 100)}% (초기화 ${fmtDate(pace.fiveHour.resetsAt)})` : ''}
+          {pace.reportedAt ? ` · ${fmtDate(pace.reportedAt)} 기준` : ''} — {pace.text}
+        </p>
+      )}
       <h3>명령 허용 범위</h3>
       <div className="radio-row">
         <label><input type="radio" checked={s.commandLevel === 'low'} onChange={() => setS({ ...s, commandLevel: 'low' })} /> 낮음</label>

@@ -386,7 +386,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       {act.error && <Banner>{act.error}</Banner>}
       {live && (m.limitUntil || m.limitWait) && (
         <div className="limit-card" role="status">
-          <strong>Claude 한도 대기{m.limitUntil ? ` — ${fmtDate(m.limitUntil)}에 앱이 다시 확인하고 자동으로 이어서 진행합니다` : ' — 다시 시도하는 중'}</strong>
+          <strong>{m.limitWait?.source === 'pace' ? `사용량 속도 조절 — ${m.limitUntil ? `${fmtDate(m.limitUntil)}에 다음 사이클을 자동으로 시작합니다` : '다시 확인하는 중'}` : `Claude 한도 대기${m.limitUntil ? ` — ${fmtDate(m.limitUntil)}에 앱이 다시 확인하고 자동으로 이어서 진행합니다` : ' — 다시 시도하는 중'}`}</strong>
           <dl className="limit-facts small">
             <dt>대기 사유</dt><dd>{m.limitWait?.reason || '플랜 사용 한도 도달'}</dd>
             <dt>해제 시각</dt><dd>{m.limitWait ? (m.limitWait.resetKnown ? `확인됨 · ${fmtDate(m.limitWait.nextAt)}` : '알 수 없음 — 1시간마다 한 번 다시 확인') : '—'}</dd>
@@ -394,6 +394,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
             <dt>마지막 확인</dt><dd>{m.limitWait?.lastAt ? `${fmtDate(m.limitWait.lastAt)} · ${m.limitWait.lastResult ?? ''}` : '아직 없음(처음 한도 도달)'}</dd>
             <dt>자동 재개할 작업</dt><dd>{m.limitWait?.target ?? '멈춘 작업'}</dd>
           </dl>
+          {m.limitWait?.source === 'pace' && <div className="muted small">한도에 걸린 것이 아닙니다. 주간 사용량을 초기화 시각까지 나눠 쓰려고 새 사이클 시작만 미루고 있습니다(진행하던 단계는 끝까지 함). 설정 &gt; 사용량 속도 조절에서 끄거나 남길 몫을 바꿀 수 있습니다.</div>}
           <div className="muted small">실패로 처리하지 않습니다. 예약은 이 앱이 관리하므로 앱이 켜져 있어야 실행됩니다(앱을 껐다 켜도 예약은 복원되고, 지난 예약은 한 번만 확인합니다). 대기 중에는 Claude를 부르지 않습니다.</div>
           <div className="row gap">
             <button className="btn" disabled={act.busy} onClick={() => void act.run(async () => { await ws().retryMissionLimit(m.id); await detail.reload(); })}>

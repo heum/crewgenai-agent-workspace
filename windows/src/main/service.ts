@@ -11,7 +11,7 @@ import { COMMAND_LEVELS, projectSkillDirs, workBranchName, type CommandLevel } f
 import { defaultSkillDirs, describeSkillSources } from './skills';
 import { redactKeepLines } from './cli/claudeCli';
 import type { MissionLimits } from '../shared/types';
-import type { Agent, AgentFields, AppSettings, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
+import type { Agent, AgentFields, AppSettings, UsagePaceView, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
 import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, workspaceRepos } from './git';
 import { LearningStore } from './learning';
@@ -25,6 +25,7 @@ import { NodeSqliteSaver } from './engine/checkpointer';
 import { Engine, type Tracer } from './engine/engine';
 import { DEFAULT_TEMPLATE_SET, TEMPLATE_SETS, defaultGraph, type TemplateSetId } from './engine/templates';
 import { escapes, normRel, validateGraph } from './engine/validate';
+import { DEFAULT_PACE, onUsage, paceDecision, restoreUsage, usageSnapshot, type UsageSnapshot } from './pace';
 
 export interface ServiceDeps {
   dbFile: string;
@@ -71,10 +72,14 @@ export class Service {
   private memSecret: string | null = null;
 
   readonly demo: DemoManager;
+  private offUsage: () => void = () => {};
   constructor(private d: ServiceDeps) {
     this.store = new Store(d.dbFile);
     this.demo = new DemoManager(this.store.db, join(dirname(d.dbFile), 'demo-logs'));
     this.learnings = new LearningStore(this.store.db);
+    // 사용량 속도 조절: 마지막으로 받은 사용률을 이 PC에 저장해 재시작 뒤에도 쓴다(계정 전체 사용률이라 프로젝트와 무관)
+    restoreUsage(this.store.getSetting<UsageSnapshot | null>('usageWindow', null));
+    this.offUsage = onUsage((snap) => { try { this.store.setSetting('usageWindow', snap); } catch { /* 저장 실패는 무시 */ } });
     const saver = new NodeSqliteSaver(this.store.db);
     // 실행 이벤트를 화면으로 보내면서 미션 루프 다이어그램의 현재 단계도 갱신한다
     const emit = (e: LiveEvent) => { d.emit(e); try { this.missions?.onLive(e); } catch { /* 미션 갱신 실패는 실행에 영향 없음 */ } };
@@ -93,6 +98,7 @@ export class Service {
       commandLevel: () => this.commandLevel(),
     });
     this.missions = new MissionRunner({
+      pace: () => this.paceNow(),
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
       executor: () => ({ executor: this.settings().executor, cliPath: this.cli?.path ?? this.settings().cliPath }),
       maxCycles: () => this.settings().missionMaxCycles || 5,
@@ -184,6 +190,7 @@ export class Service {
   saveSettings(p: Partial<AppSettings>, key?: string | null): AppSettings {
     const cur = this.settings();
     const next = { ...cur, ...p, missionMaxCycles: Math.min(50, Math.max(1, Math.floor(Number(p.missionMaxCycles ?? cur.missionMaxCycles)) || 5)), maxConcurrent: Math.min(16, Math.max(1, Math.floor(Number(p.maxConcurrent ?? cur.maxConcurrent)) || 1)) };
+    if (p.paceReservePct !== undefined) next.paceReservePct = Math.min(50, Math.max(0, Math.round(Number(p.paceReservePct)) || 0));
     if (p.skillDirs !== undefined) next.skillDirs = Array.isArray(p.skillDirs) ? [...new Set(p.skillDirs.filter((x) => typeof x === 'string' && isAbsolute(x)))].slice(0, 20) : undefined;
     const { langsmithKeySet: _k, ...persist } = next;
     this.store.setSetting('app', persist);
@@ -675,7 +682,21 @@ export class Service {
   }
   demoReset(projectId: string, serviceId: string) { this.demo.resetSession(projectId, serviceId); }
 
-  close() { this.demo.stopAll(); void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }
+  /** 사용량 속도 조절 판단(꺼져 있으면 null) */
+  paceNow() {
+    const s = this.settings();
+    if (s.paceEnabled === false) return null;
+    return paceDecision(usageSnapshot(), Date.now(), { ...DEFAULT_PACE, reserve: (s.paceReservePct ?? 10) / 100 });
+  }
+  usagePace(): UsagePaceView {
+    const s = this.settings(); const snap = usageSnapshot(); const d = this.paceNow();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const w = (x: { utilization: number; resetsAt: number } | null) => (x ? { utilization: x.utilization, resetsAt: iso(x.resetsAt) } : null);
+    const all = paceDecision(snap, Date.now(), { ...DEFAULT_PACE, reserve: (s.paceReservePct ?? 10) / 100 });
+    return { enabled: s.paceEnabled !== false, reservePct: s.paceReservePct ?? 10, sevenDay: w(snap?.sevenDay ?? null), fiveHour: w(snap?.fiveHour ?? null), reportedAt: snap ? iso(snap.at) : null,
+      waiting: !!d?.wait, until: d?.wait ? iso(d.until) : null, text: all.wait ? all.reason : all.note };
+  }
+  close() { this.offUsage(); this.demo.stopAll(); void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }
   /** 앱 종료용: 프로세스 종료를 기다린 뒤 DB를 닫는다. */
-  async closeGracefully() { this.demo.stopAll(); await this.missions.shutdown(); await this.engine.shutdownAndWait(); await gitShutdown(); this.store.close(); }
+  async closeGracefully() { this.offUsage(); this.demo.stopAll(); await this.missions.shutdown(); await this.engine.shutdownAndWait(); await gitShutdown(); this.store.close(); }
 }

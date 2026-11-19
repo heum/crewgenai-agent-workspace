@@ -9,6 +9,7 @@ import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CliStatus, ToolName } from '../../shared/types';
+import { noteRateLimit } from '../pace';
 
 let javaHomeCache: string | null | undefined;
 /** 이 PC의 기본 JDK 위치(macOS java_home). 없거나 찾지 못하면 null. 한 번만 찾는다. */
@@ -304,6 +305,7 @@ export function interpretLine(line: string, sink: StreamSink): ParsedEvent | nul
   }
   if (m.type === 'rate_limit_event') {
     const info = (m.rate_limit_info ?? {}) as Record<string, unknown>;
+    try { noteRateLimit(info); } catch { /* 사용률 기록 실패는 실행에 영향 없음 */ }
     const status = String(info.status ?? '');
     const at = toMs(info.resetsAt);
     if (status === 'rejected') sink.limit = { resetsAt: at, text: `사용 한도 도달(${String(info.rateLimitType ?? '종류 미상')})` };

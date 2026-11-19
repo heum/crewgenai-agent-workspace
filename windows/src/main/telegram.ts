@@ -686,7 +686,7 @@ export class TelegramBridge {
   }
   private stateLine(m: Mission): string {
     if (m.paused) return '⏸ 일시정지(진행 중 단계만 마저 끝냄)';
-    if (m.limitWait || m.limitUntil) return `⏳ ${m.limitWait?.reason.includes('장애') ? '연결 장애 대기' : 'Claude 한도 대기'} — 다음 확인 ${hhmm(m.limitUntil ?? m.limitWait?.nextAt)}${m.limitWait && !m.limitWait.resetKnown ? '(해제 시각을 알 수 없어 1시간마다 확인)' : ''}`;
+    if (m.limitWait || m.limitUntil) return `⏳ ${m.limitWait?.source === 'pace' ? '사용량 속도 조절(주간 한도 나눠 쓰기)' : m.limitWait?.reason.includes('장애') ? '연결 장애 대기' : 'Claude 한도 대기'} — 다음 확인 ${hhmm(m.limitUntil ?? m.limitWait?.nextAt)}${m.limitWait && !m.limitWait.resetKnown ? '(해제 시각을 알 수 없어 1시간마다 확인)' : ''}`;
     return `${STATUS_KO[m.status] ?? m.status}${['planning', 'running', 'evaluating'].includes(m.status) ? ` · 사이클 ${m.cycle}` : ''}`;
   }
   private menu() {
@@ -749,8 +749,10 @@ export class TelegramBridge {
   private usageText(m: Mission | null): string {
     if (!m) return '대상 미션이 없습니다. /projects';
     const u = m.usage;
-    const lim = m.limitWait ? `한도 대기: ${esc(m.limitWait.reason)}\n해제 시각: ${m.limitWait.resetKnown ? hhmm(m.limitWait.nextAt) : '알 수 없음(1시간마다 한 번 다시 확인)'}\n다음 확인: ${hhmm(m.limitUntil ?? m.limitWait.nextAt)}\n마지막 확인: ${m.limitWait.lastAt ? `${hhmm(m.limitWait.lastAt)} · ${esc(m.limitWait.lastResult ?? '')}` : '아직 없음'}\n재개할 작업: ${esc(m.limitWait.target)}` : '한도 대기: 없음(확인된 한도 정보 없음)';
-    return [this.head(m), u && u.calls ? `CLI 호출 ${u.calls}회(사용량 보고 ${u.reported}회${u.calls > u.reported ? `, 미보고 ${u.calls - u.reported}회는 알 수 없음` : ''})\n토큰 입력 ${u.inputTokens.toLocaleString()} · 출력 ${u.outputTokens.toLocaleString()} · 캐시 ${(u.cacheReadTokens + u.cacheWriteTokens).toLocaleString()}\nCLI 보고 금액 $${u.costUsd.toFixed(2)}(구독 로그인이면 API 환산 추정값, 청구액 아님)` : '사용량 기록 없음', lim].join('\n');
+    const lim = m.limitWait ? `${m.limitWait.source === 'pace' ? '속도 조절' : '한도 대기'}: ${esc(m.limitWait.reason)}\n해제 시각: ${m.limitWait.resetKnown ? hhmm(m.limitWait.nextAt) : '알 수 없음(1시간마다 한 번 다시 확인)'}\n다음 확인: ${hhmm(m.limitUntil ?? m.limitWait.nextAt)}\n마지막 확인: ${m.limitWait.lastAt ? `${hhmm(m.limitWait.lastAt)} · ${esc(m.limitWait.lastResult ?? '')}` : '아직 없음'}\n재개할 작업: ${esc(m.limitWait.target)}` : '한도 대기: 없음(확인된 한도 정보 없음)';
+    let pace = '';
+    try { const pv = this.d.svc.usagePace(); pace = `계정 사용률(Claude CLI 보고): ${pv.sevenDay ? `주간 ${Math.round(pv.sevenDay.utilization * 100)}% · 초기화 ${hhmm(pv.sevenDay.resetsAt)}` : '주간 미보고'}${pv.fiveHour ? ` / 5시간 ${Math.round(pv.fiveHour.utilization * 100)}%` : ''}\n속도 조절: ${pv.enabled ? esc(pv.text) : '꺼짐'}`; } catch { pace = ''; }
+    return [this.head(m), pace, u && u.calls ? `CLI 호출 ${u.calls}회(사용량 보고 ${u.reported}회${u.calls > u.reported ? `, 미보고 ${u.calls - u.reported}회는 알 수 없음` : ''})\n토큰 입력 ${u.inputTokens.toLocaleString()} · 출력 ${u.outputTokens.toLocaleString()} · 캐시 ${(u.cacheReadTokens + u.cacheWriteTokens).toLocaleString()}\nCLI 보고 금액 $${u.costUsd.toFixed(2)}(구독 로그인이면 API 환산 추정값, 청구액 아님)` : '사용량 기록 없음', lim].filter(Boolean).join('\n');
   }
   private async healthText(): Promise<string> {
     const svc = this.d.svc; const cli = await svc.cliStatus(false).catch(() => null); const cx = await svc.codexStatus(false).catch(() => null);

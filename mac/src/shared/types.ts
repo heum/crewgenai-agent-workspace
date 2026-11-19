@@ -339,6 +339,8 @@ export interface AppSettings {
   gitCommits: boolean; // 직원별 git 커밋·미션 스냅샷 사용
   autoAssist?: boolean; // 자동 처리(기본 켬): 작업 브랜치 자동 생성, 저장소 시험 명령 허용, 프로젝트 스킬·쓰기 직원 스킬, 문서 저장소 최신화
   commandLevel?: 'low' | 'medium' | 'high'; // 직원 명령 허용 범위(기본 중간). 격리·네트워크 없음 안에서 묻지 않고 허용할 명령의 폭
+  paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
+  paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유
   testLocalSockets?: boolean; // 자동 처리 시험 명령에 로컬 소켓 허용(기본 끔). 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다
   skillDirs?: string[]; // 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(이 PC의 절대 경로). 없으면 ~/.claude/skills·~/.agents/skills 중 있는 것
 }
@@ -471,6 +473,8 @@ export interface WorkspaceApi {
   resolveStaffProposal(missionId: ID, proposalId: ID, action: 'apply' | 'dismiss', edit: StaffEdit | null): Promise<Mission>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
+  /** 사용량 속도 조절 상태: CLI가 마지막으로 알려 준 주간·5시간 사용률과 지금 판단 */
+  usagePace(): Promise<UsagePaceView>;
   missionSnapshots(missionId: ID): Promise<MissionSnapshot[]>;
   rollbackMission(missionId: ID, tag: string): Promise<{ ok: boolean; reverted: string[]; error: string | null }>;
   onLive(cb: (e: LiveEvent) => void): () => void;
@@ -551,7 +555,8 @@ export interface MissionCheckpoint {
   blocked?: string[]; // 막힌 것(무엇이·직접 확인한 원인·시도한 방법), 사용자에게 필요한 최소 결정·권한
   usage?: string; // 지금까지 사용량(CLI 보고값만, 미보고는 미보고로)
 }
-export interface MissionLimitWait { source: 'operator' | 'run'; reason: string; resetKnown: boolean; nextAt: string; tries: number; lastAt: string | null; lastResult: string | null; target: string }
+/** source 'pace': 한도에 걸린 것이 아니라 사용량 속도 조절로 새 사이클을 미루는 중 */
+export interface MissionLimitWait { source: 'operator' | 'run' | 'pace'; reason: string; resetKnown: boolean; nextAt: string; tries: number; lastAt: string | null; lastResult: string | null; target: string }
 /** 미션 실행 범위(시작할 때 정함): 참여 직원. 전체 시간·사이클 상한은 두지 않는다 */
 export interface MissionLimits { staff: string[] | null }
 /** 미션 사용량: CLI가 보고한 값만 더한다(미보고 호출 수는 따로 셈, 추정하지 않음) */
@@ -819,4 +824,11 @@ export interface TgStatusView {
   state: 'off' | 'no-token' | 'connecting' | 'connected' | 'error' | 'conflict' | 'unavailable'; reason: string | null; lastOkAt: string | null;
   tokenSet: boolean; tokenHint: string | null; secureStore: boolean; pendingOut: number; lastDenied: string | null;
   settings: TgOptionsView & { bot: { id: number; username: string; name: string } | null; link: { userId: number; chatId: number; name: string; at: string } | null; candidate: { userId: number; chatId: number; name: string; at: string } | null; linkCode: { code: string; link: string | null; expires: number } | null; epoch: number; target: { projectId: string; missionId: string } | null };
+}
+
+/** 사용량 속도 조절 화면용 */
+export interface UsagePaceView {
+  enabled: boolean; reservePct: number;
+  sevenDay: { utilization: number; resetsAt: string } | null; fiveHour: { utilization: number; resetsAt: string } | null; reportedAt: string | null;
+  waiting: boolean; until: string | null; text: string;
 }

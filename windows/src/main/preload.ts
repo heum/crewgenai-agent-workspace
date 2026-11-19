@@ -9,7 +9,7 @@ const methods = [
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',
   'startRun', 'rerunFrom', 'pauseRun', 'resumeRun', 'cancelRun', 'resolveInterrupted', 'listRuns', 'runDetail', 'attemptEvents',
   'submitReview', 'cliStatus', 'pickCliPath', 'openLoginTerminal', 'getSettings', 'saveSettings', 'pickSkillFolder', 'skillSources', 'helpDocs',
-  'codexStatus', 'listMissions', 'attention', 'pendingDecisions', 'commitPreview', 'commitApprove', 'commitDecline', 'listLearnings', 'saveLearning', 'deleteLearning', 'markLearningsReviewed', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'reviewMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryParked', 'decideMission', 'refSnippet', 'resolveStaffProposal', 'retryMissionLimit', 'workingNow',
+  'codexStatus', 'listMissions', 'attention', 'pendingDecisions', 'commitPreview', 'commitApprove', 'commitDecline', 'listLearnings', 'saveLearning', 'deleteLearning', 'markLearningsReviewed', 'missionReadiness', 'startMission', 'missionDetail', 'answerMission', 'reviewMission', 'addDirective', 'missionSnapshots', 'rollbackMission', 'listPromptTemplates', 'projectDocs', 'saveProjectDocs', 'reviewProjectDoc', 'resetProjectDocs', 'uploadProjectDoc', 'stopMission', 'retryParked', 'decideMission', 'refSnippet', 'resolveStaffProposal', 'retryMissionLimit', 'usagePace', 'workingNow',
 ] as const;
 
 const api: Record<string, unknown> = {};
