@@ -73,9 +73,9 @@ export function layoutFor(staff: number, Wavail: number, Havail: number, offCoun
   return { scale, W, H, fits: need <= Math.floor(Havail), cols, rows, desks, band, lounge, review, wall: wallItems(W, offCount), tableY: band };
 }
 
-export function pickScale(stageW: number, stageH: number, dpr: number, staff: number, off: number, groups: number[] = [1]): { scale: number; layout: Layout } {
+export function pickScale(stageW: number, stageH: number, dpr: number, staff: number, off: number, groups: number[] = [1], maxScale = 4): { scale: number; layout: Layout } {
   const d = dpr > 0 ? dpr : 1;
-  for (let k = Math.floor(4 * d); k >= Math.ceil(2 * d); k--) {
+  for (let k = Math.floor(Math.min(4, maxScale) * d); k >= Math.ceil(2 * d); k--) {
     const s = k / d; const L = layoutFor(staff, stageW / s, stageH / s, off, s, groups);
     if (stageW / s >= MIN_W && L.fits) return { scale: s, layout: L };
   }
@@ -126,7 +126,7 @@ export function reviewGroups(people: Person[]): Group[] {
 export function placePeople(people: Person[], staff: Person[], L: Layout): Plan {
   const out: Placed[] = [];
   staff.forEach((p, i) => {
-    if (p.pose === 'code' || p.pose === 'doc' || p.pose === 'plan' || p.pose === 'wait') {
+    if (p.pose === 'code' || p.pose === 'doc' || p.pose === 'plan') { // 대기 중인 직원은 책상을 비우고 라운지에서 쉰다
       const d = L.desks[i]; const pose: ArtPose = p.pose === 'code' ? 'type' : 'sit';
       out.push({ p, zone: 'desk', x: d.x + K.desk.seat.x, y: d.y + K.desk.seat.y, w: RETRO_W, h: RETRO_SIT_H, pose, habits: habitsFor(p.key, pose) });
     }
@@ -141,7 +141,7 @@ export function placePeople(people: Person[], staff: Person[], L: Layout): Plan 
     if (pd.author) { const a = byKey.get(pd.author)!; out.push({ p: a, zone: 'review', x: pd.x + pd.pod.author.x, y: pd.y + pd.pod.author.y, w: RETRO_W, h: RETRO_SIT_H, pose: 'sit', mod: 'glanceR', habits: [{ mod: 'blink', period: 6 + (a.key.length % 3), delay: 1 }], group: pd.key }); }
     for (const r of pd.shown) { const p = byKey.get(r.key)!; const pose: ArtPose = p.external ? 'sit' : 'review'; out.push({ p, zone: 'review', x: r.x, y: r.y, w: RETRO_W, h: RETRO_SIT_H, pose, mod: 'glanceL', habits: habitsFor(p.key, pose).filter((h) => h.mod === 'blink' || h.mod === 'sip'), group: pd.key }); }
   }
-  const rest = people.filter((p) => p.pose === 'rest');
+  const rest = people.filter((p) => p.pose === 'rest' || p.pose === 'wait');
   const lbox = { x: L.lounge.x + 3, y: L.lounge.y + 9, w: L.lounge.w - 6, h: L.lounge.h - 11 };
   const lounge = loungePlan(K, lbox, rest.map((p) => p.key), Math.ceil(TAG_PX / L.scale) + 2);
   for (const s of lounge.seats) { const p = byKey.get(s.key)!; out.push({ p, zone: 'lounge', x: s.x, y: s.y, w: RETRO_W, h: isStanding(s.pose) ? RETRO_H : RETRO_SIT_H, pose: s.pose, habits: s.habits, spot: s.spot }); }

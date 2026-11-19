@@ -164,7 +164,8 @@ export default function App() {
                 ))}
               </nav>
             </header>
-            <AttentionBar attn={attn} projectId={project.id} projects={projects.data ?? []} onOpen={openAttention} />
+            {/* 사무실 탭은 자체 '확인 필요' 표시가 있다: 위 막대가 생기며 사무실 높이가 바뀌어 배치가 갑자기 바뀌지 않게 숨긴다 */}
+            {tab !== 'office' && <AttentionBar attn={attn} projectId={project.id} projects={projects.data ?? []} onOpen={openAttention} />}
             <div className="page-body">
               {tab === 'mission' && (
                 <MissionTab

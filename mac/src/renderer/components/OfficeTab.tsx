@@ -110,8 +110,20 @@ export default function OfficeTab({ project }: { project: Project }) {
   }, [agents.data, compare]); // 비교 화면을 닫으면 무대가 다시 생기므로 다시 관찰
   const offCount = internal.filter((p) => p.state === 'off').length;
   const groupSizes = useMemo(() => reviewGroups(people).map((g) => g.reviewers.length), [people]);
-  const { scale, layout } = useMemo(() => (stage.w ? pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount, groupSizes) : { scale: 3, layout: layoutFor(staff.length, MIN_W, 300, offCount) }), [stage, staff.length, offCount, groupSizes.join()]);
-  const plan = useMemo(() => placePeople(people, staff, layout), [people, staff, layout]);
+  // 배율: 라운지에 앉을 사람이 자리 밖으로 넘치면 한 단계 작게 그려 모두 앉힌다(가장 작은 배율이면 그대로)
+  const { scale, layout, plan } = useMemo(() => {
+    if (!stage.w) { const L = layoutFor(staff.length, MIN_W, 300, offCount); return { scale: 3, layout: L, plan: placePeople(people, staff, L) }; }
+    const d = stage.dpr > 0 ? stage.dpr : 1;
+    // 배율은 '모두가 라운지에 있는 경우'로 정한다: 누가 일어나고 앉을 때마다 배율이 바뀌어 사무실이 갑자기 달라지지 않게
+    const allRest = staff.map((x) => ({ ...x, state: 'rest' as const, pose: 'rest' as const }));
+    let r = pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount, groupSizes);
+    while (placePeople(allRest, allRest, r.layout).overflow.lounge.length && r.scale > Math.ceil(2 * d) / d) {
+      const next = pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount, groupSizes, r.scale - 1 / d);
+      if (next.scale >= r.scale) break;
+      r = next;
+    }
+    return { ...r, plan: placePeople(people, staff, r.layout) };
+  }, [stage, staff, people, offCount, groupSizes.join()]);
   const { placed, overflow } = plan;
   // 누르면 잠깐 손을 흔든다(장식). 상태·실행 기록은 바꾸지 않는다
   const [waving, setWaving] = useState<string | null>(null);
