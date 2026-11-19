@@ -194,6 +194,8 @@ export interface MissionDeps {
   autoAssist?: () => boolean; // 자동 처리: 문서 저장소 최신화, 저장소 시험 명령 허용, 작업 브랜치 자동 생성
   commandLevel?: () => CommandLevel; // 명령 허용 범위
   testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
+  /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
+  skillNames?: (folder: string) => string[];
   /** 앱이 직접 하는 시연 확인(승인된 서비스만 켜고 상태·안전한 API 확인) */ demoVerify?: (projectId: string) => Promise<string[]>;
 }
 
@@ -1245,6 +1247,16 @@ export class MissionRunner {
   // ───── 실행 제한·사용량·실행 준비 ─────
   /** 참여 직원 제한: 오퍼레이터(00)와 지정한 직원만 */
   /** 실행 제한 안내(참여 직원·사용량): 오퍼레이터가 지정 직원만으로 계획하게 */
+  /** 직원이 쓸 수 있는 스킬: 오퍼레이터가 작업 지시에 맞는 스킬 이름을 적게 한다 */
+  private skillSection(plan: PlanFields, agents: Agent[]): string[] {
+    if (!agents.some((a) => a.tools.includes('Skill'))) return [];
+    let names: string[] = [];
+    try { names = [...new Set(this.d.skillNames?.(plan.folder) ?? [])].slice(0, 80); } catch { names = []; }
+    if (!names.length) return [];
+    return ['## 직원이 쓸 수 있는 스킬(도구에 Skill이 있는 직원)', `- ${names.join(', ')}`,
+      '- 작업에 딱 맞는 스킬이 있으면 그 작업 instructions에 스킬 이름과 쓰는 이유를 한 줄로 적는다(예: 버그 수정은 systematic-debugging, 새 기능은 test-driven-development). 맞는 스킬이 없으면 적지 않는다.', ''];
+  }
+
   private limitSection(m: Mission): string[] {
     return ['## 실행 범위(앱이 집행함)',
       ...(m.limits?.staff ? ['- 참여 직원은 위 \'사용 가능한 직원\'(지정된 직원)뿐이다. 다른 직원 투입·직원 추가 제안은 하지 않는다.'] : []),
@@ -1429,7 +1441,8 @@ export class MissionRunner {
       ...this.limitSection(m),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
-      '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}`), '',
+      '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}`), '',
+      ...this.skillSection(plan, agents),
       ...this.docsSection(plan, m.projectId),
       '## 지금까지의 판단·질문·사용자 답변', this.history(m), '',
       ...this.decisionsSection(m),

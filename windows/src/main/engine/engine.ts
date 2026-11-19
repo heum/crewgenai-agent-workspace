@@ -930,7 +930,8 @@ export class Engine {
     const ex = this.o.executor();
     const run = this.s.getRun(runId);
     const auto = this.o.autoAssist?.() ?? false;
-    const tools: ToolName[] = role === 'reviewer' ? ['Read', 'Grep', 'Glob'] : agent.tools.filter((t) => t !== 'WebFetch');
+    // 검토자는 읽기 도구만. 'Skill'을 켠 직원이면 검토 절차 스킬(코드 리뷰·보안 검토 등)은 쓸 수 있다(쓰기 권한은 생기지 않음)
+    const tools: ToolName[] = role === 'reviewer' ? ['Read', 'Grep', 'Glob', ...(agent.tools.includes('Skill') ? ['Skill' as ToolName] : [])] : agent.tools.filter((t) => t !== 'WebFetch');
     // 자동 처리: 파일을 쓰는 작성자는 스킬을 기본으로 쓴다
     if (auto && role === 'author' && (tools.includes('Edit') || tools.includes('Write')) && !tools.includes('Skill')) tools.push('Skill');
     // 참고 자료: 프로젝트 밖 '폴더'만 --add-dir로(읽기) 연다. '파일'은 그 파일만 읽기 전용 사본으로 준다(부모 폴더 전체를 열지 않음).
@@ -951,14 +952,14 @@ export class Engine {
       if (fileRefs.length) readDirs.push(refDir);
     }
     if (refNotes.length) prompt = `${prompt}\n\n## 참고 자료 사본(읽기 전용)\n${refNotes.join('\n')}`;
-    // 스킬: 'Skill' 도구를 켠 작성자만. 고른 스킬 폴더에서 스킬 파일만 읽기 전용 사본으로 넘긴다.
+    // 스킬: 'Skill' 도구를 켠 직원(작성·검토). 고른 스킬 폴더에서 스킬 파일만 읽기 전용 사본으로 넘긴다.
     const pluginDirs: string[] = [];
     let unpinLater = () => {};
-    if (role === 'author' && tools.includes('Skill')) {
+    if (tools.includes('Skill')) {
       try {
         const sk = this.o.skills?.(plan.folder);
         const bundle = sk ? prepareSkillBundle(sk.dirs, sk.cacheDir) : null;
-        if (bundle) { pluginDirs.push(bundle.pluginRoot); readDirs.push(bundle.pluginRoot); }
+        if (bundle) { pluginDirs.push(bundle.pluginRoot); readDirs.push(bundle.pluginRoot); prompt = `${prompt}\n\n${skillNote(bundle.skills, role)}`; }
         if (bundle) unpinLater = () => unpinSkillBundle(bundle.pluginRoot);
       } catch (e) { prompt = `${prompt}\n\n(스킬 사본을 만들지 못해 이번 실행은 기본 제공 스킬만 쓸 수 있습니다: ${redact(String((e as Error).message ?? e)).slice(0, 200)})`; }
     }
@@ -1274,4 +1275,15 @@ export class Engine {
       checks: this.s.checks(runId), reviews: this.s.reviews(runId), deliverable: this.s.latestDeliverable(runId), currentSubjectHash: this.subjectHash(runId), billing: (this.meta(runId, 'billing') ?? 'unknown') as Billing,
     };
   }
+}
+
+/** 직원 지시에 붙이는 스킬 안내: 작업에 맞는 스킬을 먼저 불러 쓰게 한다(이름 목록은 길면 자른다) */
+export function skillNote(names: string[], role: 'author' | 'reviewer'): string {
+  const list = [...new Set(names.map((n) => n.split(':').pop() ?? n))].slice(0, 80);
+  return ['## 쓸 수 있는 스킬',
+    role === 'reviewer'
+      ? '- 검토를 시작할 때 이 검토에 맞는 스킬(코드 리뷰·보안 검토·점검 등)이 있으면 Skill 도구로 불러 그 절차대로 검토한다. 검토는 읽기 전용 그대로다.'
+      : '- 작업을 시작할 때 이 작업에 맞는 스킬이 있으면 Skill 도구로 불러 그 절차를 따른다(예: 버그는 디버깅, 기능은 시험 주도 개발, 끝내기 전에는 완료 전 검증). 지시에 스킬 이름이 적혀 있으면 그 스킬을 먼저 쓴다.',
+    '- 스킬은 수정 범위·허용 명령을 넓히지 않는다. 쓴 스킬 이름을 보고에 적는다.',
+    `- 목록(Claude 기본 제공 스킬 외): ${list.join(', ')}`].join('\n');
 }

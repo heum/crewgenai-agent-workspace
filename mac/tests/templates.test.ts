@@ -5,31 +5,34 @@ import { mkService, plan, tmpProject } from './helpers';
 const RO = ['Read', 'Grep', 'Glob', 'Skill']; // 읽기 전용(수정·명령 없음), 스킬은 사용
 
 describe('직원 기본 템플릿', () => {
-  it('세트 목록은 개발팀 표준(11명)과 범용 소규모(7명)이고, 특정 업무(조달 등)에 묶인 직원이 없다', () => {
+  it('세트 목록은 개발팀 표준(12명)과 범용 소규모(7명)이고, 특정 업무(조달 등)에 묶인 직원이 없다', () => {
     const dir = tmpProject(); const svc = mkService(dir);
     const sets = svc.agentTemplateSets();
-    expect(sets.map((s) => [s.id, s.agents.length])).toEqual([['dev', 11], ['general', 7]]);
+    expect(sets.map((s) => [s.id, s.agents.length])).toEqual([['dev', 12], ['general', 7]]);
     const text = JSON.stringify(sets);
     for (const w of ['공고', '조달', '회사정보', '가입·무료']) expect(text).not.toContain(w);
     svc.close();
   });
 
-  for (const [setId, count, ro] of [['dev', 11, ['07', '08']], ['general', 7, ['05']]] as const) {
+  for (const [setId, count, ro] of [['dev', 12, ['07', '08']], ['general', 7, ['05']]] as const) {
     it(`${setId}: 직원마다 역할·맡는 일·하지 않는 일·공통 규칙·보고 형식이 있고, 검토자는 읽기 전용이며 검토 담당이 배정된다`, () => {
       const dir = tmpProject(); const svc = mkService(dir);
       const p = svc.createProject(plan(dir));
       const agents = svc.loadAgentTemplates(p.id, setId);
       expect(agents.length).toBe(count);
       for (const a of agents) {
-        for (const k of ['[역할]', '[맡는 일]', '[하지 않는 일]', '[공통 규칙]', '[보고 형식]']) expect(a.instructions, `${a.code} ${k}`).toContain(k);
+        for (const k of ['[역할]', '[목적]', '[맡는 일]', '[좋은 결과]', '[하지 않는 일]', '[공통 규칙]', '[스킬]', '[보고 형식]']) expect(a.instructions, `${a.code} ${k}`).toContain(k);
         expect(`당신은 CREWGENAI 개발팀의 ${a.code} ${a.name}(${a.role}). ${a.instructions}`.length).toBeLessThan(4000);
         expect(a.reviewerAgentId, `${a.code} 검토 담당`).not.toBeNull();
         expect(a.reviewerAgentId).not.toBe(a.id);
       }
       for (const c of ro) expect(agents.find((a) => a.code === c)!.tools).toEqual(RO);
-      // 기본 모델 Opus 5.5·추론 강도 중간, 모든 직원이 스킬 사용
-      for (const a of agents) { expect(a.model).toBe('claude-opus-5-5'); expect(a.effort).toBe('medium'); expect(a.tools).toContain('Skill'); }
-      expect(agents.find((a) => a.code === '00')!.instructions).toContain('작업을 배정하지 않고');
+      // 판단이 중요한 자리(총괄·설계·보안)는 Fable 5.2, 구현·리뷰는 Opus 5.5, 정리·실행은 Sonnet 5.5. 모든 직원이 스킬 사용
+      const MODELS = ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5'];
+      for (const a of agents) { expect(MODELS).toContain(a.model); expect(['medium', 'high']).toContain(a.effort); expect(a.tools).toContain('Skill'); }
+      expect(agents.find((a) => a.code === '00')!.model).toBe('claude-fable-5-2');
+      expect(agents.find((a) => a.code === '00')!.instructions).toContain('스킬 이름');
+      expect(new Set(agents.map((a) => a.model)).size).toBeGreaterThan(1);
       // 기본 흐름이 이 세트로도 오류 없이 만들어진다
       const saved = svc.saveGraph(p.id, svc.defaultGraph(p.id), '기본');
       expect(saved.issues.filter((i) => i.level === 'error')).toEqual([]);
@@ -46,7 +49,7 @@ describe('직원 기본 템플릿', () => {
     const after = svc.loadAgentTemplates(p.id, 'dev');
     expect(after.find((a) => a.code === '00')!.instructions).toBe('사용자가 고친 지시');
     expect(after.find((a) => a.code === '03')!.name).toBe('작성·구현'); // 범용 세트의 03 유지
-    expect(after.length).toBe(11); // 개발팀 세트의 07~10만 추가
+    expect(after.length).toBe(12); // 개발팀 세트의 07~11만 추가
     svc.close();
   });
 });

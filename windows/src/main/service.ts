@@ -104,6 +104,7 @@ export class Service {
       autoAssist: () => this.settings().autoAssist !== false,
       commandLevel: () => this.commandLevel(),
       testLocalSockets: () => this.settings().testLocalSockets === true,
+      skillNames: (folder) => describeSkillSources([...new Set([...this.skillDirs(), ...(this.settings().autoAssist !== false ? projectSkillDirs(folder) : [])])]).flatMap((x) => x.skills),
       demoVerify: (projectId) => verifyDemo(this.demo, projectId, this.store.getProject(projectId).plan),
     });
   }

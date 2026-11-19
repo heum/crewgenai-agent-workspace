@@ -29,7 +29,7 @@ const BLANK: AgentFields = {
   doneCriteria: '',
   reviewerAgentId: null,
   model: 'claude-opus-5-5',
-  effort: 'medium',
+  effort: 'high',
   maxBudgetUsd: null,
   timeoutSec: 900,
   maxRetries: 1,
@@ -313,8 +313,14 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
         </select>
       </Field>
       <div className="form-grid four">
-        <Field label="모델" hint="비우면 CLI 기본">
-          <input className="input mono" value={f.model} onChange={(e) => set('model', e.target.value)} placeholder="예: claude-opus-5-5" />
+        <Field label="모델" hint="고르거나 직접 입력. 비우면 CLI 기본">
+          <input className="input mono" list="agent-models" value={f.model} onChange={(e) => set('model', e.target.value)} placeholder="예: claude-opus-5-5" />
+          <datalist id="agent-models">
+            <option value="claude-fable-5-2">가장 똑똑함 — 총괄·설계·보안처럼 판단이 중요한 자리(사용량 많음)</option>
+            <option value="claude-opus-5-5">구현·리뷰 기본</option>
+            <option value="claude-sonnet-5-5">빠름 — 문서·시험 실행·정리</option>
+            <option value="claude-haiku-5-5">가장 가벼움 — 단순 반복 작업</option>
+          </datalist>
         </Field>
         <Field label="추론 강도" hint="비우면 CLI 기본">
           <select className="input" value={f.effort ?? ''} onChange={(e) => set('effort', e.target.value)}>

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildClaudeArgs } from '../src/main/cli/claudeCli';
+import { skillNote } from '../src/main/engine/engine';
 import { defaultSkillDirs, describeSkillSources, prepareSkillBundle, sanitizeSkillMd } from '../src/main/skills';
 import { agentFields, e, mkService, n, plan, tmpProject, waitRun } from './helpers';
 
@@ -110,7 +111,7 @@ describe('스킬 사용', () => {
     expect(buildClaudeArgs({ ...base, tools: ['Read'] })).not.toContain('--plugin-dir');
   });
 
-  it("실행: 'Skill'을 켠 작성자만 스킬 사본을 받고(읽기 전용), 검토자·새 직원 제안은 받지 않는다", async () => {
+  it("실행: 'Skill'을 켠 직원은 작성·검토 모두 스킬 사본을 받고(읽기 전용), 검토자는 쓰기 도구 없이 Skill만 더해진다", async () => {
     const f = fixture();
     const dir = tmpProject();
     const svc = mkService(dir);
@@ -135,8 +136,15 @@ describe('스킬 사용', () => {
     // 사본은 읽기 전용 참고 폴더로도 열린다(스킬의 참고 파일 읽기용)
     expect(author.argvRedacted.some((x, i) => author.argvRedacted[i - 1] === '--add-dir' && x === root)).toBe(true);
     const rev = atts.find((a) => a.role === 'reviewer')!;
-    expect(rev.argvRedacted).not.toContain('--plugin-dir');
-    expect(rev.argvRedacted[rev.argvRedacted.indexOf('--tools') + 1]).toBe('Read,Grep,Glob');
+    expect(rev.argvRedacted[rev.argvRedacted.indexOf('--plugin-dir') + 1]).toBe(root);
+    expect(rev.argvRedacted[rev.argvRedacted.indexOf('--tools') + 1]).toBe('Read,Grep,Glob,Skill');
     svc.close();
+  });
+
+  it('스킬 안내: 작성자·검토자에게 맞는 사용법과 스킬 이름 목록(중복·플러그인 접두어 제거)을 붙인다', () => {
+    const a = skillNote(['user:alpha', 'p:beta', 'q:alpha'], 'author');
+    expect(a).toContain('시험 주도 개발'); expect(a).toContain('alpha, beta'); expect(a).not.toContain('user:');
+    const r = skillNote(['x:code-review'], 'reviewer');
+    expect(r).toContain('읽기 전용'); expect(r).toContain('code-review');
   });
 });
