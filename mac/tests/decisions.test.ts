@@ -188,3 +188,15 @@ describe('검토 지점 가정 핵심', () => {
     expect(splitHead('짧은 가정')).toEqual({ head: '짧은 가정', rest: '' });
   });
 });
+
+describe('보고 마크다운', () => {
+  it('<details><summary>…</summary> 구역을 접는 구역으로 그리고, 안쪽은 마크다운으로 그린다', async () => {
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { createElement } = await import('react');
+    const { Markdown } = await import('../src/renderer/markdown');
+    const html = renderToStaticMarkup(createElement(Markdown, { text: '## 판단\n\n<details><summary>기록</summary>\n\n- 첫째 **굵게**\n\n</details>\n\n끝' }));
+    expect(html).toContain('<details class="md-details"><summary>기록</summary>');
+    expect(html).toContain('<strong>굵게</strong>');
+    expect(html).not.toContain('&lt;details');
+  });
+});

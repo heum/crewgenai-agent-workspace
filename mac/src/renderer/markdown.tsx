@@ -43,6 +43,18 @@ export function Markdown({ text, images }: { text: string; images?: Record<strin
       blocks.push(<pre key={key++} className="md-pre">{buf.join('\n')}</pre>);
       continue;
     }
+    // <details><summary>제목</summary> … </details>: 접어 두는 구역(오퍼레이터 보고의 '기록' 등). 안쪽은 다시 마크다운으로
+    const dt = /^\s*<details>\s*(?:<summary>(.*?)<\/summary>)?\s*$/i.exec(line);
+    if (dt) {
+      let title = dt[1] ?? '';
+      const buf: string[] = [];
+      i++;
+      if (!title && i < lines.length) { const sm = /^\s*<summary>(.*?)<\/summary>\s*$/i.exec(lines[i]); if (sm) { title = sm[1]; i++; } }
+      while (i < lines.length && !/^\s*<\/details>\s*$/i.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      blocks.push(<details key={key++} className="md-details"><summary>{inline(title || '자세히', `d${key}`)}</summary><Markdown text={buf.join('\n')} images={images} /></details>);
+      continue;
+    }
     const h = /^(#{1,6})\s+(.*)$/.exec(line);
     if (h) {
       const level = Math.min(h[1].length + 1, 6);

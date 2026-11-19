@@ -401,7 +401,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
         </div>
       </div>
       {/* 지금 단계·지금 일하는 직원: 결과 카드보다 위에 두어 늘 보이게 */}
-      <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
+      <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} run={d.currentRun} agents={agents} />
       {m.checkpoint && !['stopped', 'failed'].includes(m.status) && <ReviewCheckpoint mission={m} onChanged={async () => { await detail.reload(); onChanged(); }} />}
       {m.status === 'waiting_user' && m.pauseKind === 'restart' && !m.checkpoint && (
         <div className="limit-card" role="status">
@@ -449,14 +449,8 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       <Fold id="timeline" title="진행 기록" count={d.events.length}>
         <Timeline events={d.events} files={d.files} />
       </Fold>
-      <Fold id="flow" title="이번 사이클 작업 흐름" extra={d.currentRun && (
-              <span className="row gap">
-                <Badge tone={runTone(d.currentRun.run.status)}>{RUN_STATUS_LABEL[d.currentRun.run.status]}</Badge>
-                {d.currentRun.run.executor === 'mock' && <Badge tone="mock">모의 실행</Badge>}
-              </span>
-            )}>
-          {d.currentRun ? <CycleFlow detail={d.currentRun} agents={agents} /> : <div className="muted small pad">아직 실행된 사이클이 없습니다. 오퍼레이터가 계획을 세우면 여기에 작업 흐름이 나타납니다.</div>}
-          <CycleList detail={d} onOpenRun={onOpenRun} />
+      <Fold id="flow" title="사이클 히스토리" count={d.cycles.length}>
+          <CycleHistory detail={d} agents={agents} onOpenRun={onOpenRun} />
           <SnapshotCard mission={m} />
       </Fold>
     </div>
@@ -499,7 +493,7 @@ function Fold({ id, title, count, summary, extra, className = 'card', children }
 
 /** 오퍼레이터 루프 — 한 줄 진행 표시. 전체 그림은 펼쳐서 본다. */
 const STRIP: MissionStage[] = ['plan', 'execute', 'codex', 'claude_review', 'judge'];
-function LoopStrip({ stage, live, cycle, maxCycles, working }: { stage: MissionStage; live: boolean; cycle: number; maxCycles: number; working: WorkingItem[] }) {
+function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { stage: MissionStage; live: boolean; cycle: number; maxCycles: number; working: WorkingItem[]; run: RunDetail | null; agents: Agent[] }) {
   const [big, setBig] = useState(false);
   const idx = STRIP.indexOf(stage);
   const end = stage === 'ask_user' || stage === 'done' || stage === 'stopped';
@@ -513,10 +507,10 @@ function LoopStrip({ stage, live, cycle, maxCycles, working }: { stage: MissionS
           </span>
         ))}
         <span className={`loop-step end ${end ? 'now' : ''}`}>{end ? MISSION_STAGE_LABEL[stage] : '확인·완료'}</span>
-        <button className="btn-link small" onClick={() => setBig((v) => !v)}>{big ? '그림 닫기' : '루프 그림'}</button>
+        {run && <button className="btn-link small" onClick={() => setBig((v) => !v)}>{big ? '작업 흐름 닫기' : '작업 흐름'}</button>}
       </div>
       {live && <WorkingRow items={working} />}
-      {big && <LoopDiagram stage={stage} live={live} cycle={cycle} maxCycles={maxCycles} />}
+      {big && run && <CycleFlow detail={run} agents={agents} />}
     </div>
   );
 }
@@ -951,53 +945,6 @@ const LOOP: Box[] = [
   { id: 'done', x: 780, y: 150, label: MISSION_STAGE_LABEL.done },
 ];
 
-function LoopDiagram({ stage, live, cycle, maxCycles }: { stage: MissionStage; live: boolean; cycle: number; maxCycles: number }) {
-  const at = (id: MissionStage) => LOOP.find((b) => b.id === id)!;
-  const order: MissionStage[] = ['instruction', 'plan', 'execute', 'codex', 'claude_review', 'judge'];
-  const arrow = (a: Box, b: Box, key: string) => (
-    <line key={key} x1={a.x + BW} y1={a.y + BH / 2} x2={b.x - 4} y2={b.y + BH / 2} className="loop-edge" markerEnd="url(#loopArrow)" />
-  );
-  const j = at('judge');
-  const p = at('plan');
-  const ask = at('ask_user');
-  const dn = at('done');
-  return (
-    <div className="loop-wrap">
-      <svg viewBox="0 0 910 210" className="loop-svg" role="img" aria-label={`오퍼레이터 루프 — 현재 단계: ${MISSION_STAGE_LABEL[stage]}`}>
-        <defs>
-          <marker id="loopArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0,0 L10,5 L0,10 z" className="loop-arrowhead" />
-          </marker>
-        </defs>
-        {order.slice(0, -1).map((id, i) => arrow(at(id), at(order[i + 1]), `e${i}`))}
-        {/* 반복: 판단 → 계획 */}
-        <path d={`M ${j.x + BW / 2} ${j.y} C ${j.x + BW / 2} ${j.y - 34}, ${p.x + BW / 2} ${p.y - 34}, ${p.x + BW / 2} ${p.y - 3}`} className="loop-edge loop-repeat" markerEnd="url(#loopArrow)" fill="none" />
-        <text x={(j.x + p.x + BW) / 2} y={j.y - 22} className="loop-edge-label" textAnchor="middle">
-          반복 · 사이클 {cycle}/{maxCycles}
-        </text>
-        {/* 판단 → 사용자 확인, 완료 */}
-        <path d={`M ${j.x + BW / 2 - 20} ${j.y + BH} L ${ask.x + BW / 2} ${ask.y - 3}`} className="loop-edge" markerEnd="url(#loopArrow)" fill="none" />
-        <path d={`M ${j.x + BW / 2 + 20} ${j.y + BH} L ${dn.x + BW / 2} ${dn.y - 3}`} className="loop-edge" markerEnd="url(#loopArrow)" fill="none" />
-        {/* 사용자 확인 → 계획(답변 후 계속) */}
-        <path d={`M ${ask.x} ${ask.y + BH / 2} C ${ask.x - 200} ${ask.y + BH / 2}, ${p.x + BW / 2} ${p.y + BH + 70}, ${p.x + BW / 2} ${p.y + BH + 3}`} className="loop-edge loop-answer" markerEnd="url(#loopArrow)" fill="none" />
-        <text x={(ask.x + p.x) / 2 + 40} y={ask.y + BH / 2 + 26} className="loop-edge-label" textAnchor="middle">
-          답변 후 계속
-        </text>
-        {LOOP.map((b) => {
-          const cur = b.id === stage;
-          return (
-            <g key={b.id} className={`loop-box ${cur ? 'current' : ''} ${cur && live ? 'pulse' : ''} kind-${b.id}`}>
-              <rect x={b.x} y={b.y} width={BW} height={BH} rx={10} />
-              <text x={b.x + BW / 2} y={b.y + BH / 2 + 5} textAnchor="middle">
-                {b.label}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
 
 // ───────── 이번 사이클 작업 흐름 ─────────
 function CycleFlow({ detail, agents }: { detail: RunDetail; agents: Agent[] }) {
@@ -1150,24 +1097,32 @@ function SnapshotCard({ mission }: { mission: Mission }) {
   );
 }
 
-function CycleList({ detail, onOpenRun }: { detail: MissionDetail; onOpenRun: (runId: string) => void }) {
-  if (!detail.cycles.length) return null;
+/** 사이클 히스토리: 사이클을 골라 그때의 작업 흐름(단계·상태·시도)을 본다. 기본은 가장 최근 사이클 */
+function CycleHistory({ detail, agents, onOpenRun }: { detail: MissionDetail; agents: Agent[]; onOpenRun: (runId: string) => void }) {
+  const list = [...detail.cycles].sort((a, b) => b.cycle - a.cycle || 0);
+  const [sel, setSel] = useState<string | null>(null);
+  const cur = sel ?? detail.currentRun?.run.id ?? list[0]?.runId ?? null;
+  const other = useLoad(() => (cur && cur !== detail.currentRun?.run.id ? ws().runDetail(cur) : Promise.resolve(null)), [cur, detail.currentRun?.run.id]);
+  const run = cur && cur === detail.currentRun?.run.id ? detail.currentRun : other.data;
+  if (!list.length) return <div className="muted small pad">아직 실행된 사이클이 없습니다. 오퍼레이터가 계획을 세우면 여기에 작업 흐름이 나타납니다.</div>;
+  const at = list.find((c) => c.runId === cur);
   return (
-    <div className="cycle-list">
-      <strong className="small">사이클</strong>
-      {detail.cycles.map((c) => (
-        <div key={`${c.cycle}-${c.runId}`} className="row between small">
-          <span>
-            사이클 {c.cycle} · 흐름 v{c.graphVersion}
-          </span>
-          <span className="row gap">
-            <Badge tone={runTone(c.status)}>{RUN_STATUS_LABEL[c.status]}</Badge>
-            <button className="btn-link" onClick={() => onOpenRun(c.runId)}>
-              열기
-            </button>
-          </span>
+    <div className="cycle-history">
+      <div className="cycle-chips" role="tablist" aria-label="사이클 고르기">
+        {list.slice(0, 30).map((c) => (
+          <button key={`${c.cycle}-${c.runId}`} role="tab" aria-selected={c.runId === cur} className={`cycle-chip${c.runId === cur ? ' is-on' : ''} st-${c.status}`} onClick={() => setSel(c.runId)} title={`사이클 ${c.cycle} · 흐름 v${c.graphVersion} · ${RUN_STATUS_LABEL[c.status]}`}>
+            {c.cycle}<span className="cycle-dot" />
+          </button>
+        ))}
+        {list.length > 30 && <span className="muted small">이전 {list.length - 30}개는 실행 탭에서</span>}
+      </div>
+      {at && (
+        <div className="row between small cycle-history-head">
+          <span>사이클 <b>{at.cycle}</b> · 흐름 v{at.graphVersion} <Badge tone={runTone(at.status)}>{RUN_STATUS_LABEL[at.status]}</Badge>{run?.run.executor === 'mock' && <Badge tone="mock">모의 실행</Badge>}</span>
+          <button className="btn-link" onClick={() => onOpenRun(at.runId)}>실행 탭에서 자세히</button>
         </div>
-      ))}
+      )}
+      {run ? <CycleFlow detail={run} agents={agents} /> : <div className="muted small pad">{other.loading ? '불러오는 중…' : '이 사이클의 기록을 불러오지 못했습니다.'}</div>}
     </div>
   );
 }

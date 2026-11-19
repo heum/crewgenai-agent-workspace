@@ -2093,3 +2093,21 @@ textarea.input {
 .clamp-box .clamp-body { max-height: 7.2em; overflow: hidden; position: relative; }
 .clamp-box:not(.is-open) .clamp-body::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2.2em; background: linear-gradient(transparent, var(--panel, #fff)); }
 .clamp-box.is-open .clamp-body { max-height: none; }
+
+/* 사이클 히스토리: 사이클 번호를 골라 그때의 작업 흐름을 본다 */
+.cycle-history { display: flex; flex-direction: column; gap: 8px; }
+.cycle-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cycle-chip { position: relative; min-width: 34px; padding: 3px 8px 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-size: 12px; font-weight: 600; cursor: pointer; }
+.cycle-chip.is-on { border-color: var(--accent, #2563eb); background: #eef4ff; color: var(--accent, #2563eb); }
+.cycle-chip .cycle-dot { position: absolute; left: 50%; bottom: 2px; width: 12px; height: 2px; margin-left: -6px; border-radius: 2px; background: #cbd5e1; }
+.cycle-chip.st-succeeded .cycle-dot { background: #16a34a; }
+.cycle-chip.st-failed .cycle-dot { background: #dc2626; }
+.cycle-chip.st-running .cycle-dot, .cycle-chip.st-paused .cycle-dot { background: #2563eb; }
+.cycle-chip.st-cancelled .cycle-dot { background: #94a3b8; }
+.cycle-history-head { align-items: center; }
+.loop-strip-card .cycle-flow { margin-top: 8px; }
+/* 직원 목록: 이름이 먼저 보이고(넘칠 때만 말줄임), 권한 표시가 먼저 줄어든다 */
+.agent-item-head > strong { flex: 0 0 auto; max-width: 100%; }
+.agent-item-head .tool-line { flex: 1 1 0; }
+.md-details { margin: 6px 0; }
+.md-details > summary { cursor: pointer; font-weight: 600; color: var(--sub); }
