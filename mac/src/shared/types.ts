@@ -477,6 +477,10 @@ export interface WorkspaceApi {
   resolveStaffProposal(missionId: ID, proposalId: ID, action: 'apply' | 'dismiss', edit: StaffEdit | null): Promise<Mission>;
   /** 사용 한도 대기 중인 미션을 기다리지 않고 지금 다시 시도한다 */
   retryMissionLimit(missionId: ID): Promise<Mission>;
+  /** 지시 첨부 파일 고르기: 앱 데이터 폴더로 복사한 경로(비밀값·큰 파일은 skipped) */
+  pickAttachments(projectId: ID): Promise<{ name: string; path: string; size: number; skipped?: string }[]>;
+  /** 붙여 넣은 클립보드 파일·이미지 저장 */
+  saveAttachmentData(projectId: ID, name: string, data: Uint8Array): Promise<{ name: string; path: string; size: number; skipped?: string }>;
   /** 매일 dev 반영 상태와 지금 실행 */
   devSyncStatus(): Promise<DevSyncView>;
   devSyncNow(): Promise<DevSyncView>;

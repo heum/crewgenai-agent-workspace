@@ -5,7 +5,7 @@
 // 오퍼레이터는 작업 완료·검토 필요·추가 정보 필요·사이클 상한 도달 때만 사용자에게 묻는다.
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { touchesSecretEnv } from './cli/claudeCli';
@@ -206,6 +206,8 @@ export interface MissionDeps {
   devSync?: () => boolean;
   /** 참고 사이트 스냅샷 저장(앱이 공개 페이지를 열어 화면 사진·본문을 저장). 저장 폴더를 돌려준다 */
   captureRef?: (url: string, missionId: string) => Promise<{ title: string; dir: string; finalUrl: string }>;
+  /** 앱 데이터 폴더의 참고 자료 폴더(참고 사이트 스냅샷·지시 첨부 파일) */
+  referenceRoot?: string;
   /** 사용량 속도 조절 판단(꺼져 있으면 null): 주간·5시간 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다 */
   pace?: () => PaceDecision | null;
   /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
@@ -1365,6 +1367,19 @@ export class MissionRunner {
       }
     }
   }
+  /** 오퍼레이터가 읽을 수 있는 앱 참고 자료 폴더: 첨부 파일·참고 사이트 스냅샷(읽기 전용) */
+  private operatorReadDirs(m: Mission): string[] {
+    return [...new Set([...this.attachmentPaths(m).map((f) => dirname(f)), ...(m.refSnapshots ?? []).filter((r) => r.dir && existsSync(r.dir)).map((r) => r.dir)])];
+  }
+  /** 사용자가 지시·답변에 첨부한 파일(앱 데이터 폴더의 첨부 폴더 안, 실제로 있는 것만, 최근 20개) */
+  private attachmentPaths(m: Mission): string[] {
+    const root = this.d.referenceRoot; if (!root) return [];
+    const base = join(root, 'attachments') + sep;
+    const texts = [m.prompt, ...this.events(m.id).filter((e) => e.kind === 'directive' || e.kind === 'answer' || e.kind === 'user').map((e) => e.text)];
+    const out: string[] = [];
+    for (const t of texts) for (const line of t.split('\n')) { const i = line.indexOf(base); if (i < 0) continue; const p = line.slice(i).trim(); if (!out.includes(p) && existsSync(p) && !p.includes('..')) out.push(p); }
+    return out.slice(-20);
+  }
   /** 참고 사이트: 저장된 스냅샷 목록과 요청 방법 */
   private refSection(m: Mission): string[] {
     const ok = (m.refSnapshots ?? []).filter((r) => r.dir);
@@ -1518,8 +1533,10 @@ export class MissionRunner {
     const refused: string[] = [];
     // 참고 사이트 스냅샷(앱이 저장): 모든 작성 작업에 읽기 전용으로 연다
     const snaps = (this.get(m.id).refSnapshots ?? []).filter((r) => r.dir).slice(-5);
-    const refIn = snaps.map((r) => r.dir);
-    const refNote = snaps.length ? `\n\n[참고 사이트 스냅샷(읽기 전용, 로그인 없이 본 공개 화면)]\n${snaps.map((r) => `- ${r.title || r.url} (${r.url}): ${r.dir}/page.png(화면 사진), ${r.dir}/page.md(본문·링크)`).join('\n')}\n화면 구성·정보 배치·용어를 참고하되 그대로 베끼지 않는다(문구·디자인은 우리 서비스에 맞게 다시 쓴다).` : '';
+    const atts = this.attachmentPaths(this.get(m.id));
+    const refIn = [...snaps.map((r) => r.dir), ...atts];
+    const attNote = atts.length ? `\n\n[사용자가 지시에 첨부한 파일(읽기 전용)]\n${atts.map((f) => `- ${f}`).join('\n')}\n작업에 관련 있으면 먼저 읽고 반영한다.` : '';
+    const refNote = attNote + (snaps.length ? `\n\n[참고 사이트 스냅샷(읽기 전용, 로그인 없이 본 공개 화면)]\n${snaps.map((r) => `- ${r.title || r.url} (${r.url}): ${r.dir}/page.png(화면 사진), ${r.dir}/page.md(본문·링크)`).join('\n')}\n화면 구성·정보 배치·용어를 참고하되 그대로 베끼지 않는다(문구·디자인은 우리 서비스에 맞게 다시 쓴다).` : '');
     p.tasks.forEach((t, i) => {
       const author = by(t.agentCode) ?? by('00');
       if (!author) throw new Error(`담당 직원 ${t.agentCode}를 찾을 수 없습니다.`);
@@ -1774,7 +1791,7 @@ export class MissionRunner {
     const op = this.d.store.listAgents(m.projectId).find((a) => a.code === '00');
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. ${op?.instructions ?? ''}`.slice(0, 4000), cwd: plan.folder,
-      tools: ['Read', 'Grep', 'Glob'], editScopes: [], allowedCommands: [], readDirs: [], sessionId: randomUUID(), resumeSessionId: null,
+      tools: ['Read', 'Grep', 'Glob'], editScopes: [], allowedCommands: [], readDirs: this.operatorReadDirs(m), sessionId: randomUUID(), resumeSessionId: null,
       jsonSchema: schema, model: op?.model ?? '', effort: op?.effort, maxBudgetUsd: op?.maxBudgetUsd ?? null,
     });
     const file = ex.executor === 'mock' ? process.execPath : ex.cliPath;

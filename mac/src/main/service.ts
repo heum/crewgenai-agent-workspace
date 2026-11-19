@@ -103,6 +103,7 @@ export class Service {
     });
     this.missions = new MissionRunner({
       pace: () => this.paceNow(),
+      referenceRoot: join(dirname(d.dbFile), 'references'),
       captureRef: d.captureRef ? async (url, missionId) => { const dir = refDirFor(join(dirname(d.dbFile), 'references'), missionId, url); const r = await d.captureRef!(url, dir); return { ...r, dir }; } : undefined,
       techAuto: () => this.settings().techAuto !== false,
       devSync: () => this.settings().devSync !== false,

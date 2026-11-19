@@ -2060,3 +2060,8 @@ textarea.input {
 .agent-item-head > strong { flex: 0 1 auto; min-width: 2.5em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-item-head .tool-line { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-item .agent-busy { flex: 0 0 auto; }
+
+/* 지시 첨부 파일 */
+.composer-files { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; }
+.file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip .btn-link { padding: 0 2px; font-weight: 700; }

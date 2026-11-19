@@ -214,6 +214,32 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   const blockedNew = mode === 'new' && !!active;
   const notReady = mode === 'new' && !!ready && !ready.ready;
   const run = (f: () => Promise<void>) => act.run(async () => { setNote(null); await f(); });
+  // 지시 첨부 파일: 앱 데이터 폴더로 복사한 경로를 지시 끝에 붙인다(오퍼레이터·직원이 읽기 전용으로 받음)
+  const [files, setFiles] = useState<{ name: string; path: string; size: number }[]>([]);
+  const attach = () => run(async () => {
+    const got = await ws().pickAttachments(project.id);
+    const ok = got.filter((f) => f.path); const bad = got.filter((f) => !f.path);
+    setFiles((cur) => [...cur, ...ok.filter((f) => !cur.some((c) => c.path === f.path))].slice(0, 10));
+    if (bad.length) setNote(`첨부하지 않은 파일: ${bad.map((f) => `${f.name}(${f.skipped})`).join(', ')}`);
+  });
+  // 붙여넣기: 클립보드에 파일·이미지(스크린샷 등)가 있으면 첨부로 저장한다. 글자만 있으면 평소처럼 입력창에 붙는다
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const list = [...(e.clipboardData?.files ?? [])];
+    if (!list.length) return;
+    e.preventDefault();
+    void run(async () => {
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+      const bad: string[] = [];
+      for (const [i, f] of list.slice(0, 10).entries()) {
+        const ext = f.type.startsWith('image/') ? `.${f.type.slice(6).replace('jpeg', 'jpg').replace(/[^a-z0-9]/g, '')}` : '';
+        const name = f.name && f.name !== 'image.png' ? f.name : `붙여넣기-${stamp}${list.length > 1 ? `-${i + 1}` : ''}${ext || '.png'}`;
+        const r = await ws().saveAttachmentData(project.id, name, new Uint8Array(await f.arrayBuffer()));
+        if (r.path) setFiles((cur) => (cur.some((c) => c.path === r.path) ? cur : [...cur, r].slice(0, 10))); else bad.push(`${r.name}(${r.skipped})`);
+      }
+      if (bad.length) setNote(`첨부하지 않은 내용: ${bad.join(', ')}`);
+    });
+  };
+  const withFiles = (t: string) => (files.length ? `${t}${t ? '\n\n' : ''}[첨부 파일 ${files.length}개 — 읽기 전용으로 참고]\n${files.map((f) => `- ${f.name}: ${f.path}`).join('\n')}` : t);
   // 새 지시의 참여 직원(선택). 비워 두면 활성 직원 전체
   const [staff, setStaff] = useState<string[]>([]);
   const staffList = useLoad(() => (mode === 'new' ? ws().listAgents(project.id) : Promise.resolve([] as Agent[])), [project.id, mode]);
@@ -224,16 +250,16 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
     if (!t) throw new Error('지시 내용을 입력하세요.');
     const r = await ws().missionReadiness(project.id, true);
     if (!r.ready) throw new Error(`지시하려면 먼저 설정하세요: ${r.items.filter((i) => !i.ok).map((i) => i.label).join(', ')}`);
-    const m = await ws().startMission(project.id, t, staff.length ? { staff } : null);
-    setText(''); setStaff([]);
+    const m = await ws().startMission(project.id, withFiles(t), staff.length ? { staff } : null);
+    setText(''); setStaff([]); setFiles([]);
     await onChanged(m.id);
   });
   const directive = (how: 'next' | 'now') => run(async () => {
     const t = text.trim();
     if (!t) throw new Error('추가 지시 내용을 입력하세요.');
     if (how === 'now' && !confirm('진행 중인 Claude·Codex 작업을 멈추고, 이 지시를 반영해 다시 계획할까요?')) return;
-    await ws().addDirective(mission!.id, t, how);
-    setText('');
+    await ws().addDirective(mission!.id, withFiles(t), how);
+    setText(''); setFiles([]);
     setNote(how === 'now' ? '지금 반영: 진행 중인 작업을 멈추고 다시 계획합니다.' : '다음 사이클 계획에 반영합니다.');
     await onChanged();
   });
@@ -247,8 +273,8 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
     if (action === 'continue' && mode === 'answer' && !t && !gaps && !denied) throw new Error('답변을 입력하세요.');
     if (action === 'continue' && mode === 'done' && !t) throw new Error('추가 지시를 입력하세요.');
     // 입력창 버튼은 '허용했으니 다시 시도'·'보완했으니 다시 확인'처럼 해결을 뜻하므로 확인 필요 항목을 풀고 다시 계획한다(질문에만 답하려면 선택지 버튼)
-    await ws().answerMission(mission!.id, t, action);
-    setText('');
+    await ws().answerMission(mission!.id, action === 'continue' ? withFiles(t) : t, action);
+    setText(''); setFiles([]);
     await onChanged();
   });
 
@@ -286,11 +312,20 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
           placeholder={placeholder}
           aria-label={label}
           onChange={(e) => { setText(e.target.value); setNote(null); }}
+          onPaste={onPaste}
           onKeyDown={(e) => {
             if (isComposingEnter(e)) return;
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!disabled) void primary(); }
           }}
         />
+        <div className="composer-files small">
+          <button type="button" className="btn btn-sm" disabled={act.busy || files.length >= 10} onClick={() => void attach()} title="문서·이미지·자료 파일을 지시와 함께 보냅니다(앱 데이터 폴더로 복사, 저장소에는 들어가지 않음)">📎 파일 첨부</button>
+          {files.map((f) => (
+            <span key={f.path} className="file-chip">{f.name} <span className="muted">{f.size >= 1048576 ? `${(f.size / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(f.size / 1024))}KB`}</span>
+              <button type="button" className="btn-link" aria-label={`${f.name} 첨부 빼기`} onClick={() => setFiles((cur) => cur.filter((x) => x.path !== f.path))}>×</button></span>
+          ))}
+          {!files.length && <span className="muted">복사한 이미지·파일은 입력창에 붙여 넣어도(Ctrl+V) 첨부됩니다 · 비밀값 파일(.env·키)은 첨부되지 않습니다</span>}
+        </div>
         {mode === 'new' && (
           <div className="composer-limits">
             {pickable.length > 0 && (

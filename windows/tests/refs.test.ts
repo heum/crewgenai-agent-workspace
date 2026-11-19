@@ -32,3 +32,21 @@ describe('참고 사이트', () => {
     await svc.missions.stop(m0.id); svc.close();
   });
 });
+
+describe('지시 첨부 파일', () => {
+  it('지시에 붙은 첨부 파일(앱 첨부 폴더 안)은 작업 직원·오퍼레이터에게 읽기 전용으로 열고, 그 밖 경로는 무시한다', async () => {
+    const { dirname } = await import('node:path');
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const root = join(dirname((svc as unknown as { d: { dbFile: string } }).d.dbFile), 'references', 'attachments', 'p', '1');
+    mkdirSync(root, { recursive: true }); const f = join(root, '요구사항.md'); writeFileSync(f, '# 요구');
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] })); svc.loadAgentTemplates(p.id);
+    const m0 = await svc.startMission(p.id, `문서를 정리하라\n\n[첨부 파일 2개 — 읽기 전용으로 참고]\n- 요구사항.md: ${f}\n- 남의 파일: /etc/hosts`);
+    const t0 = Date.now(); let m = svc.missions.get(m0.id);
+    while (!m.currentRunId && Date.now() - t0 < 60000) { await sleep(100); m = svc.missions.get(m0.id); }
+    const node = svc.engine.detail(m.currentRunId!).graph.nodes.find((n) => n.kind === 'agent')!;
+    expect(node.inputs).toContain(f);
+    expect(node.inputs).not.toContain('/etc/hosts');
+    expect(node.instructions).toContain('첨부한 파일');
+    await svc.missions.stop(m0.id); svc.close();
+  });
+});

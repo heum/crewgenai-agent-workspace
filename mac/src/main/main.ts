@@ -1,8 +1,8 @@
 // Electron 메인 프로세스 — 창·메뉴·IPC·파일 선택·Finder·격리 미리보기·종료 처리
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, safeStorage, session, shell, type MenuItemConstructorOptions } from 'electron';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { LiveEvent } from '../shared/types';
 import { createTracer } from './langsmith';
@@ -10,6 +10,7 @@ import { Service } from './service';
 import { TelegramBridge } from './telegram';
 import { loadTemplates } from './docset';
 import { publicWebUrl } from './refs';
+import { looksSecretName } from './git';
 
 app.setName('CREWGENAI 개발팀 관리');
 const dataDir = process.env.CREWGENAI_DATA_DIR || app.getPath('userData');
@@ -224,6 +225,33 @@ function register() {
     await shell.openPath(f);
   });
   h('getSettings', () => s().settings());
+  // 지시 첨부 파일: 고른 파일을 앱 데이터 폴더로 복사한다(저장소에 들어가지 않음). 비밀값 파일·큰 파일은 받지 않는다
+  h('pickAttachments', async (projectId: string) => {
+    const r = await dialog.showOpenDialog(win!, { properties: ['openFile', 'multiSelections'], title: '지시에 첨부할 파일 선택(최대 10개, 파일마다 20MB까지)' });
+    if (r.canceled) return [];
+    const dir = join(dataDir, 'references', 'attachments', String(projectId).replace(/[^\w-]/g, '').slice(0, 8) || 'project', `${Date.now()}`);
+    const out: { name: string; path: string; size: number; skipped?: string }[] = [];
+    for (const f of r.filePaths.slice(0, 10)) {
+      const name = basename(f).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'file';
+      let size = 0; try { const st = statSync(f); if (!st.isFile()) { out.push({ name, path: '', size: 0, skipped: '파일이 아님' }); continue; } size = st.size; } catch { out.push({ name, path: '', size: 0, skipped: '읽을 수 없음' }); continue; }
+      if (looksSecretName(name)) { out.push({ name, path: '', size, skipped: '비밀값 파일로 보여 첨부하지 않음' }); continue; }
+      if (size > 20 * 1024 * 1024) { out.push({ name, path: '', size, skipped: '20MB를 넘음' }); continue; }
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const dst = join(dir, name); copyFileSync(f, dst); out.push({ name, path: dst, size });
+    }
+    return out;
+  });
+  // 붙여 넣은 클립보드 파일·이미지: 내용을 받아 같은 첨부 폴더에 저장한다
+  h('saveAttachmentData', async (projectId: string, rawName: string, data: Uint8Array) => {
+    const name = String(rawName || 'clipboard').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'clipboard';
+    const size = data?.byteLength ?? 0;
+    if (!size) return { name, path: '', size: 0, skipped: '빈 내용' };
+    if (looksSecretName(name)) return { name, path: '', size, skipped: '비밀값 파일로 보여 첨부하지 않음' };
+    if (size > 20 * 1024 * 1024) return { name, path: '', size, skipped: '20MB를 넘음' };
+    const dir = join(dataDir, 'references', 'attachments', String(projectId).replace(/[^\w-]/g, '').slice(0, 8) || 'project', `${Date.now()}-${Math.random().toString(16).slice(2, 6)}`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const dst = join(dir, name); writeFileSync(dst, Buffer.from(data)); return { name, path: dst, size };
+  });
   h('pickSkillFolder', async () => { const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'showHiddenFiles'], title: '스킬 폴더 선택(SKILL.md가 있는 폴더 또는 그 상위 폴더)' }); return r.canceled ? null : r.filePaths[0]; });
   h('skillSources', (dirs) => s().skillSources(Array.isArray(dirs) ? (dirs as unknown[]).filter((x): x is string => typeof x === 'string') : null));
   h('saveSettings', (p, key) => s().saveSettings(p, key));
