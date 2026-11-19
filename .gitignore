@@ -18,3 +18,7 @@ coverage/
 node_modules
 .fix*.diff
 .win-port.diff
+
+# 빌드 때 루트 CHANGELOG.md에서 복사(앱의 업데이트 내역 탭)
+mac/resources/docs/CHANGELOG.md
+windows/resources/docs/CHANGELOG.md

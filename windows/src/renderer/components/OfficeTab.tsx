@@ -117,7 +117,7 @@ export default function OfficeTab({ project }: { project: Project }) {
     // 배율은 '모두가 라운지에 있는 경우'로 정한다: 누가 일어나고 앉을 때마다 배율이 바뀌어 사무실이 갑자기 달라지지 않게
     const allRest = staff.map((x) => ({ ...x, state: 'rest' as const, pose: 'rest' as const }));
     let r = pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount, groupSizes);
-    while (placePeople(allRest, allRest, r.layout).overflow.lounge.length && r.scale > Math.ceil(2 * d) / d) {
+    while (placePeople(allRest, allRest, r.layout).overflow.lounge.length && r.scale > (d >= 2 ? Math.ceil(1.5 * d) : Math.ceil(2 * d)) / d) {
       const next = pickScale(stage.w, stage.h, stage.dpr, staff.length, offCount, groupSizes, r.scale - 1 / d);
       if (next.scale >= r.scale) break;
       r = next;
@@ -222,7 +222,10 @@ export default function OfficeTab({ project }: { project: Project }) {
                 {placed.filter((x) => x.zone !== 'desk').map(({ p, x, y, w, h, zone, group: gk }) => {
                   const pd = zone === 'review' ? plan.review.pods.find((q) => q.key === gk) : null;
                   const top = pd ? (pd.y + pd.pod.h + 1) * scale : (y + h + 1) * scale;
-                  return <Tag key={`r${p.key}`} p={p} left={(x + w / 2) * scale} top={top} max={44 * scale} on={sel === p.key} onPick={() => pickPerson(p.key)} small role={pd ? (pd.author === p.key ? 'author' : p.external ? 'codex' : 'reviewer') : undefined} />;
+                  // 리뷰 탁자: 리뷰받는 직원 이름표는 그 사람 오른쪽 끝에 맞춰 왼쪽으로, 검토자 이름표는 그 사람 왼쪽 끝에서 오른쪽으로 펼쳐 서로 겹치지 않게
+                  const role = pd ? (pd.author === p.key ? 'author' as const : p.external ? 'codex' as const : 'reviewer' as const) : undefined;
+                  const left = !pd ? (x + w / 2) * scale : role === 'author' ? (x + w) * scale : (x + 1) * scale;
+                  return <Tag key={`r${p.key}`} p={p} left={left} top={top} max={44 * scale} align={!pd ? 'center' : role === 'author' ? 'end' : 'start'} on={sel === p.key} onPick={() => pickPerson(p.key)} small role={role} />;
                 })}
                 {overflow.review.length > 0 && <button className="ofc-zone ofc-zone-sm ofc-more" style={{ right: (layout.W - layout.review.x - layout.review.w + 4) * scale, top: (layout.review.y + 1) * scale }} onClick={() => setMoreOpen(moreOpen === 'review' ? null : 'review')}>리뷰 자리 밖 {overflow.review.length}명 · 목록</button>}
                 {overflow.lounge.length > 0 && <button className="ofc-zone ofc-zone-sm ofc-more" style={{ left: (layout.lounge.x + layout.lounge.w - 4) * scale, top: (layout.H - 2) * scale, transform: 'translate(-100%, -100%)' }} onClick={() => setMoreOpen(moreOpen === 'lounge' ? null : 'lounge')}>휴식 자리 밖 {overflow.lounge.length}명 · 목록</button>}
@@ -289,7 +292,7 @@ function Tag({ p, left, top, max, align = 'center', on, dim, small, role, onPick
   const tx = align === 'start' ? '0' : align === 'end' ? '-100%' : '-50%';
   return (
     <button className={`ofc-tag ofc-tag-${p.state}${on ? ' is-on' : ''}${dim ? ' is-dim' : ''}${small ? ' is-sm' : ''}${role ? ` ofc-cmp-tag is-${role}` : ''}`} style={{ left, top, maxWidth: max, transform: `translate(${tx}, 0)` }} onClick={onPick} title={`${p.code} ${p.name} — ${POSE_LABEL[p.pose]}`}>
-      <span className="ofc-tag-dot" aria-hidden="true" />{role === 'author' ? '리뷰받음 ' : ''}{small ? p.code : `${p.code} ${shortName(p.name)}`}
+      <span className="ofc-tag-dot" aria-hidden="true" />{role === 'author' ? '받음 ' : ''}{small ? p.code : `${p.code} ${shortName(p.name)}`}
     </button>
   );
 }

@@ -423,7 +423,7 @@ export interface WorkspaceApi {
   openLoginTerminal(): Promise<void>;
   getSettings(): Promise<AppSettings>;
   saveSettings(s: Partial<AppSettings>, langsmithKey?: string | null): Promise<AppSettings>;
-  helpDocs(): Promise<{ guide: string; verification: string; images: Record<string, string> }>; // images: 'images/파일.png' → data URL(앱에 포함된 PNG만)
+  helpDocs(): Promise<{ guide: string; verification: string; changelog: string; images: Record<string, string> }>; // images: 'images/파일.png' → data URL(앱에 포함된 PNG만)
   // 운영(오퍼레이터 루프)
   codexStatus(refresh: boolean): Promise<CodexStatus>;
   listMissions(projectId: ID): Promise<Mission[]>;

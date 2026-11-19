@@ -14,6 +14,8 @@ import { looksSecretName } from './git';
 
 app.setName('CREWGENAI 개발팀 관리');
 const dataDir = process.env.CREWGENAI_DATA_DIR || app.getPath('userData');
+// 시험·화면 캡처용 데이터 폴더를 지정하면 Electron 저장소(로컬 저장·단일 실행 잠금)도 그 폴더를 써서, 켜져 있는 앱과 섞이지 않고 함께 실행된다
+if (process.env.CREWGENAI_DATA_DIR) app.setPath('userData', dataDir);
 mkdirSync(dataDir, { recursive: true });
 const resDir = app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources');
 const logFile = join(dataDir, 'app.log');
@@ -321,7 +323,7 @@ function register() {
     try {
       for (const f of readdirSync(join(resDir, 'docs', 'images'))) if (/^[\w.-]+\.png$/.test(f)) images[`images/${f}`] = `data:image/png;base64,${readFileSync(join(resDir, 'docs', 'images', f)).toString('base64')}`;
     } catch { /* 이미지 없음 */ }
-    return { guide: rd('GUIDE.md'), verification: rd('VERIFICATION.md'), images };
+    return { guide: rd('GUIDE.md'), verification: rd('VERIFICATION.md'), changelog: rd('CHANGELOG.md'), images };
   });
 }
 

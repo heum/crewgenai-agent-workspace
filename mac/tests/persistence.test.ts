@@ -27,7 +27,7 @@ describe('로컬 기록 유지', () => {
     expect(p2.plan.goal).toBe('바뀐 목표');
     expect(p2.planVersion).toBe(2);
     const list = b.store.listAgents(p.id);
-    expect(list.length).toBe(6); // 7명 중 1명 해고
+    expect(list.length).toBe(7); // 8명 중 1명 해고
     expect(list.find((x) => x.id === onLeave.id)!.active).toBe(false); // 휴가 유지
     expect(b.store.listAgents(p.id, true).find((x) => x.id === fired.id)!.fired).toBe(true); // 해고 기록 유지
     b.close();

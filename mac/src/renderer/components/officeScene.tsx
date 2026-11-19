@@ -75,11 +75,13 @@ export function layoutFor(staff: number, Wavail: number, Havail: number, offCoun
 
 export function pickScale(stageW: number, stageH: number, dpr: number, staff: number, off: number, groups: number[] = [1], maxScale = 4): { scale: number; layout: Layout } {
   const d = dpr > 0 ? dpr : 1;
-  for (let k = Math.floor(Math.min(4, maxScale) * d); k >= Math.ceil(2 * d); k--) {
+  // 가장 작은 배율: 보통 화면은 2배, 고해상도(레티나)는 1.5배까지(기기 픽셀 3배라 선명). 사무실 전체가 한 화면에 들어가게
+  const minK = d >= 2 ? Math.ceil(1.5 * d) : Math.ceil(2 * d);
+  for (let k = Math.floor(Math.min(4, maxScale) * d); k >= minK; k--) {
     const s = k / d; const L = layoutFor(staff, stageW / s, stageH / s, off, s, groups);
     if (stageW / s >= MIN_W && L.fits) return { scale: s, layout: L };
   }
-  const s = Math.ceil(2 * d) / d;
+  const s = minK / d;
   return { scale: s, layout: layoutFor(staff, stageW / s, stageH / s, off, s, groups) };
 }
 

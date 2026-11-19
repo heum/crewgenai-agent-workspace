@@ -450,9 +450,10 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
 
 function HelpModal({ onClose }: { onClose: () => void }) {
   const docs = useLoad(() => ws().helpDocs(), []);
-  const [tab, setTab] = useState<'guide' | 'verification'>('guide');
+  const [tab, setTab] = useState<'guide' | 'verification' | 'changelog'>('guide');
+  const text = (d: { guide: string; verification: string; changelog?: string }) => (tab === 'guide' ? d.guide : tab === 'verification' ? d.verification : (d.changelog ?? ''));
   return (
-    <Modal title="사용법·검증 결과" onClose={onClose} wide>
+    <Modal title="사용법·검증 결과·업데이트 내역" onClose={onClose} wide>
       <div className="tabs small-tabs">
         <button className={`tab ${tab === 'guide' ? 'active' : ''}`} onClick={() => setTab('guide')}>
           사용법
@@ -460,13 +461,16 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         <button className={`tab ${tab === 'verification' ? 'active' : ''}`} onClick={() => setTab('verification')}>
           검증 결과
         </button>
+        <button className={`tab ${tab === 'changelog' ? 'active' : ''}`} onClick={() => setTab('changelog')}>
+          업데이트 내역
+        </button>
       </div>
       {docs.loading && <Loading />}
       {docs.error && <Banner>{docs.error}</Banner>}
       {docs.data && (
         <div className="doc-scroll">
-          <Markdown text={tab === 'guide' ? docs.data.guide : docs.data.verification} images={docs.data.images} />
-          {!(tab === 'guide' ? docs.data.guide : docs.data.verification) && <Badge tone="warn">문서가 비어 있습니다</Badge>}
+          <Markdown text={text(docs.data)} images={docs.data.images} />
+          {!text(docs.data) && <Badge tone="warn">문서가 비어 있습니다</Badge>}
         </div>
       )}
     </Modal>
