@@ -666,17 +666,23 @@ const firstLine = (s: string) => s.split('\n').find((l) => l.trim())?.replace(/\
  * 사용자 작업 트리는 바꾸지 않는다(dev와 갈라졌으면 임시 작업 폴더에서 병합). 사용자 브랜치(dev·앱 작업 브랜치가 아닌 것)는 건드리지 않는다.
  */
 export function syncRepoToDev(abs: string, repo: string, day: string, opts: { push: boolean } = { push: true }): Promise<DevSyncResult> {
-  const res = (status: DevSyncResult['status'], note: string, extra: Partial<DevSyncResult> = {}): DevSyncResult => ({ repo, status, note, committed: 0, excluded: [], sha: null, ...extra });
+  let created = '';
+  const res = (status: DevSyncResult['status'], note: string, extra: Partial<DevSyncResult> = {}): DevSyncResult => ({ repo, status, note: `${created}${note}`, committed: 0, excluded: [], sha: null, ...extra });
   return withRepoLock(abs, async () => {
     const busy = await gitBusy(abs); if (busy) return res('skipped', busy);
-    const cur = (await git(abs, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).out;
+    let cur = (await git(abs, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).out;
     if (!cur) return res('skipped', '브랜치가 아닌 상태(detached)라 건너뜀');
-    if (cur !== 'dev' && !cur.startsWith('feat/crewgenai-')) return res('skipped', `사용자 브랜치(${cur})에 있어 건드리지 않음`);
     const remote = (await git(abs, ['remote'])).out.split('\n').includes('origin') ? 'origin' : '';
     if (remote) await git(abs, ['fetch', '--quiet', '--no-tags', remote, 'dev'], PUSH_ENV(), 60000);
-    const hasLocalDev = (await git(abs, ['rev-parse', '--verify', '-q', 'refs/heads/dev'])).ok;
+    let hasLocalDev = (await git(abs, ['rev-parse', '--verify', '-q', 'refs/heads/dev'])).ok;
     const hasRemoteDev = !!remote && (await git(abs, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/dev`])).ok;
-    if (!hasLocalDev && !hasRemoteDev) return res('skipped', 'dev 브랜치가 없어 건너뜀');
+    if (!hasLocalDev && !hasRemoteDev) {
+      // dev가 없으면 지금 브랜치에서 dev를 만들고 dev로 옮긴다(작업 트리의 변경은 그대로 따라온다)
+      const sw = await ag(abs, ['switch', '-q', '-c', 'dev']);
+      if (!sw.ok) return res('failed', `dev 브랜치를 만들지 못함: ${firstLine(sw.err)}`);
+      created = `dev 브랜치를 새로 만듦(${cur}에서) · `; cur = 'dev'; hasLocalDev = true;
+    }
+    if (cur !== 'dev' && !cur.startsWith('feat/crewgenai-')) return res('skipped', `사용자 브랜치(${cur})에 있어 건드리지 않음`);
     // 1) 비밀값 제외 규칙 → 커밋할 파일 고르기
     const ignoreChanged = ensureSecretIgnore(abs);
     const excluded: string[] = []; const files: string[] = [];
@@ -700,7 +706,7 @@ export function syncRepoToDev(abs: string, repo: string, day: string, opts: { pu
       else if (!(await git(abs, ['merge-base', '--is-ancestor', lDev, rDev])).ok) return res('skipped', '로컬 dev와 원격 dev가 갈라져 있어 건너뜀(사람이 정리해야 함)', { excluded, committed, sha });
     }
     let target = head;
-    if (devTip !== head && !(await git(abs, ['merge-base', '--is-ancestor', devTip, head])).ok) {
+    if (devTip && devTip !== head && !(await git(abs, ['merge-base', '--is-ancestor', devTip, head])).ok) {
       if ((await git(abs, ['merge-base', '--is-ancestor', head, devTip])).ok) target = devTip; // 이미 dev에 들어 있음
       else {
         // dev가 갈라졌다: 사용자 작업 트리를 건드리지 않고 임시 작업 폴더에서 병합한다
@@ -722,7 +728,7 @@ export function syncRepoToDev(abs: string, repo: string, day: string, opts: { pu
     if (hasRemoteDev && target === rDev) return res('nothing', committed ? '이미 dev에 반영됨' : '바뀐 것 없음', { excluded, committed, sha });
     const p = await git(abs, ['push', '--quiet', remote, `${target}:refs/heads/dev`], PUSH_ENV(), 120000);
     if (!p.ok) return res('failed', `push 실패: ${firstLine(p.err)}`, { excluded, committed, sha });
-    return res('pushed', `${committed ? `파일 ${committed}개 커밋, ` : ''}dev ${(rDev || devTip).slice(0, 8)} → ${target.slice(0, 8)} push`, { excluded, committed, sha });
+    return res('pushed', `${committed ? `파일 ${committed}개 커밋, ` : ''}dev ${(rDev || devTip || '(새로 만듦)').slice(0, 8)} → ${target.slice(0, 8)} push`, { excluded, committed, sha });
   }).catch((e) => res('failed', firstLine((e as Error).message)));
 }
 

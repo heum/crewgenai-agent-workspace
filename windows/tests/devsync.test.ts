@@ -66,14 +66,19 @@ describe('매일 dev 반영', () => {
     expect(g(repo, 'worktree', 'list').split('\n').length).toBe(1);
   });
 
-  it('사용자 브랜치나 dev가 없는 저장소는 건너뛴다', async () => {
+  it('dev가 있는데 사용자 브랜치에 있으면 건너뛰고, dev가 없으면 만들어 커밋·push한다', async () => {
     const a = setup('codex/work');
     writeFileSync(join(a.repo, 'x.ts'), '1\n');
     const r1 = await syncRepoToDev(a.repo, 'a', '2026-11-19');
     expect(r1.status).toBe('skipped'); expect(r1.note).toContain('codex/work');
     expect(g(a.repo, 'status', '--porcelain')).toContain('x.ts'); // 커밋하지 않음
-    const b = setup(); g(b.repo, 'checkout', '-qb', 'feat/crewgenai-z'); g(b.repo, 'branch', '-D', 'dev'); g(b.repo, 'push', '-q', 'origin', '--delete', 'dev'); g(b.repo, 'fetch', '-q', '--prune');
-    expect((await syncRepoToDev(b.repo, 'b', '2026-11-19')).note).toContain('dev 브랜치가 없어');
+    // dev가 없으면 지금 브랜치에서 dev를 만들어 커밋·push한다
+    const b = setup(); g(b.repo, 'checkout', '-qb', 'codex/setup'); g(b.repo, 'branch', '-D', 'dev'); g(b.repo, 'push', '-q', 'origin', '--delete', 'dev'); g(b.repo, 'fetch', '-q', '--prune');
+    writeFileSync(join(b.repo, 'y.ts'), '2\n');
+    const rb = await syncRepoToDev(b.repo, 'b', '2026-11-19');
+    expect(rb.status).toBe('pushed'); expect(rb.note).toContain('dev 브랜치를 새로 만듦(codex/setup에서)');
+    expect(g(b.repo, 'branch', '--show-current')).toBe('dev');
+    expect(remoteFiles(b.remote)).toContain('y.ts');
   });
 });
 
