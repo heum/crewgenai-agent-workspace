@@ -178,3 +178,13 @@ describe('직원 제안', () => {
     svc.close();
   });
 });
+
+describe('검토 지점 가정 핵심', () => {
+  it('"핵심 — 자세히" 형식은 그대로 나누고, 아니면 첫 마디를 핵심으로 쓴다', async () => {
+    const { splitHead } = await import('../src/renderer/components/ReviewCheckpoint');
+    expect(splitHead('시연 DB는 H2 파일 — 개발·운영 PostgreSQL은 두고 .demo-data/에 둔다')).toEqual({ head: '시연 DB는 H2 파일', rest: '개발·운영 PostgreSQL은 두고 .demo-data/에 둔다' });
+    const r = splitHead("'N위'는 점수·확률이 아닌 정렬 순서라 그대로 두고, 시연 안내에 '정렬 순서이며 점수가 아님'을 적는다.");
+    expect(r.head.length).toBeLessThanOrEqual(41); expect(r.rest).toContain('시연 안내');
+    expect(splitHead('짧은 가정')).toEqual({ head: '짧은 가정', rest: '' });
+  });
+});

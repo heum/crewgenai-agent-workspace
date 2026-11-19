@@ -2079,3 +2079,18 @@ textarea.input {
 .decision-badge { top: 12px; bottom: auto; right: 24px; padding: 6px 14px; font-size: 13px; }
 /* 직원 목록: 일이 없는 직원도 상태를 보여 준다 */
 .agent-idle { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--sub); white-space: nowrap; }
+
+/* 검토 지점: 한눈에 보기·가정 핵심·긴 글 접기 */
+.review-cp-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.sum-chip { padding: 3px 10px; border-radius: 999px; background: var(--bg-soft, #f2f4f7); font-size: 12.5px; }
+.sum-chip b { font-size: 14px; }
+.sum-chip.is-ask { background: #fff4e5; color: #9a5b00; }
+.sum-chip.is-bad { background: #fdecec; color: #b42318; }
+.sum-chip.is-warn { background: #fff8e1; color: #8a6100; }
+.review-cp-assume { display: flex; flex-direction: column; gap: 4px; }
+.review-cp-assume summary { cursor: pointer; }
+.review-cp-assume summary::marker { color: var(--sub); }
+.review-cp-assume details > div { margin: 2px 0 4px 14px; line-height: 1.6; }
+.clamp-box .clamp-body { max-height: 7.2em; overflow: hidden; position: relative; }
+.clamp-box:not(.is-open) .clamp-body::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2.2em; background: linear-gradient(transparent, var(--panel, #fff)); }
+.clamp-box.is-open .clamp-body { max-height: none; }

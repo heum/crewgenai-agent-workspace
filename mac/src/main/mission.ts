@@ -59,10 +59,11 @@ const FLOW_RULE = [
   '- 사이클 상한·연장·자동 진행 횟수는 앱이 관리한다. 질문·선택지·보고에 사이클 상한이나 연장을 쓰지 않는다.',
 ].join('\n');
 /** 문서가 부족한 부분: 되돌리기 쉬운 세부는 가정하고 진행, 사람이 정할 것만 결정으로 모은다 */
-const ASSUME_RULE = '- gaps.kind: 되돌리기 쉬운 세부(배치·문구·표현·구현 방식·작은 데이터 형식·기준 문서끼리의 작은 차이)는 kind=assume으로 쓰고 assumption에 무엇으로 가정해 진행하는지 한 문장으로 쓴다. 이 항목은 묻지 않고 그 가정대로 작업을 계획하며, 앱이 검토 지점에서 사용자에게 알린다. 제품 방향·중요한 업무 정책·범위·비용·외부 공개처럼 사람이 정해야 하는 것만 kind=decide. decide라도 그것 없이 할 수 있는 작업이 있으면 진행하고 검토 지점에서 묻는다(blocking=false). 이 결정 없이는 아무 작업도 할 수 없을 때만 blocking=true. 이미 사용자 결정·가정 목록에 있는 항목은 다시 쓰지 않는다.';
+const ASSUME_RULE = '- gaps.kind: 되돌리기 쉬운 세부(배치·문구·표현·구현 방식·작은 데이터 형식·기준 문서끼리의 작은 차이)는 kind=assume으로 쓰고 assumption에 무엇으로 가정해 진행하는지 한 문장으로 쓴다. 이 항목은 묻지 않고 그 가정대로 작업을 계획하며, 앱이 검토 지점에서 사용자에게 알린다. 제품 방향·중요한 업무 정책·범위·비용·외부 공개처럼 사람이 정해야 하는 것만 kind=decide. decide라도 그것 없이 할 수 있는 작업이 있으면 진행하고 검토 지점에서 묻는다(blocking=false). 이 결정 없이는 아무 작업도 할 수 없을 때만 blocking=true. 이미 사용자 결정·가정 목록에 있는 항목은 다시 쓰지 않는다. assumption은 "핵심(20자 안팎) — 자세한 내용" 형식으로 쓴다(예: "시연 DB는 H2 파일 — 개발·운영 PostgreSQL은 두고 .demo-data/에 둔다"). 사람이 핵심만 보고 훑어볼 수 있게 한다.';
 /** 판단: 검토 지점·결과 상태 */
 const CHECKPOINT_RULE = [
   '- review: 사용자가 직접 보고 판단할 만한 큰 결과(전체 화면 흐름, 큰 기능의 시연)가 준비됐을 때 고른다. checkpoint에 title(이번에 검토할 큰 기능), features(name·changed·status), steps(사용자가 눌러 볼 순서와 예상 결과), verified(실제로 확인한 범위), unverified(미완성·미검증), decisions(사용자 판단이 필요한 핵심, 최대 3개, 각 choices 2~4개와 추천 하나), assumptions(가정하고 진행한 세부)를 쓴다. 작은 판단마다 review·ask_user를 고르지 않는다.',
+  '- checkpoint 글은 사람이 바로 읽는 보고서다: 항목마다 핵심을 앞에 두고 짧게 쓴다(한 항목 한두 문장). verified·unverified는 "- 무엇: 결과" 식 목록으로 5개 안팎, steps는 번호 목록으로 눌러 볼 순서와 예상 결과만. 코드 경로·명령은 꼭 필요한 것만.',
   '- ask_user는 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만 고른다. 진행할 수 있는 일이 남아 있으면 continue하고 결정은 다음 검토 지점(checkpoint.decisions)에 모은다.',
   '- results의 status: implemented(코드·파일만 있음), ran(실행해 봄), verified(실제 기능을 동작시켜 확인), reviewable(사용자가 시연으로 볼 수 있게 준비됨), feedback_applied(사용자 피드백을 반영하고 같은 시연으로 다시 확인). 파일 존재나 일부 단위 시험 통과만으로 verified·reviewable을 쓰지 않는다. 실행하지 못한 시험·연결되지 않은 기능은 remaining에 범위를 쓴다.',
 ].join('\n');
