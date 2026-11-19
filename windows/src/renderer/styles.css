@@ -2074,3 +2074,8 @@ textarea.input {
 /* 실행 탭 산출물 목록: '미리보기'·'Finder'가 한 글자씩 세로로 접히지 않게 */
 .artifact-list li .btn-link, .run-artifacts li .btn-link { white-space: nowrap; flex: 0 0 auto; }
 .artifact-list li .grow, .run-artifacts li .grow { min-width: 0; }
+
+/* 확인함 버튼: 입력창 보내기 버튼을 가리지 않게 화면 오른쪽 위(탭 위 빈 곳)에 둔다 */
+.decision-badge { top: 12px; bottom: auto; right: 24px; padding: 6px 14px; font-size: 13px; }
+/* 직원 목록: 일이 없는 직원도 상태를 보여 준다 */
+.agent-idle { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--sub); white-space: nowrap; }

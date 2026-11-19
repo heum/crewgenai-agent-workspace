@@ -114,6 +114,7 @@ export default function AgentsTab({ project }: { project: Project }) {
                   {busy(a.id)[0].kind === 'reviewer' ? '검토 중' : busy(a.id)[0].kind === 'operator' ? '판단 중' : '작업 중'}
                 </span>
               )}
+              {busy(a.id).length === 0 && a.active && <span className="agent-idle" title="지금 맡은 작업이 없습니다">대기</span>}
               {!a.active && <Badge tone="warn">휴가</Badge>}
             </button>
           ))}

@@ -400,6 +400,8 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
           )}
         </div>
       </div>
+      {/* 지금 단계·지금 일하는 직원: 결과 카드보다 위에 두어 늘 보이게 */}
+      <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
       {m.checkpoint && !['stopped', 'failed'].includes(m.status) && <ReviewCheckpoint mission={m} onChanged={async () => { await detail.reload(); onChanged(); }} />}
       {m.status === 'waiting_user' && m.pauseKind === 'restart' && !m.checkpoint && (
         <div className="limit-card" role="status">
@@ -441,7 +443,6 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       {(m.status === 'waiting_user' || m.status === 'done' || m.status === 'stopped') && !m.checkpoint?.blocking && m.pauseKind !== 'restart' && <QuestionCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'waiting_user' && m.status !== 'stopped' && m.status !== 'failed' && <ParkedCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
       {m.status !== 'stopped' && m.status !== 'failed' && <StaffProposalCard mission={m} agents={agents} onChanged={async () => onChanged()} />}
-      <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} />
       <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
         <FileList files={d.files} />
       </Fold>
