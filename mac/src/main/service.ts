@@ -107,6 +107,7 @@ export class Service {
       referenceRoot: join(dirname(d.dbFile), 'references'),
       captureRef: d.captureRef ? async (url, missionId) => { const dir = refDirFor(join(dirname(d.dbFile), 'references'), missionId, url); const r = await d.captureRef!(url, dir); return { ...r, dir }; } : undefined,
       techAuto: () => this.settings().techAuto !== false,
+      docTidy: () => this.settings().docTidy !== false,
       devSync: () => this.settings().devSync !== false,
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
       executor: () => ({ executor: this.settings().executor, cliPath: this.cli?.path ?? this.settings().cliPath }),

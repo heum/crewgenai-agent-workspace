@@ -341,6 +341,7 @@ export interface AppSettings {
   commandLevel?: 'low' | 'medium' | 'high'; // 직원 명령 허용 범위(기본 중간). 격리·네트워크 없음 안에서 묻지 않고 허용할 명령의 폭
   devSync?: boolean; // 매일 dev 반영(기본 켬): 하루 한 번 비밀값을 뺀 변경을 커밋해 dev에 합치고 push. main 병합은 하지 않는다
   devSyncHour?: number; // 매일 dev 반영 시각(0~23시, 기본 22)
+  docTidy?: boolean; // 문서 정리(기본 켬): 앱 기록 파일은 최근 실행만 남기고, 사이클별 문서는 10사이클마다 HISTORY.md로 요약한 뒤 커밋된 원본만 지운다
   techAuto?: boolean; // 기술 권한 요청(명령 허용·경로 읽기)을 사용자에게 묻지 않고 앱·오퍼레이터가 처리(기본 켬). 보호 규칙은 그대로
   paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
   paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유
@@ -669,6 +670,10 @@ export interface Mission {
   directiveSeenSeq?: number;
   /** 사용자가 대기 중에 취소한 추가 지시(기록 번호) */
   canceledDirectives?: number[];
+  /** 진행 중인 문서 정리(이번 사이클 계획에 요약 작업을 넣음 → 판단 뒤 앱이 요약된 원본을 지움) */
+  docTidy?: { cycle: number; at: string; groups: { folder: string; files: string[] }[]; left?: number } | null;
+  /** 마지막으로 문서 정리를 한(또는 살펴본) 사이클 */
+  docTidyCycle?: number;
   createdAt: string;
   updatedAt: string;
 }

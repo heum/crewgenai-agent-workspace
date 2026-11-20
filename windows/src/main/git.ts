@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { PROTECTED_BRANCHES } from './autopilot';
 import { cleanEnv } from './cli/claudeCli';
 
@@ -769,4 +769,16 @@ export function mergeDevToMain(abs: string, repo: string, day: string): Promise<
     if (cur !== 'main' && lMain && (await git(abs, ['merge-base', '--is-ancestor', lMain, target])).ok) await git(abs, ['branch', '-f', 'main', target]);
     return res('pushed', `main ${main.slice(0, 8)} → ${target.slice(0, 8)} push`, target);
   }).catch((e) => res('failed', firstLine((e as Error).message)));
+}
+
+/** 지워도 git 기록으로 되살릴 수 있는가: 경로(파일·폴더)의 모든 파일이 커밋돼 있고 바뀐 것·추적하지 않는 파일이 없다 */
+export async function trackedClean(abs: string): Promise<boolean> {
+  let isDir = false; try { isDir = statSync(abs).isDirectory(); } catch { return false; }
+  const dir = isDir ? abs : dirname(abs);
+  const root = await gitRoot(dir); if (!root) return false;
+  let real = abs; try { real = realpathSync(abs); } catch { return false; }
+  const rel = relative(root, real).split(sep).join('/'); if (!rel || rel.startsWith('..')) return false;
+  const ls = await git(root, ['ls-files', '--', rel]); if (!ls.ok || !ls.out) return false;
+  const st = await git(root, ['status', '--porcelain', '--untracked-files=all', '--', rel]);
+  return st.ok && st.out === '';
 }
