@@ -57,6 +57,27 @@ describe('시연 실행 승인 기준', () => {
   });
 });
 
+describe('예전 코드로 떠 있는 앱 서버', () => {
+  it('앱이 켠 서버가 상태 확인 주소에 404(예전 코드)면 묻지 않고 끄고 다시 켜며, 확인함에 올리지 않는다', async () => {
+    const d = tmpProject(); const plan = mkPlan(d); const port = await freePort();
+    mkdirSync(join(d, 'svc'), { recursive: true });
+    const code = (ok: boolean) => `require('http').createServer((q,s)=>{ if(q.url==='/build/c2'){ s.statusCode=${ok ? 200 : 404}; return s.end('x'); } s.end('ok'); }).listen(Number(process.env.PORT), '127.0.0.1');`;
+    writeFileSync(join(d, 'svc', 'server.js'), code(false));
+    write(plan, { services: [{ id: 'web', name: '웹', kind: 'web', repo: 'svc', start: ['node', 'server.js'], port, health: '/build/c2', startupSec: 20 }] });
+    const mgr = new DemoManager(new DatabaseSync(':memory:'), join(tmpdir(), `demo-logs-${Date.now()}`));
+    const s = readManifest(plan).services[0];
+    mgr.approve('p', s); await mgr.start('p', readManifest(plan).services, 'web');
+    expect(await mgr.probe(s)).toBe(404);
+    writeFileSync(join(d, 'svc', 'server.js'), code(true)); // 새 코드가 들어옴(포트·명령은 그대로)
+    const asks: DemoAsk[] = [];
+    const lines = await verifyDemo(mgr, 'p', plan, asks);
+    expect(lines.join('\n')).toContain('다시 켰습니다');
+    expect(asks).toEqual([]);
+    expect(await mgr.probe(s)).toBe(200);
+    mgr.stopAll();
+  }, 60000);
+});
+
 describe('확인함의 시연 실행 승인', () => {
   it('미션 판단 전 시연 확인에서 확인함에 올리고, 사용자가 고르면 그때 승인·실행한다', async () => {
     const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);

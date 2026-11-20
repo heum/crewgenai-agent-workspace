@@ -130,6 +130,15 @@ export class DemoManager {
     if (!s.port) return null;
     try { const r = await safeFetch(`http://127.0.0.1:${s.port}${s.health}`, { signal: AbortSignal.timeout(1500), redirect: 'manual' }); return r.status; } catch { return null; }
   }
+  /** 앱이 켠 서비스를 끄고(포트가 풀릴 때까지 기다림) 같은 명령으로 다시 켠다. 사용자가 띄운 서버는 다루지 않는다 */
+  async restart(projectId: string, all: DemoService[], id: string, recheck?: () => DemoService[]): Promise<{ ok: boolean; code: number | null; error?: string }> {
+    const s = all.find((x) => x.id === id); if (!s || !this.ours(projectId, id)) return { ok: false, code: null, error: '앱이 켠 서버가 아님' };
+    this.stop(projectId, id);
+    for (let i = 0; i < 24 && s.port && (await this.probe(s)) !== null; i++) await new Promise((r) => setTimeout(r, 500));
+    try { await this.start(projectId, all, id, new Set(), recheck); } catch (e) { return { ok: false, code: null, error: redact((e as Error).message).slice(0, 160) }; }
+    const code = s.port ? await this.probe(s) : 200;
+    return { ok: code !== null && code < 500 && code !== 404, code };
+  }
   /** 앱이 켠 서비스인가(살아 있는 것) */
   ours(projectId: string, id: string): boolean { const p = this.procs.get(this.key(projectId, id)); return !!p && p.exited === null; }
 
@@ -269,7 +278,12 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
       await mgr.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services);
       const code = s.port ? await mgr.probe(s) : 200;
       if (code !== null && code < 500 && code !== 404) { up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상(${code})`); }
-      else if (mgr.ours(projectId, s.id)) { out.push(`- ${s.name}(${s.id}): 앱이 켠 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답 없음'} — 예전 코드일 수 있어 확인함에 '다시 켜기'로 올림`); asks.push(demoAsk(s, 'restart', `앱이 켠 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답하지 않음'}(예전 빌드일 수 있음).`)); }
+      else if (mgr.ours(projectId, s.id)) {
+        // 앱이 켠 서버가 예전 코드로 보이면(사용자 결정: 묻지 않고) 앱이 끄고 같은 명령으로 다시 켠다. 다시 켜도 그대로면 그때 확인함에 올린다
+        const r = await mgr.restart(projectId, man.services, s.id, () => readManifest(plan).services);
+        if (r.ok) { up.add(s.id); out.push(`- ${s.name}(${s.id}): 앱이 켠 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답 없음'}이라 예전 코드로 보고 다시 켰습니다 — 응답 정상(${r.code})`); }
+        else { out.push(`- ${s.name}(${s.id}): 예전 코드로 보여 다시 켰지만 상태 확인 ${s.health || '/'}이 ${r.code ?? '응답 없음'}${r.error ? `(${r.error})` : ''} — 확인함에 올림`); asks.push(demoAsk(s, 'restart', `앱이 다시 켰지만 상태 확인 ${s.health || '/'}이 ${r.code ?? '응답하지 않음'}입니다. 시연 목록의 명령·버전 확인 주소를 확인하세요.`)); }
+      }
       else out.push(`- ${s.name}(${s.id}): 포트 ${s.port}의 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답 없음'} — 앱이 켠 서버가 아니라 끄지 않음(사용자가 직접 다시 켜야 최신 코드)`);
     } catch (e) { out.push(`- ${s.name}(${s.id}): 켜지 못함 — ${redact((e as Error).message).slice(0, 200)}`); }
   }
