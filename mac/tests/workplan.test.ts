@@ -32,6 +32,23 @@ describe('작업 목록 반영 규칙', () => {
   });
 });
 
+describe('작업 목록 반영 규칙 — 리뷰 반영', () => {
+  it('완료 기준이 바뀌면 예전 근거로는 완료를 유지하지 않는다', () => {
+    const a = mergeWorkPlan(null, { items: [{ title: '로그인', criteria: '로그인 성공', status: 'done', evidence: 'login test 3 passed' }] }, 1, 't');
+    const b = mergeWorkPlan(a.plan, { changeReason: '보안 지시', items: [{ id: 'W1', title: '로그인', criteria: '로그인과 2단계 인증 성공', status: 'done' }] }, 2, 't');
+    expect(b.plan!.items[0].status).toBe('verifying');
+    const c = mergeWorkPlan(b.plan, { items: [{ id: 'W1', title: '로그인', criteria: '로그인과 2단계 인증 성공', status: 'done', evidence: '2fa test 2 passed' }] }, 3, 't');
+    expect(c.plan!.items[0].status).toBe('done');
+  });
+  it('변경 기록을 줄여도 확인하지 않은 변경 수는 그대로 보인다', () => {
+    let p = mergeWorkPlan(null, { items: [{ title: 'A', criteria: 'a', status: 'todo' }] }, 1, 't').plan!;
+    for (let i = 0; i < 85; i++) p = mergeWorkPlan(p, { changeReason: 'x', items: [{ title: `N${i}`, criteria: 'n', status: 'todo' }] }, 2, 't').plan!;
+    p = { ...p, reviewedChanges: p.changes.length };
+    p = mergeWorkPlan(p, { changeReason: 'y', items: [{ id: 'W1', title: 'A', criteria: 'a2', status: 'todo' }] }, 3, 't').plan!;
+    expect(p.changes.length - p.reviewedChanges).toBe(1);
+  });
+});
+
 describe('진척 관리 직원', () => {
   it('없으면 채용해 첫 판단 뒤 작업 목록을 만들고, 모든 단원이 근거와 함께 완료되면 미션이 끝난다', async () => {
     const { svc, p } = setup();

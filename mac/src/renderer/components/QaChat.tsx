@@ -66,7 +66,8 @@ function QaPanel({ project, onClose }: { project: Project; onClose: () => void }
         ))}
         {waiting && (
           <>
-            <div className="qa-msg mine"><div className="qa-meta small muted">나</div><div className="qa-text">{waiting}</div></div>
+            {/* 보내자마자 앱이 질문을 저장해 목록에 들어오면, 미리 띄운 말풍선은 숨긴다(같은 질문이 두 번 보이지 않게) */}
+            {!(msgs.at(-1)?.role === 'user' && msgs.at(-1)?.text === waiting) && <div className="qa-msg mine"><div className="qa-meta small muted">나</div><div className="qa-text">{waiting}</div></div>}
             <div className="qa-msg"><div className="qa-meta small muted">문의 응대</div><div className="qa-text muted">답을 찾는 중… (보통 수십 초)</div></div>
           </>
         )}

@@ -7,7 +7,8 @@ import { HD_AGENT, HD_CODE, PM_AGENT, PM_CODE } from './engine/templates';
 import { defaultCharacter } from '../shared/characterIds';
 import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, progressLine, workPlanSection, WORK_STATUS_LABEL, type RawWorkPlan } from './workplan';
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants as fsc, existsSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { accessSync, constants as fsc, existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { fileSha } from './engine/fsutil';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
@@ -22,7 +23,7 @@ import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
 import { ignoredUntracked, trackedClean } from './git';
-import { KEEP_RUN_FILES, TIDY_EVERY, TIDY_MAX_FILES, TIDY_MAX_FOLDERS, dirsInUse, findStaleBuilds, manifestText, findCycleDocs, fmtBytes, groupByFolder, staleRunFiles } from './docclean';
+import { KEEP_RUN_FILES, TIDY_EVERY, TIDY_MAX_FILES, TIDY_MAX_FOLDERS, dirsInUse, findStaleBuilds, manifestText, registeredText, realInside, findCycleDocs, fmtBytes, groupByFolder, staleRunFiles } from './docclean';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
 import { DEMO_FILE, demoManifestPath, readManifest } from './demo';
@@ -442,6 +443,7 @@ export class MissionRunner {
     return ['## 문서 정리(이번 사이클에 함께 할 일)',
       '- 아래 사이클별 문서는 이번 사이클이 끝나면 앱이 지운다(git 기록에는 남음). 그 전에 내용을 요약해 둔다.',
       '- tasks에 문서 정리 작업을 하나 넣는다: 문서 담당(없으면 쓰기 가능한 다른 직원)에게, 폴더마다 HISTORY.md를 만들거나 이어 쓰게 한다. writeScope·outputs는 각 폴더의 HISTORY.md(markdown)만이다. 원본 파일은 고치지 않는다.',
+      '- HISTORY.md에는 요약한 원본 파일 이름을 그대로 적는다(예: "원본: C6_DEMO_UPDATE.md"). 앱은 이름이 적힌 원본만 지운다.',
       '- HISTORY.md 형식: 사이클 순서로 사이클마다 2~5줄(무엇을 했는지, 어떻게 확인했는지(시험·결과), 정한 것, 남은 일). 지금도 쓰이는 결정·경로는 남기고 긴 로그·표·사진 설명은 옮기지 않는다. 화면 사진 폴더는 무엇을 찍었는지 한 줄만.',
       ...t.groups.flatMap((g) => [`### ${g.folder}/HISTORY.md ← ${g.files.length}개`, ...g.files.map((f) => `- ${f}`)]), ''];
   }
@@ -454,15 +456,20 @@ export class MissionRunner {
     try {
       const runs = this.d.store.listRuns(m.projectId);
       const keep = new Set(runs.slice(0, KEEP_RUN_FILES).map((r) => r.id.slice(0, 8)));
-      for (const rel of staleRunFiles(plan.folder, out, new Set(runs.map((r) => r.id.slice(0, 8))), keep)) {
+      const byRun = new Map(runs.map((r) => [r.id.slice(0, 8), r.id]));
+      for (const rel of staleRunFiles(plan.folder, out, new Set(byRun.keys()), keep)) {
         const abs = join(plan.folder, ...rel.split('/'));
-        try { const n = statSync(abs).size; rmSync(abs, { force: true }); freed += n; removed++; } catch { /* 이미 없음 */ }
+        // 앱이 만들 때의 내용 그대로일 때만 지운다(사용자가 메모를 더했으면 남김)
+        const run8 = (/-([0-9a-f]{8})(?:-v\d+)?\.md$/.exec(rel) ?? [])[1]; const runId = run8 ? byRun.get(run8) : undefined;
+        const art = runId ? this.d.store.artifacts(runId).filter((a) => a.relPath === rel).at(-1) : undefined;
+        if (!art || !realInside(plan.folder, abs)) continue;
+        try { if (fileSha(abs) !== art.sha256) continue; const n = statSync(abs).size; rmSync(abs, { force: true }); freed += n; removed++; } catch { /* 이미 없음 */ }
       }
       if (removed) this.event(m, 'system', `문서 정리: 앱이 만든 지난 실행 결과·리뷰 파일 ${removed}개(${fmtBytes(freed)})를 지웠습니다(최근 실행 ${KEEP_RUN_FILES}개만 파일로 남김, 내용은 앱 기록에 그대로).`);
     } catch (e) { this.event(m, 'system', `문서 정리: 실행 기록 파일 정리 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
     // 지난 사이클 시연 빌드(.next-demo-c94 같은 숨김 폴더): 종류별 최신·시연 목록이 가리키는 것·하루 안에 바뀐 것·실행 중인 서버가 연 것은 남긴다
     try {
-      const cands = findStaleBuilds(plan.folder, allowedRoots(plan), manifestText(demoManifestPath(plan)));
+      const cands = findStaleBuilds(plan.folder, allowedRoots(plan), manifestText(demoManifestPath(plan)), Date.now(), registeredText(demoManifestPath(plan)));
       const busy = await dirsInUse(cands.map((b) => b.abs));
       const gone: string[] = []; let size = 0;
       for (const b of cands) {
@@ -474,12 +481,18 @@ export class MissionRunner {
     const t = this.get(id).docTidy;
     if (!t || t.cycle > m.cycle) return;
     const lines: string[] = []; let docs = 0; let bytes = 0; let kept = 0;
+    // 요약 작업이 이번 사이클 실행에서 성공(검토 통과)했는지: HISTORY.md를 산출물로 가진 작업 단계가 완료여야 한다
+    const runId = this.get(id).currentRunId ?? (this.d.store.db.prepare('SELECT run_id FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, t.cycle) as Row | undefined)?.run_id as string | undefined;
+    let doneOutputs = new Set<string>();
+    if (runId) { try { const rd = this.d.engine.detail(runId); const ok = new Set(rd.nodes.filter((n) => n.status === 'succeeded').map((n) => n.nodeId)); doneOutputs = new Set(rd.graph.nodes.filter((n) => ok.has(n.id)).flatMap((n) => n.outputs.map((o) => normRel(o.path)))); } catch { /* 실행 기록 없음 */ } }
     for (const g of t.groups) {
-      const hist = join(plan.folder, ...(g.folder === '.' ? [] : g.folder.split('/')), 'HISTORY.md');
-      let ok = false; try { ok = statSync(hist).mtimeMs >= Date.parse(t.at) && statSync(hist).size > 0; } catch { ok = false; }
-      if (!ok) { lines.push(`${g.folder}: HISTORY.md가 이번 사이클에 써지지 않아 원본을 그대로 둠`); kept += g.files.length; continue; }
+      const histRel = normRel(g.folder === '.' ? 'HISTORY.md' : `${g.folder}/HISTORY.md`);
+      const hist = join(plan.folder, ...histRel.split('/'));
+      let text = ''; try { if (statSync(hist).mtimeMs >= Date.parse(t.at)) text = readFileSync(hist, 'utf8'); } catch { text = ''; }
+      if (!text.trim() || !doneOutputs.has(histRel)) { lines.push(`${g.folder}: 요약 작업이 완료(검토 통과)되지 않아 원본을 그대로 둠`); kept += g.files.length; continue; }
       let n = 0;
       for (const rel of g.files) {
+        if (!text.includes(rel.split('/').pop()!)) { kept++; continue; } // HISTORY.md에 원본 이름이 적힌(요약된) 것만
         const abs = join(plan.folder, ...rel.split('/'));
         if (!allowedRoots(plan).some((r) => within(rel, r))) { kept++; continue; }
         if (!(await trackedClean(abs))) { kept++; continue; }
@@ -493,23 +506,25 @@ export class MissionRunner {
   }
 
   /** 진척 관리 직원: 판단 직후 작업 목록을 갱신한다. 실패해도 미션은 계속한다(다음 사이클에 다시) */
-  private async updateWorkPlan(id: string, plan: PlanFields, judge: Judge, runId: string): Promise<void> {
+  private async updateWorkPlan(id: string, plan: PlanFields, judge: Judge, runId: string): Promise<boolean> {
     const m = this.get(id);
     const pm = this.progressAgent(m.projectId);
-    if (!pm) return;
+    if (!pm) return false;
     try {
       const raw = await this.callOperator<RawWorkPlan>(m, plan, this.workPlanPrompt(m, plan, judge, runId), WORKPLAN_SCHEMA, `${id}:progress`, pm);
-      if (this.closed || this.get(id).status === 'stopped') return;
+      if (this.closed || this.get(id).status === 'stopped') return false;
       const cur = this.get(id);
       const r = mergeWorkPlan(cur.workPlan, raw, cur.cycle, now());
-      if (!r.plan) return;
+      if (!r.plan) return false;
       const next = this.set(id, { workPlan: r.plan });
       const head = !cur.workPlan?.items.length ? `${pm.code} ${pm.name}: 작업 목록을 만들었습니다 — ${progressLine(r.plan)}. 진척 메뉴에서 확인하세요(개발은 계속).` : `${pm.code} ${pm.name}: ${progressLine(r.plan)}`;
       const ch = r.changed.filter((c) => c.kind !== 'create').map((c) => `${c.kind === 'add' ? '추가' : c.kind === 'remove' ? '제외' : '변경'} ${c.id} ${c.title}(${c.reason})`);
       this.event(next, 'system', [head, ...(ch.length ? [`계획 변경(사용자 확인 필요): ${ch.join(' / ')}`] : []), ...r.notes.slice(0, 5)].join('\n'), { workPlan: true });
+      return true;
     } catch (e) {
       if (this.closed) throw e;
-      this.event(this.get(id), 'system', `${pm.code} ${pm.name}: 작업 목록을 갱신하지 못했습니다(다음 사이클에 다시 시도) — ${redact((e as Error).message).slice(0, 200)}`);
+      if (!this.replan.has(id)) this.event(this.get(id), 'system', `${pm.code} ${pm.name}: 작업 목록을 갱신하지 못했습니다(다음 사이클에 다시 시도) — ${redact((e as Error).message).slice(0, 200)}`);
+      return false;
     }
   }
   /** 진척 관리 직원(없으면 한 번 채용, 휴가·해고 중이면 갱신하지 않음) */
@@ -541,7 +556,7 @@ export class MissionRunner {
       '## 프로젝트', `- 목표: ${plan.goal}`, `- 완료 조건: ${plan.doneCriteria || '(미입력)'}`, `- 작업 범위: ${plan.scope}`, '',
       `## 사이클 ${m.cycle} 오퍼레이터 판단(${judge.decision})`, judge.summary.slice(0, 6000), '', `다음 초점: ${judge.nextFocus}`, '',
       '## 이번 사이클 결과물', ...(res.length ? res : ['- (없음)']), `- 실행 결과: ${d.run.status}`, '',
-      '## 지금까지의 판단·사용자 답변(추가 지시 포함)', this.history(m).slice(-8000), '',
+      '## 지금까지의 판단·사용자 답변(추가 지시 포함)', this.history(m, true).slice(-8000), '',
       ...(wp?.items.length ? ['## 지금 작업 목록', ...wp.items.map((i) => `- ${i.id} [${i.status}] ${i.title} — 완료 기준: ${i.criteria}${i.evidence ? ` · 근거: ${i.evidence}` : ''}${i.note ? ` · 메모: ${i.note}` : ''}`),
         ...(wp.removed.length ? ['### 뺀 단원', ...wp.removed.map((i) => `- ${i.id} ${i.title}`)] : []), ''] : ['## 지금 작업 목록', '- 없음. 이번에 처음 만든다.', '']),
       '## 규칙',
@@ -1026,6 +1041,7 @@ export class MissionRunner {
     if (mode === 'now') {
       this.replan.add(id);
       this.procs.get(id)?.cancel();
+      this.procs.get(`${id}:progress`)?.cancel(); // 진척 갱신 중이어도 멈추고 다시 계획
       if (m.currentRunId && (this.d.engine.isActive(m.currentRunId) || this.d.engine.limitOf(m.currentRunId))) await this.d.engine.cancel(m.currentRunId);
     }
     return this.get(id);
@@ -1035,16 +1051,18 @@ export class MissionRunner {
   pendingDirectives(id: string): { seq: number; at: string; text: string }[] {
     const m = this.get(id); const gone = new Set(m.canceledDirectives ?? []);
     if (['stopped', 'failed'].includes(m.status)) return [];
-    const evs = this.events(id);
-    // 이 기록이 생기기 전부터 있던 미션: 마지막 오퍼레이터 계획 기록까지 보낸 지시는 이미 읽힌 것으로 본다
-    const seen = m.directiveSeenSeq ?? evs.filter((e) => e.kind === 'operator_plan').at(-1)?.seq ?? 0;
+    const evs = this.events(id); const seen = this.seenSeq(m, evs);
     return evs.filter((e) => e.kind === 'directive' && e.seq > seen && !gone.has(e.seq)).map((e) => ({ seq: e.seq, at: e.at, text: e.text }));
+  }
+  /** 오퍼레이터 계획에 들어간 마지막 기록 번호. 이 기록이 생기기 전부터 있던 미션은 마지막 계획 기록까지 읽힌 것으로 본다 */
+  private seenSeq(m: Mission, evs: MissionEvent[] = this.events(m.id)): number {
+    return m.directiveSeenSeq ?? evs.filter((e) => e.kind === 'operator_plan').at(-1)?.seq ?? 0;
   }
   /** 대기 중인 추가 지시 취소: 오퍼레이터가 아직 읽지 않은 것만. 기록에는 남기되 계획·학습에서 뺀다 */
   cancelDirective(id: string, seq: number): Mission {
     const p = this.pendingDirectives(id).find((x) => x.seq === seq);
     if (!p) throw new Error('이미 오퍼레이터 계획에 반영됐거나 없는 추가 지시입니다. 반영된 지시를 되돌리려면 새 추가 지시로 알려 주세요.');
-    const m = this.set(id, { canceledDirectives: [...(this.get(id).canceledDirectives ?? []), seq].slice(-200) });
+    const m = this.set(id, { canceledDirectives: [...(this.get(id).canceledDirectives ?? []), seq] });
     this.event(m, 'system', `사용자가 대기 중인 추가 지시를 취소했습니다: ${p.text.slice(0, 200)}`);
     return this.get(id);
   }
@@ -1462,14 +1480,15 @@ export class MissionRunner {
         }));
         { const reqs = this.devSyncOn() ? [] : cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
           if (reqs.length) { m = this.set(id, { commitRequests: [...(this.get(id).commitRequests ?? []), ...reqs].slice(-30) }); for (const r of reqs) this.event(m, 'system', `커밋 승인 요청: ${r.repo || '(연결 폴더)'} · 파일 ${r.files.length}개 · "${r.message}" — 사용자가 승인해야 커밋합니다.`, { commitRequest: r.id }); } }
-        await this.updateWorkPlan(id, project.plan, judge, run.id);
+        const fresh = await this.updateWorkPlan(id, project.plan, judge, run.id);
         await this.tidyDocs(id, project.plan);
         if (this.closed || this.get(id).status === 'stopped') return;
-        { const wp = this.get(id).workPlan;
+        this.guardLoop(id); // 진척 갱신·정리 중에 '지금 반영'이 들어왔으면 이전 판단을 적용하지 않고 다시 계획
+        { const wp = fresh ? this.get(id).workPlan : null; // 이번 판단 뒤 갱신된 목록일 때만 완료 판정에 쓴다
           if (judge.decision === 'done' && wp?.items.length && !allDone(wp)) {
             this.event(m, 'system', `오퍼레이터가 완료로 판단했지만 작업 목록에 끝나지 않은 단원이 남아 계속 진행합니다(${progressLine(wp)}).`);
             judge.decision = 'continue';
-          } else if (judge.decision !== 'done' && judge.decision !== 'ask_user' && allDone(wp)) {
+          } else if (judge.decision !== 'done' && judge.decision !== 'ask_user' && allDone(wp) && this.d.engine.detail(run.id).run.status === 'succeeded') {
             this.event(m, 'system', `작업 목록의 모든 단원이 완료돼 미션을 완료 검토로 멈춥니다(${progressLine(wp)}).`);
             judge.decision = 'done';
           } }
@@ -1911,9 +1930,10 @@ export class MissionRunner {
   }
 
   // ───── 오퍼레이터 프롬프트 ─────
-  private history(m: Mission): string {
-    const gone = new Set(this.get(m.id).canceledDirectives ?? []);
-    return this.events(m.id).filter((e) => ['operator_judge', 'answer', 'question', 'directive'].includes(e.kind) && !gone.has(e.seq)).slice(-16)
+  /** seenOnly: 판단·진척 갱신에는 계획에 들어간(더는 취소할 수 없는) 추가 지시만 보여 준다 */
+  private history(m: Mission, seenOnly = false): string {
+    const cur = this.get(m.id); const gone = new Set(cur.canceledDirectives ?? []); const evs = this.events(m.id); const seen = seenOnly ? this.seenSeq(cur, evs) : Infinity;
+    return evs.filter((e) => ['operator_judge', 'answer', 'question', 'directive'].includes(e.kind) && !gone.has(e.seq) && !(e.kind === 'directive' && e.seq > seen)).slice(-16)
       .map((e) => `- [사이클 ${e.cycle}] ${e.kind === 'answer' ? '사용자 답변' : e.kind === 'directive' ? '사용자 추가 지시(최우선 반영)' : e.kind === 'question' ? '질문' : '판단'}: ${e.text}`).join('\n') || '- (없음)';
   }
 
@@ -2063,7 +2083,7 @@ export class MissionRunner {
       '## 리뷰 기록', ...(reviews.length ? reviews : ['- (없음)']), '',
       '## 앱이 직접 확인한 시연 결과(이번 판단 직전, 사실로 쓴다)', ...((this.demoChecks.get(m.id) ?? []).length ? this.demoChecks.get(m.id)! : ['- (시연 목록이 없거나 확인할 서비스가 없음)']), '',
       '## 직원(역할·지시 요약 — 직원 제안 판단용)', ...this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== '00').map((a) => `- ${a.code} ${a.name}: ${a.role} — ${a.instructions.replace(/\s+/g, ' ').slice(0, 400)}`), '',
-      '## 지금까지의 판단·사용자 답변', this.history(m), '',
+      '## 지금까지의 판단·사용자 답변', this.history(m, true), '',
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',

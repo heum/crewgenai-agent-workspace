@@ -779,7 +779,8 @@ export async function trackedClean(abs: string): Promise<boolean> {
   let real = abs; try { real = realpathSync(abs); } catch { return false; }
   const rel = relative(root, real).split(sep).join('/'); if (!rel || rel.startsWith('..')) return false;
   const ls = await git(root, ['ls-files', '--', rel]); if (!ls.ok || !ls.out) return false;
-  const st = await git(root, ['status', '--porcelain', '--untracked-files=all', '--', rel]);
+  // 추적하지 않는 파일·무시된 파일(.gitignore)이 하나라도 있으면 git으로 되살릴 수 없으니 지우지 않는다
+  const st = await git(root, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', rel]);
   return st.ok && st.out === '';
 }
 

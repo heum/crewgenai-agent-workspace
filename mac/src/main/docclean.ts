@@ -7,7 +7,17 @@
 // - 기획의 자동 수정 허용 경로 안, 이름에 'docs' 폴더가 들어간 곳(또는 산출물 폴더)만 본다. 최근 사이클 문서는 남긴다.
 import { execFile } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import { lstatSync, realpathSync } from 'node:fs';
+
+/** 실제 경로가 연결 폴더 안인가(중간 경로가 링크로 밖을 가리키면 거짓) */
+export function realInside(folder: string, abs: string): boolean {
+  try {
+    if (lstatSync(abs).isSymbolicLink()) return false;
+    const root = realpathSync(folder); const real = realpathSync(abs); const r = relative(root, real);
+    return r === '' || (!r.startsWith('..') && !isAbsolute(r));
+  } catch { return false; }
+}
 
 export const KEEP_RUN_FILES = 5; // 앱 기록 파일을 남길 최근 실행 수
 export const TIDY_EVERY = 10; // 사이클별 문서를 요약·정리하는 간격(사이클)
@@ -64,9 +74,12 @@ export function findCycleDocs(folder: string, roots: string[], outputDir: string
   };
   for (const root of roots) {
     const r = root.replace(/^\.\/+/, '').replace(/\/+$/, '');
-    walk(join(folder, ...r.split('/').filter(Boolean)), r === '.' ? '' : r, 0, r.split('/').includes('docs') || r === outRoot || r.startsWith(`${outRoot}/`));
+    const start = join(folder, ...r.split('/').filter(Boolean));
+    if (!realInside(folder, start)) continue; // 링크로 연결 폴더 밖을 가리키는 시작 경로는 보지 않는다
+    walk(start, r === '.' ? '' : r, 0, r.split('/').includes('docs') || r === outRoot || r.startsWith(`${outRoot}/`));
   }
-  return out.sort((a, b) => a.folder.localeCompare(b.folder) || a.cycle - b.cycle);
+  const uniq = new Map(out.map((d) => [d.rel, d])); // 허용 경로가 겹치면 같은 문서를 두 번 넣지 않는다
+  return [...uniq.values()].sort((a, b) => a.folder.localeCompare(b.folder) || a.cycle - b.cycle);
 }
 
 /** 앱이 만든 실행 기록 파일 중 남길 실행에 속하지 않는 것(산출물 폴더 기준 상대 경로) */
@@ -92,18 +105,19 @@ export function groupByFolder(docs: CycleDoc[]): { folder: string; items: CycleD
 
 // ───── 사이클별 시연 빌드(.next-demo-c98, .demo-data-c31 같은 숨김 폴더) ─────
 // 시연할 때마다 사이클 번호를 붙여 새로 만든 빌드·데이터 폴더. 다시 만들 수 있지만 크다(폴더마다 100~300MB).
-// 남기는 것: 같은 종류(저장소·이름 앞부분)에서 가장 최근 사이클, 시연 목록이 가리키는 것, 하루 안에 바뀐 것, 실행 중인 서버가 연 것.
+// 지우는 대상: 시연 목록(demo/*.json, 지난 사본 포함)에 이름이 한 번이라도 등록된 폴더만(앱 시연용으로 만든 빌드라는 근거). 이름 모양만 같은 다른 폴더(백업 등)는 건드리지 않는다.
+// 남기는 것: 같은 종류(저장소·이름 앞부분)에서 가장 최근 사이클, 지금 시연 목록이 가리키는 것, 하루 안에 바뀐 것, 실행 중인 서버가 연 것.
 // 지우는 것은 git이 무시하는(추적하지 않는) 폴더뿐이다 — 이 검사는 부르는 쪽에서 한다.
 export const BUILD_DIR = /^(\.[A-Za-z][\w.-]*?)-c(\d{1,4})$/;
 export interface BuildDir { rel: string; abs: string; group: string; cycle: number; bytes: number }
 
-export function findStaleBuilds(folder: string, roots: string[], manifestText: string, now = Date.now()): BuildDir[] {
+export function findStaleBuilds(folder: string, roots: string[], manifestText: string, now = Date.now(), registered: string = manifestText): BuildDir[] {
   const all: (BuildDir & { newest: number })[] = [];
   const look = (abs: string, rel: string) => {
     let ents; try { ents = readdirSync(abs, { withFileTypes: true }); } catch { return; }
     for (const e of ents) {
       if (!e.isDirectory() || e.isSymbolicLink()) continue;
-      const m = BUILD_DIR.exec(e.name); if (!m) continue;
+      const m = BUILD_DIR.exec(e.name); if (!m || !registered.includes(e.name)) continue;
       const a = join(abs, e.name); const sz = sizeOf(a, 20000);
       all.push({ rel: rel ? `${rel}/${e.name}` : e.name, abs: a, group: `${rel}|${m[1]}`, cycle: Number(m[2]), bytes: sz.bytes, newest: sz.newest });
     }
@@ -112,6 +126,7 @@ export function findStaleBuilds(folder: string, roots: string[], manifestText: s
   for (const root of roots) {
     const r = root.replace(/^\.\/+/, '').replace(/\/+$/, ''); const rr = r === '.' ? '' : r;
     const abs = join(folder, ...rr.split('/').filter(Boolean));
+    if (!realInside(folder, abs)) continue;
     // 허용 경로 자체와 바로 아래 폴더(여러 저장소를 담은 상위 폴더를 연결한 경우)까지 본다
     for (const [a, rel] of [[abs, rr] as const, ...(() => { try { return readdirSync(abs, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.') && !SKIP.has(e.name)).map((e) => [join(abs, e.name), rr ? `${rr}/${e.name}` : e.name] as const); } catch { return []; } })()]) {
       if (seen.has(a)) continue; seen.add(a); look(a, rel);
@@ -138,3 +153,9 @@ export function dirsInUse(dirs: string[]): Promise<Set<string>> {
 }
 
 export function manifestText(path: string): string { try { return readFileSync(path, 'utf8').slice(0, 600_000); } catch { return ''; } }
+/** 시연 목록 폴더의 모든 json(지난 사본 포함)에 적힌 내용: 앱 시연용으로 등록된 적 있는 빌드 이름을 찾는 근거 */
+export function registeredText(manifestPath: string): string {
+  const dir = join(manifestPath, '..'); let out = '';
+  try { for (const n of readdirSync(dir)) if (/\.json$/i.test(n)) { try { out += readFileSync(join(dir, n), 'utf8').slice(0, 600_000); } catch { /* 무시 */ } } } catch { /* 없음 */ }
+  return out;
+}

@@ -54,8 +54,11 @@ export function mergeWorkPlan(prev: MissionWorkPlan | null | undefined, raw: Raw
     const id = clip(x.id, 10).toUpperCase();
     const cur = items.find((i) => i.id === id) ?? items.find((i) => i.title === title);
     if (cur) {
-      const st = settle(status(x.status), evidence || cur.evidence, cur.title);
-      if (criteria && criteria !== cur.criteria || title !== cur.title) {
+      const criteriaChanged = !!criteria && criteria !== cur.criteria;
+      // 완료 기준이 바뀌면 예전 근거로는 완료로 보지 않는다(새 기준의 근거가 있어야 함)
+      const st = settle(status(x.status), criteriaChanged ? evidence : evidence || cur.evidence, cur.title);
+      if (criteriaChanged && cur.status === 'done' && !evidence) cur.evidence = '';
+      if (criteriaChanged || title !== cur.title) {
         const c: WorkChange = { cycle, at, kind: 'edit', id: cur.id, title, reason: reason || '완료 기준·이름 조정' };
         changed.push(c); cur.title = title; if (criteria) cur.criteria = criteria;
       }
@@ -77,7 +80,8 @@ export function mergeWorkPlan(prev: MissionWorkPlan | null | undefined, raw: Raw
     const [gone] = items.splice(at0, 1); removed.push({ ...gone, updatedCycle: cycle });
     changed.push({ cycle, at, kind: 'remove', id, title: gone.title, reason: why });
   }
-  return { plan: { ...prev, items, removed: removed.slice(-30), changes: [...prev.changes, ...changed].slice(-80) }, notes, changed };
+  const all = [...prev.changes, ...changed]; const drop = Math.max(0, all.length - 80);
+  return { plan: { ...prev, items, removed: removed.slice(-30), changes: all.slice(drop), reviewedChanges: Math.max(0, (prev.reviewedChanges ?? 0) - drop) }, notes, changed };
 }
 
 export interface WorkProgress { total: number; done: number; doing: number; verifying: number; blocked: number; todo: number; pct: number }
