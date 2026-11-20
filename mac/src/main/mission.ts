@@ -824,7 +824,8 @@ export class MissionRunner {
   private mergeDecisions(m: Mission, made: MissionDecision[]): MissionDecision[] {
     let list = [...(m.decisions ?? [])]; const changed: string[] = [];
     for (const d of made) {
-      const same = (x: MissionDecision) => gapKey(x) === gapKey(d) || sameSubject(x.issue, d.issue);
+      // 같은 결정: 같은 항목(문서|질문)이거나, 문서 이름만 다르고 질문 문장이 같을 때(인용 문구가 겹친다는 것만으로는 바꾸지 않는다)
+      const same = (x: MissionDecision) => gapKey(x) === gapKey(d) || sameQuestion(x.issue, d.issue);
       const prev = list.filter(same);
       for (const x of prev) if (x.choice.trim() !== d.choice.trim()) changed.push(`'${x.issue.slice(0, 80)}': 이전 답 '${x.choice.slice(0, 80)}' → 새 답 '${d.choice.slice(0, 80)}'`);
       list = [...list.filter((x) => !same(x)), d];
@@ -837,7 +838,11 @@ export class MissionRunner {
     const m = this.get(id); if (!m.blockers?.length) return m;
     const keep = new Set((m.denials ?? []).map((d) => d.sig));
     this.event(m, 'answer', `보류한 업무 ${m.blockers.length}건을 해결했다고 확인했습니다. 다음 계획부터 다시 시도합니다.`);
-    return this.set(id, { blockers: null, failSigs: [], parkedSigs: (m.parkedSigs ?? []).filter((x) => keep.has(x)) });
+    const next = this.set(id, { blockers: null, failSigs: [], parkedSigs: (m.parkedSigs ?? []).filter((x) => keep.has(x)) });
+    // 이 보류 때문에 확인 대기였고, 다른 필수 결정(권한·막는 결정·막는 검토 카드)이 없으면 바로 이어서 진행한다
+    if (next.status === 'waiting_user' && !next.denials?.length && !(next.gaps ?? []).some((g) => g.blocking) && !next.checkpoint?.blocking)
+      return this.answer(id, '', 'continue', { gaps: next.gaps ?? null, denials: null, blockers: null, parkedSigs: next.parkedSigs ?? [] });
+    return next;
   }
   /** 확인 대기 중인 미션에도 추가 지시를 남긴다(다음 계획에 반영, 지금 미션을 다시 시작하지는 않음) */
   queueDirective(id: string, text: string): Mission {
@@ -2319,6 +2324,11 @@ function cleanDemo(d: RawResult['demo']): ResultDemo | null {
 const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[^\s]*)?$/i;
 
 /** 판단이 적은 결과물을 확인한다: 화면 주소는 이 컴퓨터(localhost)만, 파일은 프로젝트 폴더 안(링크를 푼 실제 경로 기준)만. */
+/** 질문 문장이 같은가(띄어쓰기·문장부호·따옴표 차이는 무시) */
+export function sameQuestion(a: string, b: string): boolean {
+  const n = (t: string) => t.replace(/[\s'‘’“”"`.,!?·:;()\[\]{}~\-–—]/g, '').toLowerCase();
+  const x = n(a); return x.length >= 6 && x === n(b);
+}
 /** 두 질문이 같은 대상을 묻는가: 따옴표·백틱으로 인용한 문구(6자 이상)가 겹치면 같은 대상으로 본다 */
 export function sameSubject(a: string, b: string): boolean {
   const quoted = (t: string) => new Set([...t.matchAll(/['‘“"`]([^'’”"`]{6,120})['’”"`]/g)].map((x) => x[1].replace(/\s+/g, ' ').trim()));

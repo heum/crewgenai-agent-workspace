@@ -32,13 +32,17 @@ describe('추가 지시가 오래 살아남는다', () => {
 });
 
 describe('결정 중복과 확인함 종류', () => {
-  it('같은 대상을 다른 문구로 다시 답하면 확정 목록에 하나만 남고, 답이 다르면 기록에 알린다', async () => {
+  it('문서 이름만 다른 같은 질문에 다시 답하면 확정 목록에 하나만 남고 답이 다르면 알리며, 인용 문구만 겹치는 다른 결정은 둘 다 남는다', async () => {
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '문서를 정리하라'); await svc.missions.stop(m0.id);
     const inner = svc.missions as unknown as Inner;
-    inner.set(m0.id, { status: 'waiting_user', gaps: [{ doc: '화면.md', issue: "'저장 버튼 위치'를 어디에 둘까", need: '', kind: 'decide' }, { doc: '기획.md', issue: "'저장 버튼 위치' 확정 필요", need: '', kind: 'decide' }] });
-    svc.missions.decide(m0.id, [{ doc: '화면.md', issue: "'저장 버튼 위치'를 어디에 둘까", choice: '오른쪽 위' }], false);
-    svc.missions.decide(m0.id, [{ doc: '기획.md', issue: "'저장 버튼 위치' 확정 필요", choice: '아래 고정' }], false);
+    inner.set(m0.id, { status: 'waiting_user', gaps: [{ doc: '화면.md', issue: "'저장 버튼 위치'를 어디에 둘까?", need: '', kind: 'decide' }, { doc: '검토 지점', issue: "'저장 버튼 위치'를 어디에 둘까", need: '', kind: 'decide' },
+      { doc: '보안.md', issue: "'관리자 로그인'의 세션 유지 기간", need: '', kind: 'decide' }, { doc: '보안.md', issue: "'관리자 로그인'에 2차 인증을 적용할까?", need: '', kind: 'decide' }] });
+    svc.missions.decide(m0.id, [{ doc: '화면.md', issue: "'저장 버튼 위치'를 어디에 둘까?", choice: '오른쪽 위' }], false);
+    svc.missions.decide(m0.id, [{ doc: '검토 지점', issue: "'저장 버튼 위치'를 어디에 둘까", choice: '아래 고정' }], false);
+    svc.missions.decide(m0.id, [{ doc: '보안.md', issue: "'관리자 로그인'의 세션 유지 기간", choice: '8시간' }], false);
+    svc.missions.decide(m0.id, [{ doc: '보안.md', issue: "'관리자 로그인'에 2차 인증을 적용할까?", choice: '적용' }], false);
+    expect((svc.missions.get(m0.id).decisions ?? []).filter((d) => d.issue.includes('관리자 로그인')).map((d) => d.choice)).toEqual(['8시간', '적용']);
     const ds = (svc.missions.get(m0.id).decisions ?? []).filter((d) => d.issue.includes('저장 버튼 위치'));
     expect(ds.map((d) => d.choice)).toEqual(['아래 고정']);
     expect(svc.missions.detail(m0.id).events.some((e) => e.text.startsWith('방금 답이 같은 대상의 이전 결정과 다릅니다'))).toBe(true);
@@ -61,6 +65,18 @@ describe('결정 중복과 확인함 종류', () => {
     const st = svc.pendingDecisions().find((x) => x.kind === 'staff')!;
     expect(svc.applyDecisions([{ key: st.key, choice: '적용하지 않음' }]).applied).toBe(1);
     expect(svc.missions.get(m0.id).staffProposals![0].status).toBe('dismissed');
+    await svc.missions.stop(m0.id); svc.close();
+  });
+});
+
+describe('보류한 업무 해결 뒤 재개', () => {
+  it('보류 때문에 확인 대기였던 미션은 확인함에서 해결을 고르면 바로 이어서 진행한다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '문서를 정리하라'); await svc.missions.stop(m0.id);
+    (svc.missions as unknown as Inner).set(m0.id, { status: 'waiting_user', stage: 'ask_user', blockers: [{ step: '시험 서버', reason: 'DB 접속 실패', kind: 'environment' }] });
+    const bk = svc.pendingDecisions().find((x) => x.kind === 'blocker' && x.missionId === m0.id)!;
+    expect(svc.applyDecisions([{ key: bk.key, choice: '해결했으니 다시 시도' }]).applied).toBe(1);
+    expect(svc.missions.get(m0.id).status).not.toBe('waiting_user');
     await svc.missions.stop(m0.id); svc.close();
   });
 });

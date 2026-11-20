@@ -432,7 +432,7 @@ export interface WorkspaceApi {
   listMissions(projectId: ID): Promise<Mission[]>;
   attention(): Promise<Attention>;
   pendingDecisions(all?: boolean): Promise<PendingDecision[]>;
-  applyDecisions(picks: { key: string; choice: string; version?: string }[]): Promise<{ applied: number; stale: number; lines: string[] }>;
+  applyDecisions(picks: { key: string; choice: string; version?: string }[]): Promise<{ applied: number; stale: number; lines: string[]; failed?: string[] }>;
   /** 확인함의 비밀값(API 키 등)을 연결 폴더의 .env 파일에 저장하고 그 결정을 '넣었음'으로 처리한다. 값은 어디에도 기록하지 않는다 */
   saveSecret(input: { key: string; file: string; name: string; value: string }): Promise<{ ok: true; line: string } | { ok: false; error: string }>;
   // 텔레그램(토큰은 넣기만 하고 화면으로 돌려받지 않는다)

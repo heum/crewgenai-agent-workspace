@@ -178,7 +178,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   // 적용은 앱 본체의 공통 처리(텔레그램과 같은 로직)로: 적용 직전에 각 항목이 아직 유효한지 다시 확인하고 유효한 것만 반영한다
   const applySelected = () => act.run(async () => {
     const r = await ws().applyDecisions(picked.map((it) => ({ key: it.key, choice: answerOf(it), version: decisionVersion(it) })));
-    for (const it of picked) handled.current.add(it.key);
+    const failed = new Set(r.failed ?? []); for (const it of picked) if (!failed.has(it.key)) handled.current.add(it.key); // 처리하지 못한 항목은 목록에 남긴다
     const list = (await ws().pendingDecisions(true)).filter((x) => !handled.current.has(x.key));
     setItems(list); setSel({}); setOwnMap({});
     setDone(`${r.applied}건을 적용했습니다.${r.stale ? ` 이미 처리됐거나 내용이 바뀐 ${r.stale}건은 적용하지 않았습니다.` : ''}\n${r.lines.join('\n')}`);

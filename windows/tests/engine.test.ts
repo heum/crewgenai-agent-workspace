@@ -182,19 +182,20 @@ describe('4. 자동 검사와 교차검토', () => {
 });
 
 describe('5. 취소·시간 초과·중복 방지·충돌 제어', () => {
-  it('작성 작업이 시간 제한에 걸리면 그때까지 범위 안에서 바꾼 파일을 반영하고, 다음 시도는 같은 세션으로 이어 간다', async () => {
+  it('작성 작업이 시간 제한에 걸리면 원본에 반영하지 않고 복사본을 남겨, 다음 시도가 같은 세션·복사본에서 끝낸 뒤 반영한다(재시도 0회여도 한 번)', async () => {
     const { dir, svc, p } = setup();
     const w = svc.saveAgent(p.id, null, agentFields('01', '작성자', { tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'], allowedCommands: ['npm test'] }));
     const inp = n('input', '입력');
-    const work = n('agent', '작성', { agentId: w.id, instructions: '작성하라 [[mock:hang-once]]', writeScope: ['docs'], timeoutSec: 3, maxRetries: 1, outputs: [{ path: 'docs/결과 문서.md', format: 'markdown', required: true }] });
+    const work = n('agent', '작성', { agentId: w.id, instructions: '작성하라 [[mock:hang-once]]', writeScope: ['docs'], timeoutSec: 3, maxRetries: 0, outputs: [{ path: 'docs/결과 문서.md', format: 'markdown', required: true }] });
     const m = n('merge', '취합'); const ur = n('userReview', '팀장 검토');
     const v = svc.saveGraph(p.id, { nodes: [inp, work, m, ur], edges: [e(inp, work), e(work, m), e(m, ur), e(ur, work, 'fail')] }, '시험').version!;
     const run = await svc.startRun(p.id, v.id);
     await waitRun(svc, run.id, ['review_wait', 'failed', 'succeeded'], 60000);
     const att = svc.store.runAttempts(run.id).filter((a) => a.nodeId === work.id && a.role === 'author');
     expect(att.map((a) => a.status)).toEqual(['timeout', 'succeeded']);
-    expect(att[0].changedFiles).toContain('docs/부분.md');
+    expect(att[0].changedFiles).toEqual([]); // 시간 초과 때는 반영하지 않음
     expect(att[1].resumedFrom).toBe(att[0].sessionId);
+    expect(att[1].changedFiles).toContain('docs/부분.md'); // 이어 간 시도가 끝난 뒤 함께 반영
     expect(existsSync(join(dir, 'docs/부분.md'))).toBe(true);
     svc.close();
   }, 90000);

@@ -15,7 +15,7 @@ import type { Agent, AgentFields, AppSettings, UsagePaceView, DevSyncView, DevSy
 import { checkCodex } from './cli/codexCli';
 import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, mergeDevToMain, ensureSecretIgnore, gitIgnored, syncRepoToDev, workspaceRepos } from './git';
 import { LearningStore } from './learning';
-import { MissionRunner, sameSubject } from './mission';
+import { MissionRunner, sameQuestion } from './mission';
 import { decisionVersion } from '../shared/decisions';
 export { decisionVersion };
 import { autoLayout, needsLayout } from '../shared/layout';
@@ -435,7 +435,7 @@ export class Service {
         }
         // 직원 제안(위쪽 막대의 '직원 제안'과 같은 것)
         for (const sp of (m.staffProposals ?? []).filter((x) => x.status === 'pending' && !['stopped', 'failed'].includes(m.status))) {
-          out.push({ ...base, key: `${m.id}|sp|${sp.id}`, kind: 'staff', staffId: sp.id, task: `직원 제안 · ${sp.kind === 'add' ? '새 직원' : `${sp.agentCode} 변경`}`, question: sp.kind === 'add' ? `새 직원 '${sp.name}'(${sp.role})을(를) 둘까요?` : `${sp.agentCode} ${sp.name}의 역할·지시를 바꿀까요?`, explain: `${sp.reason}\n\n업무 지시:\n${sp.instructions}`.slice(0, 3000), doc: '', issue: '',
+          out.push({ ...base, key: `${m.id}|sp|${sp.id}`, kind: 'staff', staffId: sp.id, task: `직원 제안 · ${sp.kind === 'add' ? '새 직원' : `${sp.agentCode} 변경`}`, question: sp.kind === 'add' ? `새 직원 '${sp.name}'(${sp.role})을(를) 둘까요?` : `${sp.agentCode} ${sp.name}의 역할·지시를 바꿀까요?`, explain: `${sp.reason}\n\n이름: ${sp.name}\n역할: ${sp.role}${sp.workPaths.length ? `\n작업 폴더: ${sp.workPaths.join(', ')}` : ''}\n\n업무 지시(적용될 전체):\n${sp.instructions}`, doc: '', issue: '',
             choices: [{ label: '제안 적용', effect: sp.kind === 'add' ? '이 직원을 추가합니다(도구·권한은 비슷한 기존 직원과 같게).' : '이 직원의 역할·지시를 제안대로 바꿉니다.', recommended: false, why: '' }, { label: '적용하지 않음', effect: '지금 직원으로 계속합니다.', recommended: false, why: '' }],
             waiting: false, urgent: false, held: '진행은 계속됩니다. 적용하면 다음 계획부터 반영됩니다.', resumes: '적용하면 운영 화면의 직원 제안 카드에서 고친 것과 같게 반영됩니다.' });
         }
@@ -453,7 +453,7 @@ export class Service {
             waiting: false, urgent: false, demo: a, held: '시연 서버가 꺼져 있거나 예전 코드일 수 있어 실서버 확인이 멈춰 있습니다(개발은 계속).', resumes: '정하면 앱이 바로 켜고 다음 판단부터 실서버로 확인합니다.', grants: grant });
         }
         for (const g of m.pauseKind === 'restart' ? [] : m.gaps ?? []) {
-          if ((shown.has(`${g.doc}|${g.issue}`) || [...shown].some((k) => sameSubject(k.slice(k.indexOf('|') + 1), g.issue))) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
+          if ((shown.has(`${g.doc}|${g.issue}`) || [...shown].some((k) => sameQuestion(k.slice(k.indexOf('|') + 1), g.issue))) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
           const folder = this.store.getProject(m.projectId)?.plan.folder ?? '';
           const sp = g.secret ? resolveEnvPath(folder, g.secret.file) : null;
           const secret = g.secret ? { ...g.secret, saved: !!sp && 'abs' in sp && envHas(sp.abs, g.secret.name) } : undefined;
@@ -470,7 +470,7 @@ export class Service {
    * 질문·결정·권한 항목만 다룬다(커밋 승인·검토 카드는 각자의 화면에서). 한 번 반영된 항목은 목록에서 빠지므로 같은 결정이 두 번 반영되지 않는다.
    * 추천 표시·미응답·시간 경과는 적용하지 않는다: 이 함수는 사용자가 고른 것만 받는다.
    */
-  applyDecisions(picks: { key: string; choice: string; version?: string }[], via = '앱'): { applied: number; stale: number; lines: string[] } {
+  applyDecisions(picks: { key: string; choice: string; version?: string }[], via = '앱'): { applied: number; stale: number; lines: string[]; failed?: string[] } {
     const live = new Map(this.pendingDecisions().map((x) => [x.key, x]));
     const ok = (p: { key: string; choice: string; version?: string }) => {
       const it = live.get(p.key); const c = String(p.choice ?? '').trim();
@@ -482,7 +482,7 @@ export class Service {
       return true;
     };
     const go = picks.filter(ok); const stale = picks.length - go.length;
-    const lines: string[] = [];
+    const lines: string[] = []; const failed = new Set<string>(); // 적용하지 못한 항목(화면에서 처리됨으로 숨기지 않게)
     for (const missionId of [...new Set(go.map((p) => live.get(p.key)!.missionId))]) {
       const mine = go.filter((p) => live.get(p.key)!.missionId === missionId).map((p) => ({ it: live.get(p.key)!, choice: p.choice.trim() }));
       const title = mine[0].it.missionTitle;
@@ -504,7 +504,7 @@ export class Service {
       for (const x of mine.filter((y) => y.it.kind === 'staff' && y.it.staffId)) {
         const apply = x.choice === x.it.choices[0].label;
         try { this.resolveStaffProposal(missionId, x.it.staffId!, apply ? 'apply' : 'dismiss', null); lines.push(`· ${title}: 직원 제안을 ${apply ? '적용했습니다' : '적용하지 않았습니다'}(${via}).`); }
-        catch (e) { lines.push(`· ${title}: 직원 제안을 처리하지 못했습니다 — ${(e as Error).message}`); }
+        catch (e) { failed.add(x.it.key); lines.push(`· ${title}: 직원 제안을 처리하지 못했습니다 — ${(e as Error).message}`); }
       }
       if (!mine.some((x) => !['merge', 'demo', 'blocker', 'staff'].includes(x.it.kind))) continue;
       const perms = mine.filter((x) => x.it.kind === 'permission'); const allowed = perms.filter((x) => !x.choice.startsWith('허용하지 않'));
@@ -518,7 +518,7 @@ export class Service {
       const parts = [gaps.length && `결정 ${gaps.length}건`, q && '질문 답 1건', allowed.length && `권한 ${allowed.length}건 허용`, perms.length - allowed.length && `권한 ${perms.length - allowed.length}건 보류 유지`].filter(Boolean).join(', ');
       lines.push(`· ${title}: ${parts} 반영(${via}) → ${q || gaps.some((g) => g.it.waiting) ? '멈춰 있던 미션이 이어서 진행합니다' : '진행 중인 미션이 다음 계획부터 따릅니다'}${allowed.length ? ' · 보류한 업무를 다시 시도합니다' : ''}`);
     }
-    return { applied: go.length, stale, lines };
+    return { applied: go.length - failed.size, stale: stale + failed.size, lines, failed: [...failed] };
   }
   /**
    * 확인함의 비밀값(API 키 등)을 연결 폴더의 .env 파일에 저장하고, 그 결정을 '넣었음'으로 처리한다.

@@ -504,8 +504,8 @@ export class TelegramBridge {
       `${this.headIds(it.projectId, it.missionId)}`,
       `${it.urgent ? '🟠 <b>결정 필요(미션이 기다림)</b>' : '🟡 <b>확인 필요(다른 작업은 계속)</b>'} · ${esc(it.task)}`,
       `<b>${esc(cut(it.question, 600))}</b>`,
-      it.held ? `왜: ${esc(it.held)}` : '', it.explain ? esc(it.kind === 'demo' ? it.explain : cut(it.explain, 500)) : '',
-      it.kind === 'demo' && demoTooLong(it) ? '⚠️ 실행 명령·환경값이 길어 텔레그램에 다 보여 드릴 수 없습니다. <b>앱 확인함에서 전체를 보고 정하세요.</b>' : '',
+      it.held ? `왜: ${esc(it.held)}` : '', it.explain ? esc(it.kind === 'demo' || it.kind === 'staff' ? it.explain : cut(it.explain, 500)) : '',
+      (it.kind === 'demo' || it.kind === 'staff') && demoTooLong(it) ? '⚠️ 실행 명령·환경값이 길어 텔레그램에 다 보여 드릴 수 없습니다. <b>앱 확인함에서 전체를 보고 정하세요.</b>' : '',
       it.grants ? `허용하면: ${esc(it.grants)}` : '',
       ...it.choices.map((c, i) => `${i + 1}. ${esc(c.label)}${c.recommended ? ' ⭐추천' : ''}${c.effect ? ` — ${esc(cut(c.effect, 200))}` : ''}`),
       rec?.why ? `추천 이유: ${esc(cut(rec.why, 300))}` : '',
@@ -515,7 +515,7 @@ export class TelegramBridge {
         : '버튼은 <b>선택</b>만 합니다. /pending 의 “선택한 내용 적용”을 눌러야 반영됩니다. 이 메시지에 답장하면 그 내용으로 바로 답합니다.',
     ].filter(Boolean);
     const batchable = ['question', 'gap', 'permission', 'merge', 'demo', 'blocker', 'staff'].includes(it.kind);
-    const rows: Btn[][] = batchable && !(it.kind === 'demo' && demoTooLong(it)) ? it.choices.map((c) => [{ text: `${c.recommended ? '⭐ ' : ''}${cut(c.label, 40)}`, cb: { a: 'pick', k: it.key, v: c.label, ver: v, kind: it.kind } }]) : [];
+    const rows: Btn[][] = batchable && !((it.kind === 'demo' || it.kind === 'staff') && demoTooLong(it)) ? it.choices.map((c) => [{ text: `${c.recommended ? '⭐ ' : ''}${cut(c.label, 40)}`, cb: { a: 'pick', k: it.key, v: c.label, ver: v, kind: it.kind } }]) : [];
     if (batchable && !['permission', 'merge', 'demo', 'blocker', 'staff'].includes(it.kind) && !it.secret) rows.push([{ text: '직접 답 쓰기', cb: { a: 'own', k: it.key, ver: v, q: cut(it.question, 200) } }]);
     if (it.kind === 'checkpoint') rows.push([{ text: '결과 검토 열기', cb: { a: 'cp', m: it.missionId } }]);
     if (it.kind === 'commit' && it.commit) rows.push([{ text: '커밋 요청 보기', cb: { a: 'cmd', c: 'commits', m: it.missionId } }]);
