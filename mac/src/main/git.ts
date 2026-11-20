@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { PROTECTED_BRANCHES } from './autopilot';
 import { cleanEnv } from './cli/claudeCli';
 
@@ -770,24 +770,24 @@ export function mergeDevToMain(abs: string, repo: string, day: string): Promise<
   }).catch((e) => res('failed', firstLine((e as Error).message)));
 }
 
-/** 지워도 git 기록으로 되살릴 수 있는가: 경로(파일·폴더)의 모든 파일이 커밋돼 있고 바뀐 것·추적하지 않는 파일이 없다 */
+/** 지워도 git 기록으로 되살릴 수 있는가: 경로(파일·폴더)의 모든 파일이 커밋돼 있고 바뀐 것·추적하지 않는 파일·무시된 파일이 없다.
+ *  경로는 그 파일이 있는 폴더(폴더면 그 폴더)에서 상대 이름으로 git에 묻는다(Windows의 C:\·C:/·짧은 이름 차이로 어긋나지 않게) */
 export async function trackedClean(abs: string): Promise<boolean> {
   let isDir = false; try { isDir = statSync(abs).isDirectory(); } catch { return false; }
-  const dir = isDir ? abs : dirname(abs);
-  const root = await gitRoot(dir); if (!root) return false;
-  let real = abs; try { real = realpathSync(abs); } catch { return false; }
-  const rel = relative(root, real).split(sep).join('/'); if (!rel || rel.startsWith('..')) return false;
-  const ls = await git(root, ['ls-files', '--', rel]); if (!ls.ok || !ls.out) return false;
+  const cwd = isDir ? abs : dirname(abs); const rel = isDir ? '.' : basename(abs);
+  if (!(await gitRoot(cwd))) return false;
+  const env = { GIT_LITERAL_PATHSPECS: '0' };
+  const ls = await git(cwd, ['ls-files', '--', rel], env); if (!ls.ok || !ls.out) return false;
   // 추적하지 않는 파일·무시된 파일(.gitignore)이 하나라도 있으면 git으로 되살릴 수 없으니 지우지 않는다
-  const st = await git(root, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', rel]);
+  const st = await git(cwd, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', rel], env);
   return st.ok && st.out === '';
 }
 
-/** git이 무시하고 추적하는 파일이 하나도 없는 폴더인가(지워도 저장소 기록과 상관없는 빌드 결과) */
+/** git이 무시하고 추적하는 파일이 하나도 없는 폴더인가(지워도 저장소 기록과 상관없는 빌드 결과) — 상위 폴더 기준 상대 이름으로 묻는다 */
 export async function ignoredUntracked(abs: string): Promise<boolean> {
-  const root = await gitRoot(dirname(abs)); if (!root) return false;
-  let real = abs; try { real = realpathSync(abs); } catch { return false; }
-  const rel = relative(root, real).split(sep).join('/'); if (!rel || rel.startsWith('..')) return false;
-  const ls = await git(root, ['ls-files', '--', rel]); if (!ls.ok || ls.out) return false;
-  return (await git(root, ['check-ignore', '-q', '--no-index', '--', rel], { GIT_LITERAL_PATHSPECS: '0' })).ok;
+  const cwd = dirname(abs); const rel = basename(abs);
+  if (!(await gitRoot(cwd))) return false;
+  const env = { GIT_LITERAL_PATHSPECS: '0' };
+  const ls = await git(cwd, ['ls-files', '--', rel], env); if (!ls.ok || ls.out) return false;
+  return (await git(cwd, ['check-ignore', '-q', '--no-index', '--', rel], env)).ok;
 }
