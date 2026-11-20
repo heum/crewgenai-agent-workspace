@@ -16,11 +16,11 @@ function setup() {
 const put = (dir: string, rel: string, text: string) => { mkdirSync(join(dir, rel, '..'), { recursive: true }); writeFileSync(join(dir, rel), text); };
 
 describe('프로젝트 완성 문서', () => {
-  it('표준 8종을 순서대로 주고, 파일 상태에 따라 없음 → 작성됨 → 검토 완료 → 검토 후 바뀜으로 바뀐다', () => {
+  it('표준 9종을 순서대로 주고, 파일 상태에 따라 없음 → 작성됨 → 검토 완료 → 검토 후 바뀜으로 바뀐다', () => {
     const { dir, svc, p } = setup();
     const docs = svc.projectDocs(p.id);
-    expect(docs.length).toBe(8);
-    expect(docs.map((d) => d.order)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(docs.length).toBe(9);
+    expect(docs.map((d) => d.order)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(docs.every((d) => d.status === 'missing')).toBe(true);
     const req = docs.find((d) => d.templateId === '03-customer-requirements')!;
     expect(req.missingBefore.length).toBe(2); // 앞 순서 문서 2개가 아직 없음
@@ -43,7 +43,7 @@ describe('프로젝트 완성 문서', () => {
     const reviewed = svc.projectDocs(p.id).find((d) => d.id === req.id)!;
     const next = base.map((d) => (d.id === rnd.id ? { ...d, excluded: true } : d.id === req.id ? { ...d, path: 'docs/requirements.md', reviewedSha: reviewed.reviewedSha } : d));
     const saved = svc.saveProjectDocs(p.id, [...next, { id: '', title: '운영 정책서', path: 'docs/ops.md', templateId: null, instruction: '', excluded: false, reviewedSha: null, reviewedAt: null }]);
-    expect(saved.length).toBe(9);
+    expect(saved.length).toBe(10);
     expect(saved.find((d) => d.id === rnd.id)!.status).toBe('excluded');
     const r2 = saved.find((d) => d.id === req.id)!;
     expect(r2.status).toBe('missing'); // 새 경로에는 파일이 없음
@@ -51,7 +51,7 @@ describe('프로젝트 완성 문서', () => {
     expect(r2.resolvedInstruction).toContain('docs/requirements.md');
     expect(r2.missingBefore).not.toContain(saved.find((d) => d.id === rnd.id)!.title); // 뺀 문서는 앞 문서로 보지 않음
     expect(saved.at(-1)!.resolvedInstruction).toContain('docs/ops.md');
-    expect(svc.resetProjectDocs(p.id).length).toBe(8);
+    expect(svc.resetProjectDocs(p.id).length).toBe(9);
     svc.close();
   });
 

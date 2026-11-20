@@ -1,5 +1,5 @@
 // 프로젝트 완성 문서 세트 — '이 프로젝트를 완성하려면 필요한 문서' 목록과 각 문서의 상태.
-// 표준 세트(권장 문서 템플릿 8종, 순서 있음)를 기본으로 두고 프로젝트마다 빼거나 추가할 수 있다.
+// 표준 세트(권장 문서 템플릿 9종, 순서 있음)를 기본으로 두고 프로젝트마다 빼거나 추가할 수 있다.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import type { DocItem, ProjectDoc, PromptTemplate } from '../shared/types';
