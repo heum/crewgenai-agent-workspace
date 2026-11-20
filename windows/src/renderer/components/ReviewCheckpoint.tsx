@@ -1,7 +1,7 @@
 // 검토 지점: 의미 있는 결과가 준비됐을 때 한곳에서 보고 판단한다.
 // 이번에 만든 큰 기능·달라진 점, 바로 여는 시연, 눌러 볼 순서와 예상 결과, 실제 확인한 범위와 미완성·미검증, 가정하고 진행한 세부,
 // 사용자가 정할 핵심(최대 3, 추천 표시만 하고 자동으로 고르지 않음), 묶은 피드백. 고르지 않은 결정은 다음 검토 지점에 다시 나온다.
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Mission } from '../../shared/types';
 import { useAction, ws } from '../api';
 import { Banner } from './common';
@@ -19,6 +19,7 @@ export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: M
   const [picks, setPicks] = useState<Record<number, string>>({});
   const [own, setOwn] = useState<Record<number, string>>({});
   const [fb, setFb] = useState('');
+  const fbRef = useRef<HTMLTextAreaElement>(null);
   const send = (action: 'continue' | 'stop') => act.run(async () => {
     const list = c.decisions.map((d, i) => ({ doc: d.doc, question: d.question, choice: (own[i]?.trim() || picks[i] || '').trim() })).filter((p) => p.choice);
     await ws().reviewMission(m.id, list, fb, action);
@@ -64,8 +65,8 @@ export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: M
       </div>
       {c.assumptions.length > 0 && (
         <div className="review-cp-sec">
-          <h4>문서가 부족해 가정하고 진행한 것 <span className="muted small">(다르면 아래 피드백에 적어 주세요)</span></h4>
-          <AssumeList items={c.assumptions} />
+          <h4>문서가 부족해 가정하고 진행한 것 <span className="muted small">(맞으면 그대로 두고, 다르면 그 줄의 '다름'을 눌러 피드백에 적어 주세요)</span></h4>
+          <AssumeList items={c.assumptions} onDiffer={(n, head) => { setFb((v) => `${v.trim() ? `${v.trimEnd()}\n` : ''}${n}번 가정(${head})이 다름: `); setTimeout(() => { const t = fbRef.current; if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); t.scrollIntoView({ block: 'nearest' }); } }, 0); }} />
         </div>
       )}
       {c.decisions.length > 0 && (
@@ -90,7 +91,7 @@ export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: M
       )}
       <div className="review-cp-sec">
         <h4>피드백(한 번에 묶어서)</h4>
-        <textarea className="input" rows={3} value={fb} placeholder="시연을 보고 바꿀 점을 한 번에 적어 주세요. 다음 사이클에 수정하고 같은 시연에서 다시 확인할 수 있게 합니다." onChange={(e) => setFb(e.target.value)} />
+        <textarea ref={fbRef} className="input" rows={3} value={fb} placeholder="시연을 보고 바꿀 점을 한 번에 적어 주세요. 다음 사이클에 수정하고 같은 시연에서 다시 확인할 수 있게 합니다." onChange={(e) => setFb(e.target.value)} />
       </div>
       {act.error && <Banner>{act.error}</Banner>}
       <div className="row gap review-cp-actions">
@@ -113,18 +114,30 @@ export function splitHead(t: string): { head: string; rest: string } {
   return { head: `${s.slice(0, 34).trim()}…`, rest: s };
 }
 
-/** 가정 목록: 굵은 핵심만 먼저 보이고 누르면 자세히. 처음 5개만 보이고 나머지는 펼쳐서 */
-function AssumeList({ items }: { items: string[] }) {
+/** 가정 목록: 번호·핵심·설명 한 줄을 표처럼 한눈에. 줄을 누르면 설명 전체, '다름'을 누르면 피드백 칸에 그 번호로 적기 시작한다 */
+function AssumeList({ items, onDiffer }: { items: string[]; onDiffer: (n: number, head: string) => void }) {
+  const LIMIT = 8;
   const [all, setAll] = useState(false);
-  const shown = all ? items : items.slice(0, 5);
+  const [open, setOpen] = useState<Set<number>>(new Set());
+  const shown = all ? items : items.slice(0, LIMIT);
+  const toggle = (i: number) => setOpen((o) => { const n = new Set(o); if (n.has(i)) n.delete(i); else n.add(i); return n; });
   return (
     <>
-      <ul className="review-cp-assume">
-        {shown.map((a, i) => { const { head, rest } = splitHead(a); return (
-          <li key={i}>{rest ? <details><summary><b>{head}</b></summary><div className="muted small">{rest}</div></details> : <b>{head}</b>}</li>
+      <ol className="assume-table">
+        {shown.map((a, i) => { const { head, rest } = splitHead(a); const isOpen = open.has(i); return (
+          <li key={i} className={`assume-row${isOpen ? ' is-open' : ''}${rest ? ' has-rest' : ''}`}>
+            <span className="assume-n">{i + 1}</span>
+            <button type="button" className="assume-text" onClick={() => rest && toggle(i)} aria-expanded={rest ? isOpen : undefined} title={rest && !isOpen ? '눌러서 전체 보기' : undefined}>
+              <b>{head}</b>{rest && <span className="assume-rest">{rest}</span>}
+            </button>
+            <button type="button" className="btn btn-sm assume-differ" onClick={() => onDiffer(i + 1, head)} title="이 가정이 다르면 피드백 칸에 번호와 함께 적기 시작합니다">다름</button>
+          </li>
         ); })}
-      </ul>
-      {items.length > 5 && <button className="btn-link small" onClick={() => setAll((v) => !v)}>{all ? '접기' : `나머지 ${items.length - 5}개 보기`}</button>}
+      </ol>
+      <div className="row gap small assume-tools">
+        {items.length > LIMIT && <button className="btn-link small" onClick={() => setAll((v) => !v)}>{all ? '접기' : `나머지 ${items.length - LIMIT}개 보기`}</button>}
+        {shown.some((a) => splitHead(a).rest) && <button className="btn-link small" onClick={() => setOpen(open.size ? new Set() : new Set(shown.map((_, i) => i)))}>{open.size ? '설명 모두 접기' : '설명 모두 펼치기'}</button>}
+      </div>
     </>
   );
 }

@@ -2128,3 +2128,20 @@ textarea.input {
 .secret-value { flex: 1 1 220px; }
 .secret-err { color: var(--danger, #b42318); }
 .secret-open { display: inline-block; margin: 4px 0; }
+
+/* 검토 카드: 가정 목록(번호·핵심·설명 한 줄) */
+.assume-table { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; overflow: hidden; }
+.assume-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line, #e5e7eb); }
+.assume-row:first-child { border-top: 0; }
+.assume-row:nth-child(even) { background: var(--panel-2, #f8fafc); }
+.assume-n { font-variant-numeric: tabular-nums; color: var(--sub, #667085); font-size: 12px; text-align: right; padding-top: 2px; }
+.assume-text { all: unset; min-width: 0; display: flex; gap: 10px; align-items: baseline; font-size: 13px; line-height: 1.5; }
+.assume-row.has-rest .assume-text { cursor: pointer; }
+.assume-text b { flex: 0 0 auto; max-width: 45%; }
+.assume-rest { color: var(--sub, #667085); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assume-row.is-open .assume-text { flex-direction: column; gap: 2px; }
+.assume-row.is-open .assume-text b { max-width: none; }
+.assume-row.is-open .assume-rest { white-space: normal; }
+.assume-text:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; border-radius: 4px; }
+.assume-differ { padding: 1px 8px; font-size: 12px; }
+.assume-tools { margin-top: 4px; }
