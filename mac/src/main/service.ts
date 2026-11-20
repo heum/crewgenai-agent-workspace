@@ -430,12 +430,12 @@ export class Service {
         for (const a of m.demoAsks ?? []) {
           let s: DemoService | undefined; try { s = readManifest(this.store.getProject(m.projectId).plan).services.find((x) => x.id === a.serviceId); } catch { s = undefined; }
           if (!s || serviceHash(s) !== a.hash) continue;
-          const env = Object.entries(s.env).map(([k, v]) => `${k}=${redact(String(v)).slice(0, 160)}`);
+          const env = Object.entries(s.env).map(([k, v]) => `${k}=${redact(String(v))}`); // 승인 전에 전부 보여 준다(자르지 않음)
           const approve = a.kind === 'approve';
           const yes = approve ? '승인하고 켜기' : '다시 켜기'; const no = approve ? '지금은 켜지 않음' : '그대로 두기';
           const grant = approve ? `앱이 '${s.repo || '.'}' 폴더에서 이 명령으로 시연 서버를 켭니다(격리 밖, 이 PC의 127.0.0.1${s.port ? `:${s.port}` : ''}). 이후 포트만 바뀌면 다시 묻지 않고, 명령·폴더·환경값이 바뀌면 다시 묻습니다.` : '앱이 켠 이 서버를 끄고 같은 명령으로 다시 켭니다(사용자가 직접 띄운 서버는 건드리지 않음).';
           out.push({ ...base, key: `${m.id}|demo|${a.serviceId}|${a.kind}|${a.hash}`, kind: 'demo', task: `시연 · ${s.name}`, question: approve ? `시연 서버 '${s.name}'을(를) 켜도 될까요?` : `시연 서버 '${s.name}'을(를) 다시 켤까요?`,
-            explain: [a.why, `명령: ${s.start.join(' ')}`, `폴더: ${s.repo || '.'}`, s.port ? `포트: ${s.port}` : '', env.length ? `환경값: ${env.join(', ')}` : ''].filter(Boolean).join('\n').slice(0, 2000), doc: '', issue: '',
+            explain: [a.why, `명령: ${s.start.join(' ')}`, `폴더: ${s.repo || '.'}`, s.port ? `포트: ${s.port}` : '', env.length ? `환경값: ${env.join(', ')}` : ''].filter(Boolean).join('\n'), doc: '', issue: '',
             choices: [{ label: yes, effect: grant, recommended: false, why: '' }, { label: no, effect: approve ? '켜지 않습니다. 실서버 확인 없이 개발을 계속하고, 같은 내용은 다시 묻지 않습니다.' : '지금 서버를 그대로 둡니다. 같은 상태는 다시 묻지 않습니다.', recommended: false, why: '' }],
             waiting: false, urgent: false, demo: a, held: '시연 서버가 꺼져 있거나 예전 코드일 수 있어 실서버 확인이 멈춰 있습니다(개발은 계속).', resumes: '정하면 앱이 바로 켜고 다음 판단부터 실서버로 확인합니다.', grants: grant });
         }

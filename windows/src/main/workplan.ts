@@ -47,9 +47,10 @@ export function mergeWorkPlan(prev: MissionWorkPlan | null | undefined, raw: Raw
   const phases: WorkPhase[] = fresh ? [] : (prev!.phases ?? []).map((p) => ({ ...p }));
   // 단계: id·이름으로 맞추고, 새 단계는 P번호를 붙인다(단계는 빼지 않는다 — 기능을 옮기거나 빼는 것으로 정리)
   const phaseMap = new Map<string, string>(); // 갱신안의 id·이름 → 실제 단계 id
+  const existing = new Set(phases.map((p) => p.id)); // 갱신안의 id는 원래 있던 단계에만 맞춘다(이번에 새로 붙인 id와 섞지 않음)
   for (const x of rawPhases) {
     const title = clip(x.title, 120); const goal = clip(x.goal, 400); const rid = clip(x.id, 10).toUpperCase();
-    let cur = phases.find((p) => p.id === rid) ?? phases.find((p) => p.title === title);
+    let cur = (rid && existing.has(rid) ? phases.find((p) => p.id === rid) : undefined) ?? phases.find((p) => p.title === title);
     if (!cur) {
       if (phases.length >= MAX_PHASES) { notes.push(`단계가 ${MAX_PHASES}개를 넘어 '${title}'을(를) 더하지 않음`); continue; }
       cur = { id: `P${nextNum(phases.map((p) => p.id), 'P')}`, title, goal };
@@ -63,7 +64,7 @@ export function mergeWorkPlan(prev: MissionWorkPlan | null | undefined, raw: Raw
     phaseMap.set(title, cur.id);
   }
   const phaseOf = (v: unknown, fallback = ''): string => {
-    const s = clip(v, 120); const id = phaseMap.get(s.toUpperCase()) ?? phaseMap.get(s) ?? phases.find((p) => p.id === s.toUpperCase() || p.title === s)?.id;
+    const s = clip(v, 120); const id = phaseMap.get(s.toUpperCase()) ?? phaseMap.get(s) ?? phases.find((p) => (existing.has(s.toUpperCase()) && p.id === s.toUpperCase()) || p.title === s)?.id;
     if (id) return id;
     if (fallback) return fallback;
     let other = phases.find((p) => p.title === '기타');

@@ -84,12 +84,19 @@ export function readManifest(plan: PlanFields): { services: DemoService[]; apis:
 
 /** 화면에 보여 준 내용 그대로의 확인값(승인 창·확인함에서 본 것과 실행 직전 목록이 같은지 대조) */
 export function serviceHash(s: DemoService) { return createHash('sha256').update(JSON.stringify([real(s.cwd), s.start, s.env, s.port])).digest('hex').slice(0, 24); }
-/** 포트 번호만 지운 값: PORT가 들어간 환경값, 주소의 :포트, --port·-p·PORT= 인자의 숫자 */
-const noPort = (v: string) => v.replace(/\b(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):\d{2,5}\b/g, '$1:<port>').replace(/^(--port=|PORT=)\d{2,5}$/i, '$1<port>');
+/**
+ * 포트만 지운 값(좁게): 값 전체가 로컬 주소(http(s)://127.0.0.1|localhost|0.0.0.0|[::1]:포트[/경로])일 때 그 포트 숫자만.
+ * 코드·일반 경로 안에 섞인 '주소처럼 보이는 글자'는 그대로 비교한다.
+ */
+const LOCAL_URL = /^(https?:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])):\d{2,5}((?:\/[^\s]*)?)$/;
+const noPort = (v: string) => { const m = LOCAL_URL.exec(v); return m ? `${m[1]}:<port>${m[2]}` : v; };
+/** 포트 변수: 이름이 PORT 낱말(…_PORT, PORT_…, PORT, …_PORTS)이고 값이 포트 숫자(쉼표 목록 포함)일 때만 */
+const PORT_KEY = /(^|_)PORTS?(_|$)/i; const PORT_VAL = /^\d{2,5}(\s*,\s*\d{2,5})*$/;
 /** 승인 기준(2026-11 사용자 결정): 명령·폴더·환경값이 같으면 포트만 바뀌어도 이전 승인이 유효하다 */
 export function approvalHash(s: DemoService) {
-  const env = Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, /PORT/i.test(k) ? '<port>' : noPort(String(v))]));
-  const start = s.start.map((a, i) => (/^\d{2,5}$/.test(a) && /^(--port|-p)$/.test(s.start[i - 1] ?? '') ? '<port>' : noPort(a)));
+  const env = Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, PORT_KEY.test(k) && PORT_VAL.test(String(v).trim()) ? '<port>' : noPort(String(v))]));
+  // 명령 인자는 '--port 숫자'·'--port=숫자'만 포트로 본다(-p 같은 짧은 옵션은 실행기마다 뜻이 달라 그대로 비교)
+  const start = s.start.map((a, i) => (/^\d{2,5}$/.test(a) && s.start[i - 1] === '--port' ? '<port>' : /^--port=\d{2,5}$/.test(a) ? '--port=<port>' : noPort(a)));
   return createHash('sha256').update(JSON.stringify(['v2', real(s.cwd), start, env])).digest('hex').slice(0, 24);
 }
 

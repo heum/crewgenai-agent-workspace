@@ -31,7 +31,18 @@ describe('시연 실행 승인 기준', () => {
     write(plan, { services: [{ ...base, port: 3302, env: { DEMO_PORT: '3302', API: 'http://127.0.0.1:8102/api', DIST: '.next-demo-c2' } }] });
     expect(mgr.approved('p', readManifest(plan).services[0])).toBe(false);
     write(plan, { services: [{ ...base, start: ['node', 'other.js'] }] });
-    expect(mgr.approved('p', readManifest(plan).services[0])).toBe(false);
+    expect(mgr.approved('p', readManifest(plan).services[0])).toBe(false);    // 이름에 PORT가 들어갔을 뿐인 값, 포트가 아닌 짧은 옵션, 코드·경로 속 주소처럼 보이는 글자는 포트로 보지 않는다
+    const chk = (extra: object) => { write(plan, { services: [{ ...base, ...extra }] }); return mgr.approved('p', readManifest(plan).services[0]); };
+    mgr.approve('p', readManifest(plan).services[0]);
+    expect(chk({ env: { ...base.env, EXPORT_DIR: '/tmp/a' } })).toBe(false);
+    mgr.approve('p', readManifest(plan).services[0]);
+    expect(chk({ env: { ...base.env, EXPORT_DIR: '/tmp/b' } })).toBe(false);
+    write(plan, { services: [{ ...base, start: ['node', 'server.js', '-p', '1234'] }] }); mgr.approve('p', readManifest(plan).services[0]);
+    expect(chk({ start: ['node', 'server.js', '-p', '5678'] })).toBe(false);
+    write(plan, { services: [{ ...base, start: ['node', 'server.js', '--port', '1234'] }] }); mgr.approve('p', readManifest(plan).services[0]);
+    expect(chk({ start: ['node', 'server.js', '--port', '5678'] })).toBe(true);
+    write(plan, { services: [{ ...base, env: { ...base.env, CODE: 'x ./localhost:1234/f' } }] }); mgr.approve('p', readManifest(plan).services[0]);
+    expect(chk({ env: { ...base.env, CODE: 'x ./localhost:9999/f' } })).toBe(false);
   });
 
   it('승인되지 않은 서비스는 켜지 않고 확인함에 올릴 항목으로 돌려준다', async () => {

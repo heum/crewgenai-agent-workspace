@@ -33,6 +33,12 @@ describe('작업 목록 반영 규칙', () => {
 });
 
 describe('작업 목록 반영 규칙 — 리뷰 반영', () => {
+  it('처음 만들 때 갱신안의 단계 id 순서가 달라도 서로 다른 단계를 합치지 않는다', () => {
+    const r = mergeWorkPlan(null, { phases: [{ id: 'P2', title: '화면', goal: 'g' }, { id: 'P1', title: '기반', goal: 'g' }], items: [{ phase: 'P2', title: '목록', criteria: 'c', status: 'todo' }, { phase: 'P1', title: '저장', criteria: 'c', status: 'todo' }] }, 1, 't');
+    expect(r.plan!.phases!.map((p) => p.title)).toEqual(['화면', '기반']);
+    const of = (t: string) => r.plan!.phases!.find((p) => p.id === r.plan!.items.find((i) => i.title === t)!.phase)!.title;
+    expect([of('목록'), of('저장')]).toEqual(['화면', '기반']);
+  });
   it('완료 기준이 바뀌면 예전 근거로는 완료를 유지하지 않는다', () => {
     const a = mergeWorkPlan(null, { items: [{ title: '로그인', criteria: '로그인 성공', status: 'done', evidence: 'login test 3 passed' }] }, 1, 't');
     const b = mergeWorkPlan(a.plan, { changeReason: '보안 지시', items: [{ id: 'W1', title: '로그인', criteria: '로그인과 2단계 인증 성공', status: 'done' }] }, 2, 't');
