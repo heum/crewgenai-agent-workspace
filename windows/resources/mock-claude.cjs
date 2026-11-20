@@ -6,6 +6,7 @@
 //   [[mock:fail]]            결과를 실패(is_error)로 보고
 //   [[mock:crash]]           결과 이벤트 없이 종료 코드 3
 //   [[mock:hang]]            오래 대기(취소·시간 초과 시험)
+//   [[mock:hang-once]]       첫 시도는 docs/부분.md를 만든 뒤 멈춤(시간 초과), --resume으로 이어 가면 정상 완료
 //   [[mock:gaps-once:이름]]   오퍼레이터 계획이 처음 한 번만 '근거 문서 보완 요청(gaps)'을 돌려줌
 //   [[mock:limit-once:이름]]  처음 한 번만 사용 한도 도달(rate_limit_event rejected + is_error)로 끝남. 오퍼레이터가 먼저 맞고, 작업 지시에는 '이름-agent'로 넘긴다
 //   [[mock:todo-first]]      첫 작성에는 TODO를 남기고 재작업 요청을 받으면 제거
@@ -156,6 +157,11 @@ async function main() {
     process.exit(1);
   }
   if (prompt.includes('[[mock:crash]]')) { process.stderr.write('mock crash\n'); process.exit(3); }
+  // 첫 시도는 일부 파일을 만든 뒤 멈춰 시간 제한에 걸리고, 같은 세션으로 이어 가면(--resume) 정상으로 끝난다
+  if (!isOperator && prompt.includes('[[mock:hang-once]]') && !opt('--resume')) {
+    fs.mkdirSync(path.join(cwd, 'docs'), { recursive: true }); fs.writeFileSync(path.join(cwd, 'docs', '부분.md'), '# 시간 초과 전에 만든 부분\n');
+    out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: '큰 작업을 진행합니다.' }] } }); await new Promise((r) => setTimeout(r, 600000));
+  }
   if (!isOperator && prompt.includes('[[mock:hang]]')) { out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: '오래 걸리는 작업을 진행합니다.' }] } }); await new Promise((r) => setTimeout(r, 600000)); }
 
   // 산출물 목록: "- 경로 (형식)" 줄을 "## 산출물" 구획에서 읽는다.

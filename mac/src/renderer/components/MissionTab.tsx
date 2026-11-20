@@ -502,7 +502,11 @@ function PendingDirectives({ missionId, items, onChanged }: { missionId: string;
 function ResultsCard({ mission: m }: { mission: Mission }) {
   return (
     <div className="card results-card">
-      <div className="report-head"><strong>열어 볼 결과물</strong></div>
+      <div className="report-head"><strong>열어 볼 결과물</strong>
+        {m.lastDirective && (m.lastDirective.plannedCycle === null || (m.resultsCycle ?? 0) < m.lastDirective.plannedCycle) && (
+          <span className="badge badge-warn" title="이 결과물은 마지막 추가 지시·검토 피드백이 계획에 반영되기 전 사이클의 것입니다">이전 기준 · 사이클 {m.lastDirective.cycle} 지시 반영 전</span>
+        )}
+      </div>
       <ResultsPanel mission={m} />
     </div>
   );

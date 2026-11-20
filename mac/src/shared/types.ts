@@ -678,6 +678,10 @@ export interface Mission {
   docTidy?: { cycle: number; at: string; groups: { folder: string; files: string[] }[]; left?: number } | null;
   /** 마지막으로 문서 정리를 한(또는 살펴본) 사이클 */
   docTidyCycle?: number;
+  /** 오퍼레이터가 '반영 완료'로 닫은 추가 지시(기록 번호). 닫기 전까지는 계획·판단에 항상 들어간다 */
+  closedDirectives?: number[];
+  /** 마지막 추가 지시·검토 피드백: 언제 들어왔고 어느 사이클 계획에 처음 반영됐는지(결과 카드의 '이전 기준' 표시) */
+  lastDirective?: { seq: number; cycle: number; plannedCycle: number | null } | null;
   /** 시연 확인에서 사용자 승인·다시 켜기가 필요한 서비스(확인함 '시연' 항목) */
   demoAsks?: DemoAsk[] | null;
   /** 사용자가 '지금은 켜지 않음'·'그대로 두기'로 넘긴 시연 항목(서비스:확인값:종류) — 같은 내용이면 다시 묻지 않음 */
@@ -884,7 +888,7 @@ export interface PendingDecision {
   key: string;
   projectId: ID; projectName: string;
   missionId: ID; missionTitle: string; cycle: number;
-  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint' | 'merge' | 'demo';
+  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint' | 'merge' | 'demo' | 'blocker' | 'staff';
   task: string; // 어떤 작업·문서의 결정인지
   question: string; // 무엇을 정해야 하는지
   explain: string; // 쉬운 설명(있을 때)
@@ -898,7 +902,8 @@ export interface PendingDecision {
   resumes?: string; // 정하면 재개될 작업
   grants?: string; // 권한 항목: 허용하면 무엇을 허용하는지
   secret?: MissionSecretSpec & { saved: boolean };
-  demo?: DemoAsk; // 시연 실행 승인·다시 켜기 // 비밀값을 넣어야 하는 결정: 저장 위치와 이미 값이 들어 있는지(값 자체는 없음)
+  demo?: DemoAsk; // 시연 실행 승인·다시 켜기
+  staffId?: string; // 직원 제안 항목 // 비밀값을 넣어야 하는 결정: 저장 위치와 이미 값이 들어 있는지(값 자체는 없음)
 }
 
 /** 텔레그램 연동 화면용 상태(토큰 값은 없음) */

@@ -729,8 +729,9 @@ export class Engine {
     // 이미 성공한 작성 시도가 있으면 재사용(재개 시 중복 실행 방지)
     let author: Attempt | undefined = existing.find((a) => a.status === 'succeeded' && a.acceptance?.ok);
     const interrupted = existing.find((a) => a.status === 'interrupted');
+    let carry: string | null = null; let timeoutResumed = false; // 시간 초과로 끊긴 세션은 한 번만 이어 간다
     for (let i = 0; !author && i < maxAttempts; i++) {
-      let resumeSession: string | null = null;
+      let resumeSession: string | null = carry; carry = null;
       if (interrupted && i === 0) {
         const res = this.s.getResolution(runId, node.id);
         if (!res) { this.setNode(runId, node.id, { status: 'needs_resume' }); throw new NeedsResume(`"${node.label}" 재개 방법 선택 필요`); }
@@ -753,9 +754,14 @@ export class Engine {
       if (a.status === 'succeeded') { author = a; break; }
       lastReason = a.error || 'Claude 작업이 완료 조건을 충족하지 못했습니다.';
       const missing = (a.acceptance?.checks ?? []).some((c) => !c.ok && /필수 산출물이 없습니다/.test(c.detail));
-      extra = `${feedback}\n이전 시도 실패 원인: ${lastReason}${missing ? `\n필수 산출물이 없어 실패했습니다. 막힌 부분이 있어도 산출물을 먼저 만드세요.\n${MISSING_OUTPUT_RULE}` : ''}`.trim();
+      const resumeTimeout = a.status === 'timeout' && !!a.sessionId && !timeoutResumed;
+      if (resumeTimeout) { carry = a.sessionId; timeoutResumed = true; }
+      extra = `${feedback}\n이전 시도 실패 원인: ${lastReason}${resumeTimeout ? '\n시간 제한에 걸려 끊겼습니다. 끊기기 전까지 바꾼 파일은 이미 반영돼 있으니 처음부터 다시 하지 말고, 남은 일만 이어서 끝내세요. 오래 걸리는 명령(서버 실행·전체 빌드)은 피하세요.' : ''}${missing ? `\n필수 산출물이 없어 실패했습니다. 막힌 부분이 있어도 산출물을 먼저 만드세요.\n${MISSING_OUTPUT_RULE}` : ''}`.trim();
     }
     if (!author) return { status: 'fail' as const, summary: '', outputs: [], reason: lastReason, feedbackText: lastReason };
+    // 다음 단계(Codex 리뷰·재검토·검사)가 볼 대상: 계획된 산출물 + 이번 단계에서 실제로 바뀐 파일(보고 파일만이 아니라 바뀐 코드까지)
+    const changed = [...new Set(this.s.runAttempts(runId).filter((x) => x.nodeId === node.id && x.role === 'author').flatMap((x) => x.changedFiles))].slice(0, 80);
+    const reviewTargets = [...new Set([...node.outputs.map((o) => o.path), ...changed])];
 
     // 노드 단위 독립 검토(작성자와 다른 담당, 읽기 전용)
     // 노드 지정이 없으면 직원의 기본 독립 검토 담당. 다음 단계에서 Codex 리뷰·Claude 재검토를 하는 흐름(운영 루프)은 노드 안 검토를 건너뛴다.
@@ -763,10 +769,10 @@ export class Engine {
     if (reviewerId) {
       const reviewer = this.agentOf(runId, reviewerId);
       if (!reviewer) return { status: 'fail' as const, summary: author.summary, outputs: [], reason: '검토 담당을 찾을 수 없습니다.' };
-      const v = await this.runReviewer(runId, node, visit, plan, reviewer, node.outputs.map((o) => o.path), node.doneCriteria || agent.doneCriteria);
+      const v = await this.runReviewer(runId, node, visit, plan, reviewer, reviewTargets, node.doneCriteria || agent.doneCriteria);
       if (v.verdict !== 'approve') return { status: 'fail' as const, summary: author.summary, outputs: [], reason: `독립 검토 수정 요청: ${v.summary}`, feedbackText: `독립 검토(${reviewer.name}) 지적:\n- ${v.issues.join('\n- ')}`, target: node.id };
     }
-    return { status: 'ok' as const, summary: author.summary, outputs: node.outputs.map((o) => o.path) };
+    return { status: 'ok' as const, summary: author.summary, outputs: reviewTargets };
   }
 
   private authorPrompt(plan: PlanFields, agent: Agent, node: GraphNode, upstream: string[], scope: string[], feedback: string, visit: number): string {
@@ -1067,7 +1073,10 @@ export class Engine {
       if (isolate && iso) {
         // 격리 실행: 범위 밖 변경은 실제 프로젝트에 반영하지 않는다(차단). 범위 안 변경은 전부 반영하거나, 충돌·위험 경로가 있으면 하나도 반영하지 않는다.
         const outside = changed.filter((f) => !inOwn(f));
-        const res = done.cancelled || done.timedOut || outside.length ? { applied: [], conflicts: [], blocked: [] } : applyIsolated(plan.folder, workDir, changed.filter(inOwn), iso.base);
+        // 사용자 취소는 반영하지 않는다. 작성 작업이 시간 제한에 걸린 경우는 그때까지 한 일(범위 검사를 통과한 것)을 반영하고 다음 시도가 같은 세션으로 이어 간다
+        const discard = done.cancelled || (done.timedOut && role !== 'author') || outside.length > 0;
+        const res = discard ? { applied: [], conflicts: [], blocked: [] } : applyIsolated(plan.folder, workDir, changed.filter(inOwn), iso.base);
+        if (done.timedOut && !discard && res.applied.length) addEv('system', `시간 제한에 걸렸지만 그때까지 바꾼 파일 ${res.applied.length}개는 범위 검사를 거쳐 반영했습니다. 다음 시도에서 같은 세션으로 이어 갑니다.`, '');
         attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];
         attempt.outOfScopeChanges = outside.map((f) => `${f} (격리 실행에서 차단, 반영 안 함)`);
         cleanupIsolated(workDir);

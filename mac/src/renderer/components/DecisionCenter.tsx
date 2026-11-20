@@ -150,7 +150,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
       setDone(allow ? `허용했습니다. ${list.some((x) => x.kind === 'permission' && x.missionId === cur.missionId) ? '남은 권한 항목을 정하면 보류한 업무를 다시 시도합니다.' : '보류한 업무를 다음 계획부터 다시 시도합니다.'}` : '허용하지 않았습니다. 나머지 작업은 계속 진행합니다.');
       return;
     }
-    if (cur.kind === 'merge' || cur.kind === 'demo') {
+    if (cur.kind === 'merge' || cur.kind === 'demo' || cur.kind === 'blocker' || cur.kind === 'staff') {
       const r = await ws().applyDecisions([{ key: cur.key, choice: label.trim(), version: decisionVersion(cur) }]);
       const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
       for (const d of list) seen.current.add(d.key);
@@ -170,11 +170,11 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   });
 
   // ───── 확인함: 선택 항목 일괄 적용 ─────
-  const batchable = (it: PendingDecision) => it.kind === 'question' || it.kind === 'gap' || it.kind === 'permission' || it.kind === 'merge' || it.kind === 'demo';
+  const batchable = (it: PendingDecision) => ['question', 'gap', 'permission', 'merge', 'demo', 'blocker', 'staff'].includes(it.kind);
   const answerOf = (it: PendingDecision) => (ownMap[it.key]?.trim() || sel[it.key] || '').trim();
   const picked = items.filter((it) => batchable(it) && answerOf(it));
   // 추천안으로 채우기: 추천이 있는 결정만 고른다(권한 허용은 직접 골라야 함). 고르기만 할 뿐 적용 전에는 반영되지 않는다.
-  const fillRec = () => setSel((cur) => { const n = { ...cur }; for (const it of items) { if (it.kind === 'permission' || it.kind === 'merge' || it.kind === 'demo' || !batchable(it) || n[it.key]) continue; const r = it.choices.find((c) => c.recommended); if (r) n[it.key] = r.label; } return n; });
+  const fillRec = () => setSel((cur) => { const n = { ...cur }; for (const it of items) { if (['permission', 'merge', 'demo', 'blocker', 'staff'].includes(it.kind) || !batchable(it) || n[it.key]) continue; const r = it.choices.find((c) => c.recommended); if (r) n[it.key] = r.label; } return n; });
   // 적용은 앱 본체의 공통 처리(텔레그램과 같은 로직)로: 적용 직전에 각 항목이 아직 유효한지 다시 확인하고 유효한 것만 반영한다
   const applySelected = () => act.run(async () => {
     const r = await ws().applyDecisions(picked.map((it) => ({ key: it.key, choice: answerOf(it), version: decisionVersion(it) })));
@@ -190,7 +190,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     setItems(list); setIdx(0); setView('list'); setDone(line);
   };
   const urgentN = items.filter((x) => x.urgent).length;
-  const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토', merge: 'main 병합', demo: '시연 실행' };
+  const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토', merge: 'main 병합', demo: '시연 실행', blocker: '보류한 업무', staff: '직원 제안' };
 
   if (!items.length && !open) return null;
   return (
@@ -232,7 +232,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                               <span><b>{c.label}</b>{c.recommended && <span className="badge badge-info">추천</span>}{c.effect && <span className="muted small"> — {c.effect}</span>}{c.recommended && c.why && <span className="small review-cp-why">추천 이유: {c.why}</span>}</span>
                             </label>
                           ))}
-                          {it.kind !== 'permission' && it.kind !== 'demo' && it.kind !== 'merge' && !it.secret && <input className="input" placeholder={it.choices.length ? '직접 적기(선택)' : '답을 적어 주세요'} value={ownMap[it.key] ?? ''} onChange={(e) => setOwnMap((x) => ({ ...x, [it.key]: e.target.value }))} />}
+                          {!['permission', 'demo', 'merge', 'blocker', 'staff'].includes(it.kind) && !it.secret && <input className="input" placeholder={it.choices.length ? '직접 적기(선택)' : '답을 적어 주세요'} value={ownMap[it.key] ?? ''} onChange={(e) => setOwnMap((x) => ({ ...x, [it.key]: e.target.value }))} />}
                           {answerOf(it) && <span className="small inbox-picked">선택됨(적용 전): {answerOf(it).slice(0, 80)} <button className="btn-link small" onClick={() => { setSel((x) => { const n = { ...x }; delete n[it.key]; return n; }); setOwnMap((x) => ({ ...x, [it.key]: '' })); }}>선택 해제</button></span>}
                         </div>
                       ) : (

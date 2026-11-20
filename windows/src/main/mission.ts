@@ -132,6 +132,7 @@ const JUDGE_SCHEMA = {
     results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' }, status: { type: 'string', enum: [...RESULT_STATUSES] },
       demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } },
     permissionRequests: { type: 'array', items: { type: 'object', required: ['agentCode', 'command', 'why'], properties: { agentCode: { type: 'string' }, command: { type: 'string' }, why: { type: 'string' } } } },
+    closedDirectives: { type: 'array', items: { type: 'object', required: ['id', 'why'], properties: { id: { type: 'string' }, why: { type: 'string' } } } },
     milestone: { type: 'object', required: ['title', 'summary'], properties: { title: { type: 'string' }, summary: { type: 'string' } } },
     commitRequests: { type: 'array', items: { type: 'object', required: ['repo', 'files', 'message', 'why'], properties: { repo: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, message: { type: 'string' }, why: { type: 'string' }, task: { type: 'string' } } } } },
 };
@@ -141,7 +142,7 @@ interface Plan { references?: { url?: string; why?: string }[]; staffProposals?:
 interface RawResult { status?: string; task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
 interface RawCheckpoint { title?: string; steps?: string; verified?: string; unverified?: string; features?: { name?: string; changed?: string; status?: string }[]; decisions?: { question?: string; choices?: unknown }[]; assumptions?: string[] }
-interface Judge { permissionRequests?: { agentCode?: string; command?: string; why?: string }[]; milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+interface Judge { closedDirectives?: { id?: string; why?: string }[]; permissionRequests?: { agentCode?: string; command?: string; why?: string }[]; milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터의 커밋 요청 정리: 형식이 맞는 것만, 이미 대기·승인된 같은 요청은 빼고, 대기 요청은 최대 5개 */
 export function cleanCommitRequests(raw: unknown, existing: MissionCommitRequest[], cycle: number): MissionCommitRequest[] {
@@ -310,6 +311,19 @@ export class MissionRunner {
     const ev: MissionEvent = { missionId: m.id, seq: Number(r.s) + 1, at: now(), kind, cycle: m.cycle, text: redact(text), data: data === null ? '' : JSON.stringify(redactDeep(data), null, 2) };
     this.d.store.db.prepare('INSERT INTO mission_events VALUES(?,?,?)').run(m.id, ev.seq, JSON.stringify(ev));
     this.d.emit({ type: 'missionEvent', event: ev });
+    if (kind === 'directive') this.set(m.id, { lastDirective: { seq: ev.seq, cycle: ev.cycle, plannedCycle: null } });
+  }
+  /** 닫히지 않은 사용자 지시(추가 지시·검토 피드백): 최근 16건 제한과 상관없이 계획·판단에 늘 넣는다. seenOnly면 계획에 들어간 것만 */
+  private openDirectives(m: Mission, seenOnly = false): MissionEvent[] {
+    const cur = this.get(m.id); const evs = this.events(m.id);
+    const gone = new Set([...(cur.canceledDirectives ?? []), ...(cur.closedDirectives ?? [])]); const seen = seenOnly ? this.seenSeq(cur, evs) : Infinity;
+    return evs.filter((e) => e.kind === 'directive' && !gone.has(e.seq) && e.seq <= seen).slice(-50);
+  }
+  private directivesSection(m: Mission, seenOnly = false): string[] {
+    const list = this.openDirectives(m, seenOnly);
+    if (!list.length) return [];
+    return ['## 유효한 사용자 지시(닫기 전까지 계속 지킨다 — 최신이 아래, 서로 다르면 최신을 따른다)',
+      ...list.map((e) => `- D${e.seq} [사이클 ${e.cycle}] ${e.text.replace(/\s+/g, ' ').slice(0, 600)}`), ''];
   }
   events(id: string): MissionEvent[] {
     return (this.d.store.db.prepare('SELECT data FROM mission_events WHERE mission_id=? ORDER BY seq').all(id) as Row[]).map((r) => JSON.parse(String(r.data)) as MissionEvent);
@@ -390,9 +404,10 @@ export class MissionRunner {
     const msg = JSON.parse(String(row.data)) as QaMessage;
     if (!msg.directive) throw new Error('보낼 추가 지시 제안이 없습니다.');
     if (msg.directiveSent) throw new Error('이미 보낸 제안입니다.');
-    const m = this.list(projectId).find((x) => ['planning', 'running', 'evaluating'].includes(x.status));
-    if (!m) throw new Error('작동 중인 미션이 없습니다. 운영 메뉴에서 새로 지시하거나 확인 대기 중인 미션에 답하세요.');
-    await this.addDirective(m.id, `[문의 대화에서] ${msg.directive}`, 'next');
+    const m = this.list(projectId).find((x) => ['planning', 'running', 'evaluating', 'waiting_user'].includes(x.status));
+    if (!m) throw new Error('진행 중이거나 확인 대기 중인 미션이 없습니다. 운영 메뉴에서 새로 지시하세요.');
+    if (m.status === 'waiting_user') this.queueDirective(m.id, `[문의 대화에서] ${msg.directive}`);
+    else await this.addDirective(m.id, `[문의 대화에서] ${msg.directive}`, 'next');
     this.d.store.db.prepare('UPDATE qa_messages SET data=? WHERE project_id=? AND seq=?').run(JSON.stringify({ ...msg, directiveSent: true }), projectId, seq);
     this.qaAdd(projectId, { role: 'staff', who: msg.who, text: '추가 지시로 보냈습니다. 다음 오퍼레이터 계획 때 반영되며, 그 전까지는 운영 메뉴의 \'대기 중인 추가 지시\'에서 취소할 수 있습니다.', missionId: m.id });
     return this.qaList(projectId);
@@ -599,7 +614,8 @@ export class MissionRunner {
       '## 지금 미션 지시', m.prompt.slice(0, 3000), '',
       `## 사이클 ${m.cycle} 오퍼레이터 판단(${judge.decision})`, judge.summary.slice(0, 6000), '', `다음 초점: ${judge.nextFocus}`, '',
       '## 이번 사이클 결과물', ...(res.length ? res : ['- (없음)']), `- 실행 결과: ${d.run.status}`, '',
-      '## 지금까지의 판단·사용자 답변(추가 지시 포함)', this.history(m, true).slice(-8000), '',
+      '## 지금까지의 판단·사용자 답변', this.history(m, true).slice(-8000), '',
+      ...this.directivesSection(m, true),
       ...(first ? ['## 지금 진척 목록', '- 없음. 이번에 처음 만든다.', ''] : [
         '## 지금 진척 목록', ...(wp!.phases ?? []).map((p) => `### ${p.id} ${p.title} — ${p.goal}`),
         ...wp!.items.map((i) => `- ${i.id} [${i.status}] ${i.phase ?? ''} ${i.title}${i.refs?.length ? ` (${i.refs.join(', ')})` : ''} — 기준: ${i.criteria}${i.evidence ? ` · 근거: ${i.evidence.slice(0, 160)}` : ''}${i.note ? ` · 메모: ${i.note.slice(0, 120)}` : ''}`),
@@ -780,7 +796,7 @@ export class MissionRunner {
       const g: MissionGap = { doc: d.doc, issue: d.question, need: '', kind: 'decide', ...(d.choices.length ? { choices: d.choices, options: d.choices.map((c) => c.label) } : {}) };
       if (!answered.has(gapKey(g)) && !leftGaps.some((x) => gapKey(x) === gapKey(g))) leftGaps.push(g);
     }
-    this.set(id, { decisions: [...(m.decisions ?? []), ...made] });
+    this.set(id, { decisions: this.mergeDecisions(m, made) });
     if (live) {
       // 진행 중: 결정·피드백은 다음 계획부터 반영하고, 지금 실행은 그대로 둔다. 종료를 고르면 미션을 중지한다.
       if (action === 'stop') { void this.stop(id); return this.get(id); }
@@ -805,6 +821,33 @@ export class MissionRunner {
     return this.set(id, { denials: null, blockers: null, gaps: null, parkedSigs: [], denialSigs: [], failSigs: [] });
   }
 
+  /** 결정 저장: 같은 항목(문서|질문)이나 같은 대상(sameSubject)의 이전 결정은 새 결정으로 바꾸고, 답이 달라졌으면 기록에 알린다 */
+  private mergeDecisions(m: Mission, made: MissionDecision[]): MissionDecision[] {
+    let list = [...(m.decisions ?? [])]; const changed: string[] = [];
+    for (const d of made) {
+      const same = (x: MissionDecision) => gapKey(x) === gapKey(d) || sameSubject(x.issue, d.issue);
+      const prev = list.filter(same);
+      for (const x of prev) if (x.choice.trim() !== d.choice.trim()) changed.push(`'${x.issue.slice(0, 80)}': 이전 답 '${x.choice.slice(0, 80)}' → 새 답 '${d.choice.slice(0, 80)}'`);
+      list = [...list.filter((x) => !same(x)), d];
+    }
+    if (changed.length) this.event(m, 'system', `방금 답이 같은 대상의 이전 결정과 다릅니다 — 새 답으로 바꿨습니다(확정 목록에는 하나만 남김):\n${changed.map((c) => `- ${c}`).join('\n')}`, { replaced: changed.length });
+    return list;
+  }
+  /** 환경 실패 등으로 보류한 업무(blockers)만 다시 시도하게 한다(권한 보류·결정 항목은 그대로) */
+  retryBlockers(id: string): Mission {
+    const m = this.get(id); if (!m.blockers?.length) return m;
+    const keep = new Set((m.denials ?? []).map((d) => d.sig));
+    this.event(m, 'answer', `보류한 업무 ${m.blockers.length}건을 해결했다고 확인했습니다. 다음 계획부터 다시 시도합니다.`);
+    return this.set(id, { blockers: null, failSigs: [], parkedSigs: (m.parkedSigs ?? []).filter((x) => keep.has(x)) });
+  }
+  /** 확인 대기 중인 미션에도 추가 지시를 남긴다(다음 계획에 반영, 지금 미션을 다시 시작하지는 않음) */
+  queueDirective(id: string, text: string): Mission {
+    const m = this.get(id);
+    if (!['planning', 'running', 'evaluating', 'waiting_user'].includes(m.status)) throw new Error('진행 중이거나 확인 대기 중인 미션에만 추가 지시를 남길 수 있습니다.');
+    this.event(m, 'directive', `[다음 사이클 반영] ${redact(text.trim())}`);
+    return this.get(id);
+  }
+
   /**
    * 확인 필요 항목에 사용자가 고른 결정을 반영한다: 결정은 미션에 쌓여 다음 계획·판단에서 '사용자 결정'으로 그대로 따르고,
    * 결정한 항목은 확인 필요 목록에서 뺀다. resume이면(확인 대기 중일 때) 바로 이어서 진행한다.
@@ -826,8 +869,7 @@ export class MissionRunner {
     }
     if (!made.length) throw new Error(stale ? '확인 필요 목록이 바뀌었습니다. 화면을 새로 고친 뒤 다시 고르세요.' : '결정할 항목을 하나 이상 고르세요.');
     this.event(m, 'answer', `확인 필요 항목 결정:\n${made.map((d) => `- [${d.doc || '문서 미지정'}] ${d.issue} → ${d.choice}`).join('\n')}`, { decisions: made });
-    const keys = new Set(made.map(gapKey));
-    const decisions = [...(m.decisions ?? []).filter((d) => !keys.has(gapKey(d))), ...made]; // 결정은 지우지 않는다(같은 항목은 새 결정으로 바꿈)
+    const decisions = this.mergeDecisions(m, made); // 결정은 지우지 않는다(같은 항목·같은 대상은 새 결정으로 바꿈)
     const rest = gaps.filter((_, i) => !seen.has(i));
     const next = this.set(id, { decisions, gaps: rest.length ? rest : null });
     // 확인 대기 중이면 바로 이어서 계획한다. 고르지 않은(나중에) 항목은 확인 필요로 그대로 남긴다.
@@ -1523,6 +1565,11 @@ export class MissionRunner {
             m = this.set(id, { mergeRequest: mr });
             this.event(m, 'system', `큰 단원이 끝나 main 병합을 확인함에서 묻습니다: ${mr.title}`);
           } }
+        { // 반영 완료로 닫은 지시(근거가 있고, 계획에 들어간 지시만)
+          const open = new Set(this.openDirectives(this.get(id), true).map((e) => e.seq));
+          const close = (judge.closedDirectives ?? []).map((c) => ({ seq: Number(/^D?(\d+)$/i.exec(String(c?.id ?? '').trim())?.[1] ?? NaN), why: String(c?.why ?? '').trim().slice(0, 300) })).filter((c) => open.has(c.seq) && c.why);
+          if (close.length) { m = this.set(id, { closedDirectives: [...(this.get(id).closedDirectives ?? []), ...close.map((c) => c.seq)] }); this.event(m, 'system', `반영 완료로 닫은 사용자 지시: ${close.map((c) => `D${c.seq}(${c.why})`).join(' / ')}`); }
+        }
         this.askPermissions(id, (judge.permissionRequests ?? []).slice(0, 5).flatMap((r) => {
           const a = agents.find((x) => x.code === String(r.agentCode ?? '').trim().split(/\s/)[0]); const cmd = String(r.command ?? '').trim().slice(0, 300); const pre = commandPrefix(cmd);
           if (!a || !cmd || !pre || !okPermPrefix(pre)) return [];
@@ -1983,13 +2030,16 @@ export class MissionRunner {
   /** seenOnly: 판단·진척 갱신에는 계획에 들어간(더는 취소할 수 없는) 추가 지시만 보여 준다 */
   private history(m: Mission, seenOnly = false): string {
     const cur = this.get(m.id); const gone = new Set(cur.canceledDirectives ?? []); const evs = this.events(m.id); const seen = seenOnly ? this.seenSeq(cur, evs) : Infinity;
-    return evs.filter((e) => ['operator_judge', 'answer', 'question', 'directive'].includes(e.kind) && !gone.has(e.seq) && !(e.kind === 'directive' && e.seq > seen)).slice(-16)
+    void seen; // 추가 지시는 '유효한 사용자 지시'에 따로 넣는다(16건 제한에 밀려 사라지지 않게)
+    return evs.filter((e) => ['operator_judge', 'answer', 'question'].includes(e.kind) && !gone.has(e.seq)).slice(-16)
       .map((e) => `- [사이클 ${e.cycle}] ${e.kind === 'answer' ? '사용자 답변' : e.kind === 'directive' ? '사용자 추가 지시(최우선 반영)' : e.kind === 'question' ? '질문' : '판단'}: ${e.text}`).join('\n') || '- (없음)';
   }
 
   private planPrompt(m: Mission, plan: PlanFields, agents: Agent[]): string {
     // 이 계획에 들어간 추가 지시까지는 더 이상 '대기 중'이 아니다(취소할 수 없음)
-    { const last = this.events(m.id).at(-1)?.seq ?? 0; if ((this.get(m.id).directiveSeenSeq ?? 0) < last) this.set(m.id, { directiveSeenSeq: last }); }
+    { const last = this.events(m.id).at(-1)?.seq ?? 0; const cur = this.get(m.id);
+      if ((cur.directiveSeenSeq ?? 0) < last) this.set(m.id, { directiveSeenSeq: last });
+      if (cur.lastDirective && cur.lastDirective.plannedCycle === null && cur.lastDirective.seq <= last) this.set(m.id, { lastDirective: { ...cur.lastDirective, plannedCycle: m.cycle } }); }
     return [
       '# 오퍼레이터 계획', '',
       '당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. 사용자 지시를 이번 사이클의 작업으로 나누고, 기능에 맞는 담당 직원을 배정한다. 파일은 수정하지 않는다(읽기만).', '',
@@ -2007,6 +2057,7 @@ export class MissionRunner {
       ...this.skillSection(plan, agents),
       ...this.docsSection(plan, m.projectId),
       '## 지금까지의 판단·질문·사용자 답변', this.history(m), '',
+      ...this.directivesSection(m),
       ...this.decisionsSection(m),
       ...this.refSection(m),
       '## 규칙',
@@ -2015,6 +2066,7 @@ export class MissionRunner {
       '- 문서는 쌓지 말고 갱신한다: 진행·시연·검증 보고는 사이클마다 새 파일(C101_FRONT.md, cycle-3.md 같은)을 만들지 말고 주제별 문서 하나(예: docs/front/STATUS.md)를 고쳐 최신 상태로 둔다. 화면 사진은 폴더 하나(예: docs/front/screens-latest)에 덮어쓴다. 지난 기록은 git·앱 기록과 폴더의 HISTORY.md에 남는다. 작업 지시에 지난 사이클 문서를 통째로 읽으라고 쓰지 말고, 필요한 것만 HISTORY.md·최신 문서에서 찾게 한다.',
       '- outputs의 path는 만들 파일 경로다. 여러 파일을 담는 폴더를 산출물로 하려면 폴더 경로를 쓰고, 그 안 파일의 형식을 format에 쓴다(폴더 안에 그 형식 파일이 하나 이상 있어야 통과). 형식을 가리지 않으면 any.',
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
+      '- 검사는 바뀐 코드가 실제로 동작하는지를 본다: 코드를 바꾸는 작업이면 그 저장소의 시험 명령(npm test·npm run check·scripts/check.sh·./gradlew test 등 허용된 것)을 쓴다. 작성자가 쓴 보고·결과 파일을 grep하는 검사는 문서만 만드는 작업에만 쓴다. 리뷰는 앱이 이번 작업에서 실제로 바뀐 파일을 함께 넘기므로, outputs에 보고 파일만 적고 끝내지 않는다.',
       '- API 키·접속 정보·계정·외부 서비스 설정처럼 사람만 구할 수 있는 정보가 있어야 진행되는 일은 추측하거나 가짜 값을 넣지 말고 gaps에 kind "decide"로 올린다. need에는 무엇이 필요한지, 어디에 넣으면 되는지(환경 변수 이름과 .env 같은 파일 위치, 발급 받는 곳)를 적고, 값을 채팅·답변으로 보내 달라고 하지 않는다. 그 gap에는 secret 필드(file: 연결 폴더 기준 .env 경로 — 예: 저장소/.env, .env.local; name: 환경 변수 이름; source: 발급 받는 곳)를 꼭 채운다. 사람이 확인함에서 값을 입력하면 앱이 그 파일에 저장하고(값은 기록·전달되지 않음) "넣었음"으로 답한다. .env.example 같은 견본 파일에는 변수 이름만 적고 실제 값은 넣지 않는다. 그 정보 없이도 할 수 있는 작업은 계속한다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 유지·되돌림, 범위·우선순위 등)이면 choices에 2~4개의 선택지를 쓴다: label(예: 'HTML 기준 유지'), effect(고르면 무엇이 달라지는지 쉬운 한 문장, 예: '제품 화면을 HTML에 맞춰 고친다'), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장). 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 선택지로 내지 않는다. '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
@@ -2134,6 +2186,7 @@ export class MissionRunner {
       '## 앱이 직접 확인한 시연 결과(이번 판단 직전, 사실로 쓴다)', ...((this.demoChecks.get(m.id) ?? []).length ? this.demoChecks.get(m.id)! : ['- (시연 목록이 없거나 확인할 서비스가 없음)']), '',
       '## 직원(역할·지시 요약 — 직원 제안 판단용)', ...this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== '00').map((a) => `- ${a.code} ${a.name}: ${a.role} — ${a.instructions.replace(/\s+/g, ' ').slice(0, 400)}`), '',
       '## 지금까지의 판단·사용자 답변', this.history(m, true), '',
+      ...this.directivesSection(m, true),
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
@@ -2142,6 +2195,7 @@ export class MissionRunner {
       '- ask_user: 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때(작은 판단·세부는 가정하고 진행). nextFocus에 다음 사이클의 초점을 쓴다.',
       '- 측정하지 않은 성과나 실행하지 않은 검사를 근거로 쓰지 않는다.',
+      '- closedDirectives: 위 유효한 사용자 지시 중 이번까지 결과물로 완전히 반영되고 확인된 것만 id(D번호)와 근거(why)로 닫는다. 닫힌 지시는 다음 계획부터 목록에서 빠진다. 일부만 반영됐거나 확인하지 않았으면 닫지 않는다. 계속 지켜야 하는 원칙(예: 모바일에서도 확인)은 닫지 않는다.',
       REPORT_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, ...this.commitSection(m), RESULTS_RULE, demoRule(plan), '- results의 demo: 실행 가능한 기능의 결과물이면 시연 목록의 service id와, 화면이면 path(예: /operator/companies), API면 api(apis 항목 id), steps(사용자가 눌러 볼 순서), expected(예상 결과), data(api+db·screen-only·mock)를 쓴다. 시연 목록에 없는 서비스는 쓰지 않는다. 문서만 만든 작업은 demo를 비운다.', ...this.demoSection(plan),
       '- staffProposals: 이번 지시를 하는 데 지금 직원으로는 부족한 근거가 있을 때만(맞는 역할의 직원이 없음, 같은 직원이 역할·지시 때문에 반복해 엇나감, 직원 지시가 근거 문서·사용자 결정과 어긋남) 제안한다. 새 직원은 kind=add(name·role·instructions, 비슷한 일을 하는 기존 직원 코드를 agentCode에, 작업 폴더는 workPaths), 기존 직원의 역할·지시 변경은 kind=update(agentCode와 바뀐 role·instructions 전체). reason에는 이번 사이클에서 본 근거를 쓴다. 도구·명령 권한은 제안하지 않는다. 오퍼레이터(00)는 바꾸지 않는다. 제안은 사용자가 적용할 때까지 반영되지 않으니 지금 있는 직원으로 계획을 계속한다. 필요 없으면 빈 배열.',
       ...this.staffSection(m),

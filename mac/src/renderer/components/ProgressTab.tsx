@@ -19,7 +19,18 @@ function Bar({ items }: { items: WorkItem[] }) {
   const c = count(items); if (!c.total) return <div className="progress-bar" />;
   return (
     <div className="progress-bar" role="img" aria-label={`완료 ${c.pct}%`}>
-      {(['done', 'verifying', 'doing', 'blocked'] as WorkStatus[]).map((s) => <span key={s} className={`seg seg-${s}`} style={{ width: `${(c[s] / c.total) * 100}%` }} />)}
+      {(['done', 'verifying', 'doing', 'blocked'] as WorkStatus[]).map((s) => <span key={s} className={`seg seg-${s}`} style={{ width: `${(c[s] / c.total) * 100}%` }} title={`${LABEL[s]} ${c[s]}개`} />)}
+    </div>
+  );
+}
+/** 막대 색 설명: 색마다 무엇인지와 개수 */
+function Legend({ items }: { items: WorkItem[] }) {
+  const c = count(items);
+  return (
+    <div className="progress-legend small" aria-label="색 설명">
+      {(['done', 'verifying', 'doing', 'blocked', 'todo'] as WorkStatus[]).map((s) => (
+        <span key={s} className="legend-item"><span className={`legend-dot seg-${s}`} />{LABEL[s]} <b>{c[s]}</b></span>
+      ))}
     </div>
   );
 }
@@ -72,6 +83,7 @@ function PlanView({ projectId, wp, onChanged }: { projectId: string; wp: Mission
           {(['doing', 'verifying', 'blocked', 'todo'] as WorkStatus[]).map((s) => all[s] ? <Badge key={s} tone={TONE[s]}>{LABEL[s]} {all[s]}</Badge> : null)}
         </div>
         <Bar items={wp.items} />
+        <Legend items={wp.items} />
         <p className="muted small">완성도는 확인 근거가 있는 완료 기능 수로만 셉니다(시간 추정 아님). 미션이 바뀌어도 이 목록은 이어집니다.</p>
       </div>
       {fresh.length > 0 && (

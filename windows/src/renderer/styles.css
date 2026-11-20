@@ -2147,7 +2147,8 @@ textarea.input {
 .assume-tools { margin-top: 4px; }
 
 /* 진척 메뉴 */
-.progress-tab { display: flex; flex-direction: column; gap: 10px; }
+.progress-tab { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; overflow-y: auto; padding-right: 4px; } /* 화면 아래로 넘치면 이 안에서 스크롤 */
+.progress-tab > * { flex: none; }
 .progress-head select { max-width: 420px; }
 .progress-owner { margin-left: auto; }
 .progress-summary { display: flex; flex-direction: column; gap: 8px; }
@@ -2200,3 +2201,9 @@ textarea.input {
 .phase-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; flex: 1; min-width: 0; }
 .phase-stat { white-space: nowrap; }
 .phase-stat .bad { color: #d6453d; }
+
+/* 진척 색 설명 */
+.progress-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.legend-dot.seg-done { background: #2e9e5b; } .legend-dot.seg-verifying { background: #e0a526; } .legend-dot.seg-doing { background: #3b6fe0; } .legend-dot.seg-blocked { background: #d6453d; } .legend-dot.seg-todo { background: var(--line, #e4e7ec); border: 1px solid #c9ced6; }

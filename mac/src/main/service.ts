@@ -15,7 +15,7 @@ import type { Agent, AgentFields, AppSettings, UsagePaceView, DevSyncView, DevSy
 import { checkCodex } from './cli/codexCli';
 import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, mergeDevToMain, ensureSecretIgnore, gitIgnored, syncRepoToDev, workspaceRepos } from './git';
 import { LearningStore } from './learning';
-import { MissionRunner } from './mission';
+import { MissionRunner, sameSubject } from './mission';
 import { decisionVersion } from '../shared/decisions';
 export { decisionVersion };
 import { autoLayout, needsLayout } from '../shared/layout';
@@ -426,6 +426,19 @@ export class Service {
             choices: [{ label: a.kind === 'command' ? `${a.agent}에게 '${a.suggestion}' 허용` : `참고 자료로 '${a.suggestion}' 추가`, effect: grant, recommended: false, why: '' }, { label: '허용하지 않음', effect: '오퍼레이터가 이 방법 없이 진행합니다. 같은 요청은 다시 묻지 않습니다.', recommended: false, why: '' }],
             waiting: false, denial: a, urgent: false, held: '미션은 멈추지 않고 계속 진행 중입니다. 허용하면 다음 계획부터 이 방법을 씁니다.', resumes: '허용하면 다음 계획부터 이 직원이 이 방법을 씁니다', grants: grant });
         }
+        // 환경 실패 등으로 보류한 업무(위쪽 막대의 '보류한 업무'와 같은 것): 사용자가 해결했다고 하면 다시 시도
+        if (m.blockers?.length && !['stopped', 'failed'].includes(m.status)) {
+          const list = m.blockers.map((b) => `- ${b.step}: ${b.reason}`).join('\n');
+          out.push({ ...base, key: `${m.id}|bk|${m.blockers.length}|${m.blockers.map((b) => b.step).join('|').slice(0, 200)}`, kind: 'blocker', task: `보류한 업무 ${m.blockers.length}건`, question: '앱이 스스로 풀 수 없는 문제로 이 업무를 보류했습니다. 해결했으면 다시 시도할까요?', explain: list.slice(0, 3000), doc: '', issue: '',
+            choices: [{ label: '해결했으니 다시 시도', effect: '다음 계획부터 보류한 업무를 다시 시도합니다.', recommended: false, why: '' }, { label: '보류 유지', effect: '보류한 채로 나머지 작업만 계속합니다.', recommended: false, why: '' }],
+            waiting: blocked, urgent: false, held: '이 업무만 보류했습니다(나머지는 계속 진행).', resumes: '해결했다고 고르면 다음 계획부터 다시 시도합니다.' });
+        }
+        // 직원 제안(위쪽 막대의 '직원 제안'과 같은 것)
+        for (const sp of (m.staffProposals ?? []).filter((x) => x.status === 'pending' && !['stopped', 'failed'].includes(m.status))) {
+          out.push({ ...base, key: `${m.id}|sp|${sp.id}`, kind: 'staff', staffId: sp.id, task: `직원 제안 · ${sp.kind === 'add' ? '새 직원' : `${sp.agentCode} 변경`}`, question: sp.kind === 'add' ? `새 직원 '${sp.name}'(${sp.role})을(를) 둘까요?` : `${sp.agentCode} ${sp.name}의 역할·지시를 바꿀까요?`, explain: `${sp.reason}\n\n업무 지시:\n${sp.instructions}`.slice(0, 3000), doc: '', issue: '',
+            choices: [{ label: '제안 적용', effect: sp.kind === 'add' ? '이 직원을 추가합니다(도구·권한은 비슷한 기존 직원과 같게).' : '이 직원의 역할·지시를 제안대로 바꿉니다.', recommended: false, why: '' }, { label: '적용하지 않음', effect: '지금 직원으로 계속합니다.', recommended: false, why: '' }],
+            waiting: false, urgent: false, held: '진행은 계속됩니다. 적용하면 다음 계획부터 반영됩니다.', resumes: '적용하면 운영 화면의 직원 제안 카드에서 고친 것과 같게 반영됩니다.' });
+        }
         // 시연 실행 승인·다시 켜기: 지금 시연 목록의 내용이 확인 때와 같을 때만(바뀌었으면 다음 확인에서 다시 묻는다)
         for (const a of m.demoAsks ?? []) {
           let s: DemoService | undefined; try { s = readManifest(this.store.getProject(m.projectId).plan).services.find((x) => x.id === a.serviceId); } catch { s = undefined; }
@@ -440,7 +453,7 @@ export class Service {
             waiting: false, urgent: false, demo: a, held: '시연 서버가 꺼져 있거나 예전 코드일 수 있어 실서버 확인이 멈춰 있습니다(개발은 계속).', resumes: '정하면 앱이 바로 켜고 다음 판단부터 실서버로 확인합니다.', grants: grant });
         }
         for (const g of m.pauseKind === 'restart' ? [] : m.gaps ?? []) {
-          if (shown.has(`${g.doc}|${g.issue}`) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
+          if ((shown.has(`${g.doc}|${g.issue}`) || [...shown].some((k) => sameSubject(k.slice(k.indexOf('|') + 1), g.issue))) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
           const folder = this.store.getProject(m.projectId)?.plan.folder ?? '';
           const sp = g.secret ? resolveEnvPath(folder, g.secret.file) : null;
           const secret = g.secret ? { ...g.secret, saved: !!sp && 'abs' in sp && envHas(sp.abs, g.secret.name) } : undefined;
@@ -461,9 +474,9 @@ export class Service {
     const live = new Map(this.pendingDecisions().map((x) => [x.key, x]));
     const ok = (p: { key: string; choice: string; version?: string }) => {
       const it = live.get(p.key); const c = String(p.choice ?? '').trim();
-      if (!it || !c || !['question', 'gap', 'permission', 'merge', 'demo'].includes(it.kind)) return false;
+      if (!it || !c || !['question', 'gap', 'permission', 'merge', 'demo', 'blocker', 'staff'].includes(it.kind)) return false;
       if (p.version && p.version !== decisionVersion(it)) return false; // 보여 준 뒤 질문·선택지가 바뀜
-      if ((it.kind === 'permission' || it.kind === 'merge' || it.kind === 'demo') && !it.choices.some((x) => x.label === c)) return false; // 권한·main 병합·시연 실행은 보여 준 선택지만
+      if (['permission', 'merge', 'demo', 'blocker', 'staff'].includes(it.kind) && !it.choices.some((x) => x.label === c)) return false; // 권한·main 병합·시연 실행은 보여 준 선택지만
       // 비밀값 항목에 키처럼 보이는 글(공백·한글 없는 한 덩어리)을 답으로 적으면 기록에 남지 않게 받지 않는다(값은 '파일에 저장'으로만)
       if (it.secret && !it.choices.some((x) => x.label === c) && !/[\s가-힣]/.test(c)) return false;
       return true;
@@ -484,7 +497,16 @@ export class Service {
         void this.demoFromInbox(missionId, x.it.projectId, a, via);
         lines.push(`· ${title}: 시연 '${a.name}'을(를) ${a.kind === 'approve' ? '승인하고 켭니다' : '다시 켭니다'}(${via}). 결과는 진행 기록에 남깁니다.`);
       }
-      if (!mine.some((x) => x.it.kind !== 'merge' && x.it.kind !== 'demo')) continue;
+      for (const x of mine.filter((y) => y.it.kind === 'blocker')) {
+        if (x.choice === x.it.choices[0].label) { this.missions.retryBlockers(missionId); lines.push(`· ${title}: 보류한 업무를 다음 계획부터 다시 시도합니다(${via}).`); }
+        else lines.push(`· ${title}: 보류한 업무는 그대로 둡니다(${via}).`);
+      }
+      for (const x of mine.filter((y) => y.it.kind === 'staff' && y.it.staffId)) {
+        const apply = x.choice === x.it.choices[0].label;
+        try { this.resolveStaffProposal(missionId, x.it.staffId!, apply ? 'apply' : 'dismiss', null); lines.push(`· ${title}: 직원 제안을 ${apply ? '적용했습니다' : '적용하지 않았습니다'}(${via}).`); }
+        catch (e) { lines.push(`· ${title}: 직원 제안을 처리하지 못했습니다 — ${(e as Error).message}`); }
+      }
+      if (!mine.some((x) => !['merge', 'demo', 'blocker', 'staff'].includes(x.it.kind))) continue;
       const perms = mine.filter((x) => x.it.kind === 'permission'); const allowed = perms.filter((x) => !x.choice.startsWith('허용하지 않'));
       for (const x of allowed) this.allowDenial(x.it);
       for (const x of perms) if (x.it.key.includes('|pa|') && x.it.denial) this.missions.resolvePermAsk(missionId, x.it.denial.sig, !x.choice.startsWith('허용하지 않'));
