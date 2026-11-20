@@ -34,6 +34,19 @@ describe('대기 중인 추가 지시', () => {
   });
 });
 
+describe('대기 중인 추가 지시 — 기존 미션', () => {
+  it('계획에 들어간 기록이 없는 예전 미션은 마지막 오퍼레이터 계획 뒤의 지시만 대기로 본다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '문서를 정리하라');
+    await until(() => svc.missions.get(m0.id).currentRunId);
+    svc.missions.pause(m0.id);
+    await svc.missions.addDirective(m0.id, '나중 지시', 'next');
+    (svc.missions as unknown as { set(id: string, patch: object): void }).set(m0.id, { directiveSeenSeq: undefined });
+    expect(svc.missions.pendingDirectives(m0.id).map((x) => x.text)).toEqual(['[다음 사이클 반영] 나중 지시']);
+    await svc.missions.stop(m0.id); svc.close();
+  });
+});
+
 describe('문의 대화', () => {
   it('미션이 없어도 문의 응대 직원을 채용해 답하고, 대화는 이 PC에 남으며 작업 배정에는 쓰지 않는다', async () => {
     const { svc, p } = setup();

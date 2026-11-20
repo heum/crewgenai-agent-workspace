@@ -1032,9 +1032,12 @@ export class MissionRunner {
 
   /** 아직 오퍼레이터 계획에 들어가지 않은 추가 지시(취소 가능) */
   pendingDirectives(id: string): { seq: number; at: string; text: string }[] {
-    const m = this.get(id); const seen = m.directiveSeenSeq ?? 0; const gone = new Set(m.canceledDirectives ?? []);
+    const m = this.get(id); const gone = new Set(m.canceledDirectives ?? []);
     if (['stopped', 'failed'].includes(m.status)) return [];
-    return this.events(id).filter((e) => e.kind === 'directive' && e.seq > seen && !gone.has(e.seq)).map((e) => ({ seq: e.seq, at: e.at, text: e.text }));
+    const evs = this.events(id);
+    // 이 기록이 생기기 전부터 있던 미션: 마지막 오퍼레이터 계획 기록까지 보낸 지시는 이미 읽힌 것으로 본다
+    const seen = m.directiveSeenSeq ?? evs.filter((e) => e.kind === 'operator_plan').at(-1)?.seq ?? 0;
+    return evs.filter((e) => e.kind === 'directive' && e.seq > seen && !gone.has(e.seq)).map((e) => ({ seq: e.seq, at: e.at, text: e.text }));
   }
   /** 대기 중인 추가 지시 취소: 오퍼레이터가 아직 읽지 않은 것만. 기록에는 남기되 계획·학습에서 뺀다 */
   cancelDirective(id: string, seq: number): Mission {
