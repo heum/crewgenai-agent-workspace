@@ -289,6 +289,7 @@ function register() {
   h('telegramLinkConfirm', (ok, uid) => T().confirmLink(ok === true, typeof uid === 'number' ? uid : undefined));
   h('telegramUnlink', () => T().unlink());
   h('telegramSendTest', () => T().sendTest());
+  h('saveSecret', (inp) => { const o = (inp ?? {}) as Record<string, unknown>; return s().saveSecret({ key: String(o.key ?? ''), file: String(o.file ?? ''), name: String(o.name ?? ''), value: typeof o.value === 'string' ? o.value : '' }); });
   h('applyDecisions', (picks) => s().applyDecisions(Array.isArray(picks) ? (picks as { key: string; choice: string; version?: string }[]) : [], '앱'));
   h('pauseMission', (id) => s().missions.pause(String(id)));
   h('resumeMission', (id) => s().missions.resume(String(id)));

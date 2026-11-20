@@ -2,6 +2,7 @@
 // 팝업은 미션 전체가 그 결정을 기다릴 때(긴급)와 오래 비웠다 돌아왔을 때만 요약으로 띄운다. 질문마다 연속 팝업을 띄우지 않는다.
 // 추천안은 표시만 하고, '추천안으로 채우기'로 골라도 '선택 항목 일괄 적용'을 누르기 전에는 아무것도 승인·반영되지 않는다.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { SecretBox, wantsSecret } from './SecretBox';
 import type { CommitPreview, LiveEvent, Mission, PendingDecision } from '../../shared/types';
 import ReviewCheckpoint from './ReviewCheckpoint';
 import { decisionVersion } from '../../shared/decisions';
@@ -204,6 +205,12 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
     setItems(list); setSel({}); setOwnMap({});
     setDone(`${r.applied}건을 적용했습니다.${r.stale ? ` 이미 처리됐거나 내용이 바뀐 ${r.stale}건은 적용하지 않았습니다.` : ''}\n${r.lines.join('\n')}`);
   });
+  // 비밀값을 파일에 저장하면 그 결정은 앱 본체가 '넣었음'으로 처리했다 — 목록만 다시 읽는다
+  const secretSaved = async (it: PendingDecision, line: string) => {
+    handled.current.add(it.key);
+    const list = (await ws().pendingDecisions(true)).filter((x) => !handled.current.has(x.key));
+    setItems(list); setIdx(0); setView('list'); setDone(line);
+  };
   const urgentN = items.filter((x) => x.urgent).length;
   const KIND: Record<PendingDecision['kind'], string> = { question: '질문', gap: '결정', permission: '권한', commit: '커밋 승인', checkpoint: '결과 검토', merge: 'main 병합' };
 
@@ -238,6 +245,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                       {it.explain && <div className="small inbox-explain">{it.explain}</div>}
                       {it.grants && <div className="small inbox-grants">허용하면: {it.grants}</div>}
                       {it.resumes && <div className="small muted">재개될 작업: {it.resumes}</div>}
+                      {wantsSecret(it) && <SecretBox it={it} onSaved={(line) => void secretSaved(it, line)} />}
                       {batchable(it) ? (
                         <div className="inbox-choices" role="radiogroup" aria-label={it.question}>
                           {it.choices.map((c) => (
@@ -246,7 +254,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                               <span><b>{c.label}</b>{c.recommended && <span className="badge badge-info">추천</span>}{c.effect && <span className="muted small"> — {c.effect}</span>}{c.recommended && c.why && <span className="small review-cp-why">추천 이유: {c.why}</span>}</span>
                             </label>
                           ))}
-                          {it.kind !== 'permission' && <input className="input" placeholder={it.choices.length ? '직접 적기(선택)' : '답을 적어 주세요'} value={ownMap[it.key] ?? ''} onChange={(e) => setOwnMap((x) => ({ ...x, [it.key]: e.target.value }))} />}
+                          {it.kind !== 'permission' && !it.secret && <input className="input" placeholder={it.choices.length ? '직접 적기(선택)' : '답을 적어 주세요'} value={ownMap[it.key] ?? ''} onChange={(e) => setOwnMap((x) => ({ ...x, [it.key]: e.target.value }))} />}
                           {answerOf(it) && <span className="small inbox-picked">선택됨(적용 전): {answerOf(it).slice(0, 80)} <button className="btn-link small" onClick={() => { setSel((x) => { const n = { ...x }; delete n[it.key]; return n; }); setOwnMap((x) => ({ ...x, [it.key]: '' })); }}>선택 해제</button></span>}
                         </div>
                       ) : (
@@ -313,6 +321,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                     <button className="btn btn-sm" disabled={act.busy} onClick={() => void allowAll()}>모두 허용(각 직원에게만)</button>
                   </div>
                 )}
+                {wantsSecret(cur) && <SecretBox key={cur.key} it={cur} onSaved={(line) => void secretSaved(cur, line)} />}
                 {rec && <div className="decision-rec small"><span className="badge badge-info">추천</span> {rec.label}{rec.why ? ` — ${rec.why}` : ''} <span className="muted">(자동으로 고르지 않습니다)</span></div>}
                 <ul className="decision-choices">
                   {cur.choices.map((c, i) => (
@@ -325,7 +334,7 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
                   ))}
                 </ul>
                 {cur.choices.length === 0 && cur.kind !== 'commit' && cur.kind !== 'checkpoint' && <div className="muted small">고를 선택지가 없는 질문입니다. 아래에 답을 적어 보내면 미션이 그 답으로 이어서 진행합니다.</div>}
-                {cur.kind !== 'permission' && cur.kind !== 'commit' && cur.kind !== 'checkpoint' && <div className="row gap decision-own">
+                {cur.kind !== 'permission' && cur.kind !== 'commit' && cur.kind !== 'checkpoint' && !cur.secret && <div className="row gap decision-own">
                   <input className="input" value={own} placeholder={cur.choices.length ? '다른 답을 직접 적기' : '답을 적어 주세요'} onChange={(e) => setOwn(e.target.value)} />
                   <button className="btn" disabled={act.busy || !own.trim()} onClick={() => void choose(own)}>이 답으로 정하기</button>
                 </div>}

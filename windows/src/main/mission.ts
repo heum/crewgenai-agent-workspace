@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, MissionSecretSpec, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
@@ -107,6 +108,7 @@ const PLAN_SCHEMA = {
   properties: {
     summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS,
     gaps: { type: 'array', items: { type: 'object', required: ['doc', 'issue', 'need'], properties: { doc: { type: 'string' }, issue: { type: 'string' }, need: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, choices: CHOICE_ITEMS, explain: { type: 'string' }, kind: { type: 'string', enum: ['decide', 'assume'] }, assumption: { type: 'string' }, blocking: { type: 'boolean' },
+      secret: { type: 'object', required: ['file', 'name'], properties: { file: { type: 'string' }, name: { type: 'string' }, source: { type: 'string' } } },
       refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
     references: { type: 'array', items: { type: 'object', required: ['url', 'why'], properties: { url: { type: 'string' }, why: { type: 'string' } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
@@ -982,7 +984,8 @@ export class MissionRunner {
             const refs = (Array.isArray(g.refs) ? g.refs : []).filter((r) => r && String(r.path ?? '').trim()).slice(0, 4)
               .map((r) => ({ path: String(r.path).trim().slice(0, 500), line: Number.isInteger(r.line) && Number(r.line) > 0 ? Number(r.line) : null }));
             const kind = g.kind === 'assume' ? 'assume' as const : 'decide' as const; const assumption = String(g.assumption ?? '').trim().slice(0, 400);
-            return { doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), kind, ...(assumption ? { assumption } : {}), ...(g.blocking === true ? { blocking: true } : {}), ...(o.length ? { options: o } : {}), ...(pc.choices.length ? { choices: pc.choices } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
+            const secret = parseSecretSpec((g as { secret?: unknown }).secret);
+            return { ...(secret && kind === 'decide' ? { secret } : {}), doc: String(g.doc ?? '').slice(0, 200), issue: String(g.issue ?? '').slice(0, 600), need: String(g.need ?? '').slice(0, 600), kind, ...(assumption ? { assumption } : {}), ...(g.blocking === true ? { blocking: true } : {}), ...(o.length ? { options: o } : {}), ...(pc.choices.length ? { choices: pc.choices } : {}), ...(explain ? { explain } : {}), ...(refs.length ? { refs } : {}) };
           })
           .filter((g) => !(this.get(id).decisions ?? []).some((d) => gapKey(d) === gapKey(g))); // 이미 결정한 항목은 다시 묻지 않는다(계획 중에 고른 결정 포함)
         // 사용자가 '나중에'로 남긴 항목은 새 계획이 다른 항목을 내도 결정·해결 전까지 유지한다
@@ -1620,7 +1623,7 @@ export class MissionRunner {
       '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',
       '- outputs의 path는 만들 파일 경로다. 여러 파일을 담는 폴더를 산출물로 하려면 폴더 경로를 쓰고, 그 안 파일의 형식을 format에 쓴다(폴더 안에 그 형식 파일이 하나 이상 있어야 통과). 형식을 가리지 않으면 any.',
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
-      '- API 키·접속 정보·계정·외부 서비스 설정처럼 사람만 구할 수 있는 정보가 있어야 진행되는 일은 추측하거나 가짜 값을 넣지 말고 gaps에 kind "decide"로 올린다. need에는 무엇이 필요한지, 어디에 넣으면 되는지(환경 변수 이름과 .env 같은 파일 위치, 발급 받는 곳)를 적고, 값을 채팅·답변으로 보내 달라고 하지 않는다(사람이 이 PC에 직접 넣고 "넣었음"으로 답한다). 그 정보 없이도 할 수 있는 작업은 계속한다.',
+      '- API 키·접속 정보·계정·외부 서비스 설정처럼 사람만 구할 수 있는 정보가 있어야 진행되는 일은 추측하거나 가짜 값을 넣지 말고 gaps에 kind "decide"로 올린다. need에는 무엇이 필요한지, 어디에 넣으면 되는지(환경 변수 이름과 .env 같은 파일 위치, 발급 받는 곳)를 적고, 값을 채팅·답변으로 보내 달라고 하지 않는다. 그 gap에는 secret 필드(file: 연결 폴더 기준 .env 경로 — 예: 저장소/.env, .env.local; name: 환경 변수 이름; source: 발급 받는 곳)를 꼭 채운다. 사람이 확인함에서 값을 입력하면 앱이 그 파일에 저장하고(값은 기록·전달되지 않음) "넣었음"으로 답한다. .env.example 같은 견본 파일에는 변수 이름만 적고 실제 값은 넣지 않는다. 그 정보 없이도 할 수 있는 작업은 계속한다.',
       '- 먼저 근거 문서·기존 결과물을 읽고 업무를 분석한다. 근거가 빈약하거나 애매한 부분(내용 없음·서로 모순·결정 안 됨·범위 불명확)은 gaps에 문서별로 issue(무엇이 부족한지, 문서의 어느 부분인지)와 need(사용자가 채워야 할 내용)를 쓴다. 그래도 기존 문서·결과물로 할 수 있는 작업은 tasks로 계속 계획한다(gaps는 확인 필요로만 남고 진행을 막지 않는다). 이번 지시 전체가 근거 없이는 시작할 수 없을 때만 tasks를 비운다. 추측으로 빈 곳을 메우지 않는다. 근거가 충분하면 gaps는 빈 배열.',
       "- gaps 항목이 사용자가 고르기만 하면 되는 결정(어느 기준을 따를지, 유지·되돌림, 범위·우선순위 등)이면 choices에 2~4개의 선택지를 쓴다: label(예: 'HTML 기준 유지'), effect(고르면 무엇이 달라지는지 쉬운 한 문장, 예: '제품 화면을 HTML에 맞춰 고친다'), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장). 사용자에게 명령 실행·결과 붙여넣기 같은 수작업을 선택지로 내지 않는다. '보류'는 앱이 따로 주므로 넣지 않는다. 내용을 사용자가 직접 채워야 하는 항목이면 options는 빈 배열.",
       FLOW_RULE, ASSUME_RULE, ASK_RULE, ENOUGH_RULE, NO_MANUAL_RULE, COMMIT_RULE, RESULT_RULE, demoRule(plan), ...this.demoSection(plan), ...this.commitSection(m), ...this.assumptionsSection(m),
@@ -1924,4 +1927,13 @@ export function resolveResults(folder: string, raw: unknown): MissionResult[] {
     out.push({ ...base, kind: 'file', path: exists ? real : abs, relPath: (exists ? rel : relLex).split(sep).join('/'), exists });
   }
   return out;
+}
+
+/** 오퍼레이터가 낸 비밀값 저장 위치를 검사한다(.env 파일·변수 이름 모양이 아니면 버린다) */
+export function parseSecretSpec(v: unknown): MissionSecretSpec | null {
+  const o = (v ?? {}) as Record<string, unknown>;
+  const file = normEnvRel(String(o.file ?? '')); const name = String(o.name ?? '').trim();
+  if (!file || envFileProblem(file) || !VAR_NAME.test(name)) return null;
+  const source = String(o.source ?? '').trim().slice(0, 300);
+  return { file, name, ...(source ? { source } : {}) };
 }

@@ -1,6 +1,6 @@
 // 앱 기능 계층 — Electron과 분리돼 있어 시험에서 직접 구동할 수 있다.
 import { closeSync, constants as fsc, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
-import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha, isAppTempPath } from './engine/fsutil';
@@ -13,7 +13,7 @@ import { redactKeepLines } from './cli/claudeCli';
 import type { MissionLimits } from '../shared/types';
 import type { Agent, AgentFields, AppSettings, UsagePaceView, DevSyncView, DevSyncRepoResult, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
-import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, mergeDevToMain, syncRepoToDev, workspaceRepos } from './git';
+import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, mergeDevToMain, ensureSecretIgnore, gitIgnored, syncRepoToDev, workspaceRepos } from './git';
 import { LearningStore } from './learning';
 import { MissionRunner } from './mission';
 import { decisionVersion } from '../shared/decisions';
@@ -26,6 +26,7 @@ import { Engine, type Tracer } from './engine/engine';
 import { DEFAULT_TEMPLATE_SET, TEMPLATE_SETS, defaultGraph, type TemplateSetId } from './engine/templates';
 import { escapes, normRel, validateGraph } from './engine/validate';
 import { refDirFor } from './refs';
+import { envHas, normEnvRel, resolveEnvPath, secretValueProblem, VAR_NAME, writeEnvVar } from './secrets';
 import { DEFAULT_PACE, onUsage, paceDecision, restoreUsage, usageSnapshot, type UsageSnapshot } from './pace';
 
 export interface ServiceDeps {
@@ -417,9 +418,12 @@ export class Service {
             urgent: false, held: '권한이 없어 이 업무만 보류했습니다(나머지는 계속 진행).', resumes: `${d.agent}의 보류한 업무(허용하면 다음 계획부터 다시 시도)`, grants: allow.length ? allow[0].effect : undefined });
         }
         for (const g of m.pauseKind === 'restart' ? [] : m.gaps ?? []) {
-          if (shown.has(`${g.doc}|${g.issue}`)) continue; // 검토 카드에 이미 있는 결정은 한 번만
+          if (shown.has(`${g.doc}|${g.issue}`) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
+          const folder = this.store.getProject(m.projectId)?.plan.folder ?? '';
+          const sp = g.secret ? resolveEnvPath(folder, g.secret.file) : null;
+          const secret = g.secret ? { ...g.secret, saved: !!sp && 'abs' in sp && envHas(sp.abs, g.secret.name) } : undefined;
           out.push({ ...base, key: `${m.id}|g|${g.doc}|${g.issue}`, kind: 'gap', task: g.doc || '문서 미지정', question: g.issue, explain: g.explain ?? g.need ?? '', doc: g.doc, issue: g.issue, choices: asChoices(g.choices, g.options), waiting: blocked,
-            urgent: blocked && !!g.blocking, held: g.blocking ? '이 결정에 달린 작업만 보류했습니다.' : '이 결정에 달린 부분만 보류하고 나머지는 계속 진행합니다.', resumes: '정하면 다음 계획부터 이 결정을 따릅니다.' });
+            urgent: blocked && !!g.blocking, held: g.blocking ? '이 결정에 달린 작업만 보류했습니다.' : '이 결정에 달린 부분만 보류하고 나머지는 계속 진행합니다.', resumes: '정하면 다음 계획부터 이 결정을 따릅니다.', ...(secret ? { secret } : {}) });
         }
       }
     }
@@ -438,6 +442,8 @@ export class Service {
       if (!it || !c || !['question', 'gap', 'permission', 'merge'].includes(it.kind)) return false;
       if (p.version && p.version !== decisionVersion(it)) return false; // 보여 준 뒤 질문·선택지가 바뀜
       if ((it.kind === 'permission' || it.kind === 'merge') && !it.choices.some((x) => x.label === c)) return false; // 권한·main 병합은 보여 준 선택지만
+      // 비밀값 항목에 키처럼 보이는 글(공백·한글 없는 한 덩어리)을 답으로 적으면 기록에 남지 않게 받지 않는다(값은 '파일에 저장'으로만)
+      if (it.secret && !it.choices.some((x) => x.label === c) && !/[\s가-힣]/.test(c)) return false;
       return true;
     };
     const go = picks.filter(ok); const stale = picks.length - go.length;
@@ -461,6 +467,31 @@ export class Service {
       lines.push(`· ${title}: ${parts} 반영(${via}) → ${q || gaps.some((g) => g.it.waiting) ? '멈춰 있던 미션이 이어서 진행합니다' : '진행 중인 미션이 다음 계획부터 따릅니다'}${allowed.length ? ' · 보류한 업무를 다시 시도합니다' : ''}`);
     }
     return { applied: go.length, stale, lines };
+  }
+  /**
+   * 확인함의 비밀값(API 키 등)을 연결 폴더의 .env 파일에 저장하고, 그 결정을 '넣었음'으로 처리한다.
+   * 값은 파일에만 쓴다(미션 기록·로그·응답에는 변수 이름과 파일 위치만). git 저장소 안이면 그 파일이 .gitignore로 무시되는지 확인한 뒤에만 쓴다.
+   */
+  async saveSecret(inp: { key: string; file: string; name: string; value: string }): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
+    const it = this.pendingDecisions().find((x) => x.key === inp.key);
+    if (!it || it.kind !== 'gap') return { ok: false, error: '이미 처리됐거나 없는 확인 항목입니다.' };
+    const name = String(inp.name ?? '').trim(); const file = normEnvRel(inp.file);
+    if (!VAR_NAME.test(name)) return { ok: false, error: '환경 변수 이름은 영문·숫자·밑줄만 쓸 수 있습니다(예: OPENAI_API_KEY).' };
+    const bad = secretValueProblem(inp.value); if (bad) return { ok: false, error: bad };
+    const folder = this.store.getProject(it.projectId)?.plan.folder ?? '';
+    if (!folder || !existsSync(folder)) return { ok: false, error: '프로젝트 연결 폴더를 찾을 수 없습니다.' };
+    const r = resolveEnvPath(folder, file); if ('error' in r) return { ok: false, error: `${file}: ${r.error}` };
+    const repo = await gitRoot(dirname(r.abs));
+    if (repo) {
+      let real = repo; try { real = realpathSync(repo); } catch { /* 그대로 */ }
+      const rel = relative(real, r.abs).split(sep).join('/');
+      ensureSecretIgnore(real);
+      if (!(await gitIgnored(real, rel))) return { ok: false, error: `${file}이(가) .gitignore로 무시되지 않아 커밋될 수 있어 저장하지 않았습니다. 저장소의 .gitignore를 확인하세요.` };
+    }
+    try { writeEnvVar(r.abs, name, inp.value); } catch (e) { return { ok: false, error: `파일에 쓰지 못했습니다: ${(e as NodeJS.ErrnoException).code ?? '알 수 없는 오류'}` }; }
+    const choice = `넣었음 — ${file}의 ${name}에 저장(앱에서 입력, 값은 기록하지 않음)`;
+    const res = this.applyDecisions([{ key: it.key, choice }], '앱');
+    return { ok: true, line: `${file}의 ${name}에 저장했습니다(이 PC에만, 커밋 제외).${res.applied ? ' 이 결정은 \'넣었음\'으로 처리했습니다.' : ''}` };
   }
   /** 권한 보류 허용: 그 직원에게만 그 명령을 허용하거나, 그 경로를 읽기 전용 참고 자료로 연다 */
   private allowDenial(it: PendingDecision) {

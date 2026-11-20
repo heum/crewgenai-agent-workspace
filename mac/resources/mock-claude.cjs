@@ -20,6 +20,7 @@
 //   [[mock:gaps-with-tasks]] 오퍼레이터가 근거 부족(gaps)을 적으면서도 작업을 계획
 //   [[mock:gaps-options]]    근거 부족 항목에 선택지(options)를 달고 작업도 계획(사용자 결정이 있으면 그 항목은 다시 내지 않음)
 //   [[mock:gaps-options-only]] 선택지 달린 근거 부족만 내고 작업 없음 — 사용자 결정이 생기면 작업을 계획
+//   [[mock:secret-gap]]     API 키가 있어야 하는 결정(.env 저장 위치 secret 포함)만 내고 작업 없음 — 결정이 생기면 작업을 계획
 //   [[mock:staff]]          오퍼레이터가 직원 제안(새 직원·역할 변경, 오퍼레이터 00 변경은 걸러져야 함)을 함께 냄(기록에 있으면 다시 내지 않음)
 //   [[mock:ask-options]]     계획 질문을 선택지(questionOptions)와 함께 묻는다(답변 전 한 번)
 //   [[mock:commit-request]]  판단에서 이미 있는 미커밋 파일(pending.txt) 커밋을 요청(목록에 있으면 다시 내지 않음)
@@ -176,6 +177,7 @@ async function main() {
     const decided = prompt.includes('## 사용자 결정(');
     const optGap = { doc: '기능 대조표.md', issue: '항목 A가 화면 시안과 제품에서 다르다', need: '어느 쪽을 기준으로 할지', explain: '기능 대조표 2줄에는 버튼이 위에 있다고 적혀 있지만 제품에는 본문에 있습니다. 어느 쪽을 맞출지 정해야 화면 작업을 시작할 수 있습니다.', refs: [{ path: 'docs/기능 대조표.md', line: 2 }], options: ['HTML 기준 유지 — 제품을 HTML에 맞춘다', '제품 기준 승인 — HTML을 제품에 맞춘다'] };
     if (!ask && user.includes('[[mock:gaps-options]]') && !decided) plan.gaps = [optGap];
+    if (!ask && user.includes('[[mock:secret-gap]]') && !decided) { plan.tasks = []; plan.question = ''; plan.gaps = [{ doc: '외부 연동.md', issue: '외부 API 키가 있어야 연동을 시험할 수 있다', need: 'DEMO_API_KEY를 .env에 넣어야 한다', kind: 'decide', blocking: true, secret: { file: '.env', name: 'DEMO_API_KEY', source: '예시 서비스 콘솔' } }]; }
     if (!ask && user.includes('[[mock:gaps-options-only]]') && !decided) { plan.tasks = []; plan.question = ''; plan.gaps = [optGap]; }
     // 되돌리기 쉬운 세부는 가정(assume), 사람이 정할 것은 결정(decide, 진행은 계속)
     if (!ask && user.includes('[[mock:assume]]')) plan.gaps = [

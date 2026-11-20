@@ -57,6 +57,11 @@ export async function gitRoot(folder: string): Promise<string | null> {
   const r = await git(folder, ['rev-parse', '--show-toplevel']);
   return r.ok && r.out ? r.out : null;
 }
+/** 저장소 기준 경로가 .gitignore로 무시되는가 */
+export async function gitIgnored(repo: string, rel: string): Promise<boolean> {
+  // check-ignore는 GIT_LITERAL_PATHSPECS를 받지 않는다(그 환경에서는 오류) — 이 명령만 끈다. 경로는 앱이 검사한 .env 경로뿐이다
+  return (await git(repo, ['check-ignore', '-q', '--no-index', '--', rel], { GIT_LITERAL_PATHSPECS: '0' })).ok;
+}
 export async function gitHasCommit(folder: string): Promise<boolean> {
   return (await git(folder, ['rev-parse', '--verify', '-q', 'HEAD'])).ok;
 }

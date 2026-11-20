@@ -430,6 +430,8 @@ export interface WorkspaceApi {
   attention(): Promise<Attention>;
   pendingDecisions(all?: boolean): Promise<PendingDecision[]>;
   applyDecisions(picks: { key: string; choice: string; version?: string }[]): Promise<{ applied: number; stale: number; lines: string[] }>;
+  /** 확인함의 비밀값(API 키 등)을 연결 폴더의 .env 파일에 저장하고 그 결정을 '넣었음'으로 처리한다. 값은 어디에도 기록하지 않는다 */
+  saveSecret(input: { key: string; file: string; name: string; value: string }): Promise<{ ok: true; line: string } | { ok: false; error: string }>;
   // 텔레그램(토큰은 넣기만 하고 화면으로 돌려받지 않는다)
   telegramStatus(): Promise<TgStatusView>;
   telegramSetToken(token: string | null): Promise<TgStatusView>;
@@ -659,7 +661,10 @@ export interface MissionGap {
   /** decide: 사람이 정해야 하는 제품·정책 결정(검토 지점에 모아 묻는다). assume: 되돌리기 쉬운 세부라 가정하고 진행(검토 때 알림) */ kind?: 'decide' | 'assume';
   /** assume일 때 무엇으로 가정했는지 */ assumption?: string;
   /** decide 중 이것 없이는 아무 작업도 진행할 수 없는 경우만 true(즉시 묻는다) */ blocking?: boolean;
+  /** API 키·접속 정보처럼 사람이 넣어야 하는 비밀값: 확인함에서 입력하면 앱이 이 .env 파일에 저장한다(값은 기록하지 않음) */ secret?: MissionSecretSpec;
 }
+/** 비밀값 저장 위치: 연결 폴더 기준 .env 파일과 변수 이름, 발급처 안내 */
+export interface MissionSecretSpec { file: string; name: string; source?: string }
 /** 사용자 승인 커밋 요청 한 건 */
 export interface MissionCommitRequest {
   id: string; cycle: number;
@@ -829,6 +834,7 @@ export interface PendingDecision {
   held?: string; // 무엇 때문에 보류됐는지
   resumes?: string; // 정하면 재개될 작업
   grants?: string; // 권한 항목: 허용하면 무엇을 허용하는지
+  secret?: MissionSecretSpec & { saved: boolean }; // 비밀값을 넣어야 하는 결정: 저장 위치와 이미 값이 들어 있는지(값 자체는 없음)
 }
 
 /** 텔레그램 연동 화면용 상태(토큰 값은 없음) */

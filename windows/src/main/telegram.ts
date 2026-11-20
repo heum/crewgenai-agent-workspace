@@ -507,11 +507,12 @@ export class TelegramBridge {
       rec?.why ? `추천 이유: ${esc(cut(rec.why, 300))}` : '',
       it.resumes ? `정하면: ${esc(it.resumes)}` : '',
       it.urgent ? '' : '답하지 않아도 다른 작업은 계속 진행됩니다.',
-      '버튼은 <b>선택</b>만 합니다. /pending 의 “선택한 내용 적용”을 눌러야 반영됩니다. 이 메시지에 답장하면 그 내용으로 바로 답합니다.',
+      it.secret ? `🔑 <b>API 키 같은 비밀값은 텔레그램으로 보내지 마세요.</b> 앱의 확인함에서 입력하면 앱이 ${esc(it.secret.file)}의 ${esc(it.secret.name)}에 저장합니다${it.secret.saved ? '(지금 값이 들어 있음)' : ''}.`
+        : '버튼은 <b>선택</b>만 합니다. /pending 의 “선택한 내용 적용”을 눌러야 반영됩니다. 이 메시지에 답장하면 그 내용으로 바로 답합니다.',
     ].filter(Boolean);
     const batchable = it.kind === 'question' || it.kind === 'gap' || it.kind === 'permission' || it.kind === 'merge';
     const rows: Btn[][] = batchable ? it.choices.map((c) => [{ text: `${c.recommended ? '⭐ ' : ''}${cut(c.label, 40)}`, cb: { a: 'pick', k: it.key, v: c.label, ver: v, kind: it.kind } }]) : [];
-    if (batchable && it.kind !== 'permission' && it.kind !== 'merge') rows.push([{ text: '직접 답 쓰기', cb: { a: 'own', k: it.key, ver: v, q: cut(it.question, 200) } }]);
+    if (batchable && it.kind !== 'permission' && it.kind !== 'merge' && !it.secret) rows.push([{ text: '직접 답 쓰기', cb: { a: 'own', k: it.key, ver: v, q: cut(it.question, 200) } }]);
     if (it.kind === 'checkpoint') rows.push([{ text: '결과 검토 열기', cb: { a: 'cp', m: it.missionId } }]);
     if (it.kind === 'commit' && it.commit) rows.push([{ text: '커밋 요청 보기', cb: { a: 'cmd', c: 'commits', m: it.missionId } }]);
     return { text: lines.join('\n'), rows, kind: 'item', ref: { item: it.key, version: v } };
@@ -564,6 +565,7 @@ export class TelegramBridge {
     const it = this.d.svc.pendingDecisions().find((x) => x.key === key);
     if (!it) return this.send({ text: '이미 처리됐거나 없어진 항목입니다. /pending' });
     if (it.kind === 'permission' || it.kind === 'merge') return this.send({ text: '이 항목은 보여 드린 선택지 버튼으로만 정할 수 있습니다.' });
+    if (it.secret && !it.choices.some((c) => c.label === text.trim())) return this.send({ text: '🔑 이 항목은 API 키 같은 비밀값이라 텔레그램 답장을 받지 않습니다(보낸 내용은 반영·기록하지 않았습니다). 앱의 확인함에서 입력하세요. 이미 보냈다면 텔레그램 대화에서 그 메시지를 지우고, 필요하면 키를 새로 발급받으세요.' });
     const r = this.d.svc.applyDecisions([{ key, choice: text, version }], '텔레그램');
     await this.retireButtons().catch(() => null);
     return this.send({ text: r.applied ? `✅ 반영했습니다.\n${r.lines.map(esc).join('\n')}` : '내용이 바뀌었거나 이미 처리된 항목이라 적용하지 않았습니다. /pending 으로 다시 확인하세요.' });

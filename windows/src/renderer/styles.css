@@ -2118,3 +2118,13 @@ textarea.input {
 .decision-log { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 12px; margin-top: 8px; }
 .decision-log > summary { color: var(--sub); }
 .decision-log[open] > summary { margin-bottom: 6px; }
+
+/* 확인함: 비밀값(API 키) 입력 */
+.secret-box { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--line, #d0d5dd); border-radius: 8px; background: var(--panel-2, #f8fafc); display: grid; gap: 6px; }
+.secret-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.secret-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.secret-row label { display: flex; gap: 4px; align-items: center; }
+.secret-row .input { min-width: 0; }
+.secret-value { flex: 1 1 220px; }
+.secret-err { color: var(--danger, #b42318); }
+.secret-open { display: inline-block; margin: 4px 0; }
