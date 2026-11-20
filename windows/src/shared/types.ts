@@ -628,6 +628,12 @@ export interface Mission {
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
   /** 앱이 처리한 기술 권한 막힘(사용자에게 묻지 않음): 오퍼레이터가 다른 방법으로 계획하도록 알린다 */
   techNotes?: string[] | null;
+  /** 앱이 처리해 봤지만 꼭 필요한 명령·경로 허용 요청: 확인함 팝업으로 사용자에게 묻는다(미션은 멈추지 않음) */
+  permAsks?: MissionPermAsk[] | null;
+  /** 같은 막힘이 몇 개 사이클에서 났는지(sig별) — 반복되면 사용자에게 허용을 묻는다 */
+  techSeen?: Record<string, number> | null;
+  /** 사용자가 허용하지 않기로 한 요청(sig) — 다시 묻지 않는다 */
+  permDeclined?: string[] | null;
   blockers?: MissionBlocker[] | null; // 에이전트가 스스로 풀 수 없는 실패로 멈춘 경우
   failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
   /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */
@@ -714,6 +720,9 @@ export interface MissionDenial {
   suggestion: string | null; // 허용 명령 접두어(명령) 또는 참고 문서로 넣을 경로(경로)
   sig: string; // 반복 판별용
 }
+
+/** 사용자에게 묻는 권한 허용 요청 한 건 */
+export interface MissionPermAsk extends MissionDenial { why: string; cycle: number; from: 'operator' | 'repeat' }
 
 export interface MissionEvent {
   missionId: ID;

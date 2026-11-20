@@ -9,7 +9,7 @@ import { isolatedDir } from './engine/fsutil';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
-import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, MissionSecretSpec, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
+import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, MissionSecretSpec, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionPermAsk, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
 import { now, uid, type Store } from './db';
@@ -124,6 +124,7 @@ const JUDGE_SCHEMA = {
   properties: { decision: { type: 'string', enum: ['continue', 'review', 'ask_user', 'done'] }, checkpoint: CHECKPOINT_SCHEMA, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
     results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' }, status: { type: 'string', enum: [...RESULT_STATUSES] },
       demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } },
+    permissionRequests: { type: 'array', items: { type: 'object', required: ['agentCode', 'command', 'why'], properties: { agentCode: { type: 'string' }, command: { type: 'string' }, why: { type: 'string' } } } },
     milestone: { type: 'object', required: ['title', 'summary'], properties: { title: { type: 'string' }, summary: { type: 'string' } } },
     commitRequests: { type: 'array', items: { type: 'object', required: ['repo', 'files', 'message', 'why'], properties: { repo: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, message: { type: 'string' }, why: { type: 'string' }, task: { type: 'string' } } } } },
 };
@@ -133,7 +134,7 @@ interface Plan { references?: { url?: string; why?: string }[]; staffProposals?:
 interface RawResult { status?: string; task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
 interface RawCheckpoint { title?: string; steps?: string; verified?: string; unverified?: string; features?: { name?: string; changed?: string; status?: string }[]; decisions?: { question?: string; choices?: unknown }[]; assumptions?: string[] }
-interface Judge { milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+interface Judge { permissionRequests?: { agentCode?: string; command?: string; why?: string }[]; milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터의 커밋 요청 정리: 형식이 맞는 것만, 이미 대기·승인된 같은 요청은 빼고, 대기 요청은 최대 5개 */
 export function cleanCommitRequests(raw: unknown, existing: MissionCommitRequest[], cycle: number): MissionCommitRequest[] {
@@ -239,6 +240,13 @@ export function commandPrefix(command: string): string | null {
     if (v && !v.startsWith('-') && /^[\w.=:-]{1,12}$/.test(v) && !/[\/\\]/.test(v) && t.length === 2 && /^-[a-z]$/i.test(t) && /^\d+$|^[a-z]+$/i.test(v) && toks[0] !== 'git') { out.push(v); i++; }
   }
   return out.join(' ');
+}
+
+/** 사용자에게 허용을 물어도 되는 명령 접두어인가: 일반 프로그램 이름으로 시작해야 하고, 무엇이든 실행하게 되는 셸·권한 상승·임의 실행은 묻지 않는다 */
+const BROAD_CMD = new Set(['sudo', 'su', 'doas', 'eval', 'exec', 'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'env', 'xargs', 'nohup', 'osascript', 'open', 'source', '.', 'command', 'builtin', 'chmod', 'chown', 'rm', 'dd', 'mkfs', 'launchctl', 'security', 'defaults', 'crontab', 'ssh', 'scp']);
+export function okPermPrefix(pre: string | null): boolean {
+  const first = String(pre ?? '').trim().split(/\s+/)[0] ?? '';
+  return /^[A-Za-z][\w.+-]{0,40}$/.test(first) && !BROAD_CMD.has(first);
 }
 
 /** 에이전트가 고칠 수 없는 내 PC 환경 문제로 보이는 실패(명령·프로그램 없음, 접근 거부, 네트워크·로그인) */
@@ -1110,6 +1118,7 @@ export class MissionRunner {
           if (blocks.length && this.techAuto()) {
             // 기술 권한은 사용자에게 묻지 않는다: 보류·확인함 없이 오퍼레이터에게 알려 다음 계획에서 다른 방법을 쓰게 한다
             this.addTech(id, blocks.map((b) => `${b.agent}: 막힌 ${b.kind === 'path' ? '경로' : b.kind === 'command' ? '명령' : '도구'} '${b.target.slice(0, 160)}'`));
+            this.noteRepeats(id, blocks, m.cycle);
             this.event(m, 'system', `직원이 허용되지 않은 방법을 쓰려다 막혔습니다. 사용자에게 묻지 않고 다음 계획에서 허용된 방법으로 바꿉니다.\n${blocks.map((b) => `- ${b.agent} · ${b.tool}: ${b.target.slice(0, 160)}`).join('\n')}`);
             this.set(id, { denialSigs: blocks.map((b) => b.sig) });
             blocks.length = 0;
@@ -1185,6 +1194,11 @@ export class MissionRunner {
             m = this.set(id, { mergeRequest: mr });
             this.event(m, 'system', `큰 단원이 끝나 main 병합을 확인함에서 묻습니다: ${mr.title}`);
           } }
+        this.askPermissions(id, (judge.permissionRequests ?? []).slice(0, 5).flatMap((r) => {
+          const a = agents.find((x) => x.code === String(r.agentCode ?? '').trim().split(/\s/)[0]); const cmd = String(r.command ?? '').trim().slice(0, 300); const pre = commandPrefix(cmd);
+          if (!a || !cmd || !pre || !okPermPrefix(pre)) return [];
+          return [{ agentId: a.id, agent: `${a.code} ${a.name}`, tool: 'Bash', kind: 'command' as const, target: cmd, suggestion: pre, sig: `${a.id}|Bash|${pre}`, why: String(r.why ?? '').trim().slice(0, 400), cycle: m.cycle, from: 'operator' as const }];
+        }));
         { const reqs = this.devSyncOn() ? [] : cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
           if (reqs.length) { m = this.set(id, { commitRequests: [...(this.get(id).commitRequests ?? []), ...reqs].slice(-30) }); for (const r of reqs) this.event(m, 'system', `커밋 승인 요청: ${r.repo || '(연결 폴더)'} · 파일 ${r.files.length}개 · "${r.message}" — 사용자가 승인해야 커밋합니다.`, { commitRequest: r.id }); } }
         if (judge.decision === 'done') {
@@ -1398,6 +1412,36 @@ export class MissionRunner {
     const prev = this.get(id).techNotes ?? [];
     this.set(id, { techNotes: [...prev.filter((x) => !lines.includes(x)), ...lines].slice(-20) });
   }
+  /** 같은 명령·경로가 다른 사이클에서 또 막히면(오퍼레이터가 다른 방법을 못 찾음) 확인함에서 허용을 묻는다 */
+  private noteRepeats(id: string, blocks: MissionDenial[], cycle: number) {
+    const m = this.get(id); const seen = { ...(m.techSeen ?? {}) }; const asks: MissionPermAsk[] = [];
+    for (const b of blocks) {
+      if (!b.suggestion || b.kind === 'other' || (b.kind === 'command' && !okPermPrefix(b.suggestion))) continue;
+      const k = `${b.sig}@`; const last = seen[k] ?? 0; const n = (seen[b.sig] ?? 0) + (last === cycle ? 0 : 1);
+      seen[b.sig] = n; seen[k] = cycle;
+      if (n >= 2) asks.push({ ...b, why: `${n}개 사이클에서 같은 ${b.kind === 'path' ? '경로' : '명령'}이 막혀 다른 방법으로 대신하지 못했습니다.`, cycle, from: 'repeat' });
+    }
+    this.set(id, { techSeen: Object.fromEntries(Object.entries(seen).slice(-200)) });
+    this.askPermissions(id, asks);
+  }
+  /** 권한 허용 요청을 확인함에 올린다(이미 올라 있거나 사용자가 거절한 것은 다시 올리지 않음). 미션은 멈추지 않는다 */
+  private askPermissions(id: string, asks: MissionPermAsk[]) {
+    if (!asks.length) return;
+    const m = this.get(id); const cur = m.permAsks ?? []; const declined = new Set(m.permDeclined ?? []);
+    const add = asks.filter((a, i) => !cur.some((c) => c.sig === a.sig) && !declined.has(a.sig) && asks.findIndex((x) => x.sig === a.sig) === i);
+    if (!add.length) return;
+    const next = this.set(id, { permAsks: [...cur, ...add].slice(-20) });
+    this.event(next, 'system', `허용이 필요한 ${add.length}건을 확인함에 올렸습니다(미션은 계속 진행):\n${add.map((a) => `- ${a.agent}: ${a.kind === 'path' ? `경로 '${a.suggestion}' 읽기` : `명령 '${a.suggestion}'`} — ${a.why}`).join('\n')}`);
+  }
+  /** 사용자가 허용 요청을 정함: 확인함에서 빼고, 오퍼레이터에게 결과를 알린다(허용 적용은 서비스가 한다) */
+  resolvePermAsk(id: string, sig: string, allowed: boolean): void {
+    const m = this.get(id); const a = (m.permAsks ?? []).find((x) => x.sig === sig); if (!a) return;
+    const what = a.kind === 'path' ? `경로 '${a.suggestion}' 읽기` : `명령 '${a.suggestion}'`;
+    const notes = (m.techNotes ?? []).filter((x) => !(a.suggestion && x.includes(a.suggestion)));
+    this.set(id, { permAsks: (m.permAsks ?? []).filter((x) => x.sig !== sig), techNotes: allowed ? [...notes, `사용자가 ${a.agent}에게 ${what}을(를) 허용함 — 이제 그 직원은 이 방법을 써도 된다`].slice(-20) : m.techNotes,
+      permDeclined: allowed ? m.permDeclined : [...new Set([...(m.permDeclined ?? []), sig])].slice(-50) });
+    this.event(m, 'answer', `${a.agent}의 ${what}: ${allowed ? '허용' : '허용하지 않음'}`);
+  }
   /** 막힌 방법: 오퍼레이터가 같은 방법을 다시 계획하지 않게 */
   private techSection(m: Mission): string[] {
     const ns = m.techNotes ?? [];
@@ -1405,7 +1449,7 @@ export class MissionRunner {
     return ['## 막힌 방법(앱 권한 밖 — 사용자에게 묻지 않는다)', ...ns.map((x) => `- ${x}`),
       '- 같은 명령·경로를 다시 쓰는 작업을 계획하지 않는다. 파일 읽기·쓰기 도구, 직원의 허용 명령, 저장소의 시험 명령처럼 허용된 방법으로 같은 목표를 이루게 지시한다.',
       '- 출력이 길면 명령 출력 파일을 따로 읽지 말고 처음부터 grep·tail로 줄이거나 결과를 작업 폴더의 파일로 저장해 읽게 한다.',
-      '- 허용된 방법으로는 불가능하면 그 작업은 건너뛰고 판단 요약에 이유를 적는다(사용자 질문으로 올리지 않는다). 권한 허용은 사용자에게 요청하지 않는다.', ''];
+      '- 허용된 방법으로는 정말 불가능하고 그 명령이 꼭 있어야 하면, 판단(오퍼레이터 판단)의 permissionRequests에 agentCode·command(실제 명령 한 줄)·why(왜 꼭 필요한지 쉬운 말로)를 적는다. 앱이 확인함 팝업으로 사용자에게 허용을 묻는다. 요약·보고 글에 \'앱에서 허용하라\'고 적지 않는다.', ''];
   }
 
   /** 직전 계획이 앱 검사에서 걸렸으면 이유를 알려 고쳐서 다시 내게 한다 */

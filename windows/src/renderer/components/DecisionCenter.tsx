@@ -125,51 +125,29 @@ export default function DecisionCenter({ onOpenMission }: { onOpenMission: (proj
   });
   const rec = useMemo(() => cur?.choices.find((c) => c.recommended) ?? null, [cur]);
 
-  // 고른 안의 설명(고르면 달라지는 것)도 함께 넘겨 다음 계획이 사용자가 승인한 내용 그대로 따르게 한다
-  // 권한 보류: 허용이면 그 직원(또는 기획 참고 자료)에만 넣고, 그 미션에 남은 권한 항목이 없으면 다시 시도한다
-  const resolvePermissionFor = async (it: PendingDecision, allow: boolean) => {
-    if (!it.denial) return;
-    const d = it.denial; const cur = it;
-    if (allow && d.kind === 'command' && d.suggestion) {
-      const a = (await ws().listAgents(cur.projectId)).find((x) => x.id === d.agentId);
-      if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
-      const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a;
-      const tools = fields.tools.includes('Bash') ? fields.tools : [...fields.tools, 'Bash' as const];
-      const allowedCommands = fields.allowedCommands.includes(d.suggestion) ? fields.allowedCommands : [...fields.allowedCommands, d.suggestion];
-      await ws().saveAgent(cur.projectId, a.id, { ...fields, tools, allowedCommands });
-    } else if (allow && d.kind === 'path' && d.suggestion) {
-      const pr = (await ws().listProjects()).find((x) => x.id === cur.projectId);
-      if (!pr) throw new Error('프로젝트를 찾을 수 없습니다.');
-      if (!pr.plan.referenceDocs.includes(d.suggestion)) await ws().updatePlan(pr.id, { ...pr.plan, referenceDocs: [...pr.plan.referenceDocs, d.suggestion] });
-    }
-    handled.current.add(it.key);
-  };
-  const resolvePermission = async (allow: boolean) => {
-    if (!cur?.denial) return;
-    await resolvePermissionFor(cur, allow);
-    const left = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !handled.current.has(x.key));
-    if (!left.length) await ws().retryParked(cur.missionId, items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && x.denial).map((x) => x.denial!.sig)); // 그 미션의 권한 항목을 모두 정했으면 그 항목만 풀고 다음 계획부터 다시 시도
-  };
   // 같은 미션의 권한 항목을 한 번에: 보여 준 목록 그대로 각 직원에게만 허용하고, 다 정하면 보류한 업무를 다시 시도한다
   const allowAll = () => act.run(async () => {
     if (!cur) return;
     const mine = items.filter((x) => x.kind === 'permission' && x.missionId === cur.missionId && !!x.denial?.suggestion && x.denial.kind !== 'other');
-    for (const it of mine) await resolvePermissionFor(it, true);
-    await ws().retryParked(cur.missionId, mine.map((x) => x.denial!.sig)); // 허용한 항목만 푼다(다른 보류·결정은 그대로)
+    // 앱 본체의 공통 처리(텔레그램과 같은 로직)로 허용한다: 그 직원에게만 열고, 보류한 업무·허용 요청을 정리한다
+    const r = await ws().applyDecisions(mine.map((it) => ({ key: it.key, choice: it.choices.find((c) => !c.label.startsWith('허용하지 않'))?.label ?? '', version: decisionVersion(it) })));
+    for (const it of mine) handled.current.add(it.key);
     const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
     for (const d of list) seen.current.add(d.key);
     setItems(list); setIdx(0);
-    setDone(`권한 ${mine.length}건을 허용했습니다. 보류한 업무를 다음 계획부터 다시 시도합니다.`);
+    setDone(`권한 ${r.applied}건을 허용했습니다. 다음 계획부터 이 방법을 씁니다.${r.stale ? ` 이미 처리됐거나 바뀐 ${r.stale}건은 적용하지 않았습니다.` : ''}`);
   });
   const choose = (label: string, action?: 'stop', effect?: string) => act.run(async () => {
     if (!cur) return;
     if (cur.kind === 'permission') {
       const allow = !label.startsWith('허용하지 않');
-      await resolvePermission(allow);
+      const r = await ws().applyDecisions([{ key: cur.key, choice: label.trim(), version: decisionVersion(cur) }]);
+      handled.current.add(cur.key);
+      if (!r.applied) { const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key)); setItems(list); setIdx(0); setDone('이미 처리됐거나 내용이 바뀐 항목이라 적용하지 않았습니다.'); return; }
       const list = (await ws().pendingDecisions(explicit.current)).filter((x) => !handled.current.has(x.key));
       for (const d of list) seen.current.add(d.key);
       setItems(list); setIdx(0);
-      setDone(allow ? `허용했습니다. ${list.some((x) => x.kind === 'permission' && x.missionId === cur.missionId) ? '남은 권한 항목을 정하면 보류한 업무를 다시 시도합니다.' : '보류한 업무를 다음 계획부터 다시 시도합니다.'}` : '보류를 유지합니다. 나머지 작업은 계속 진행합니다.');
+      setDone(allow ? `허용했습니다. ${list.some((x) => x.kind === 'permission' && x.missionId === cur.missionId) ? '남은 권한 항목을 정하면 보류한 업무를 다시 시도합니다.' : '보류한 업무를 다음 계획부터 다시 시도합니다.'}` : '허용하지 않았습니다. 나머지 작업은 계속 진행합니다.');
       return;
     }
     if (cur.kind === 'merge') {

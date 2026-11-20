@@ -417,6 +417,14 @@ export class Service {
           out.push({ ...base, key: `${m.id}|p|${d.sig}`, kind: 'permission', task: `보류한 업무 · ${d.agent} · ${d.tool}`, question: `${d.agent}이(가) ${what} 권한이 없어 이 업무를 보류했습니다. 허용할까요?`, explain: `거부된 요청: ${d.target}`, doc: '', issue: '', choices: [...allow, { label: '허용하지 않고 보류 유지', effect: '이 업무는 계속 보류하고 나머지 작업만 진행합니다.', recommended: false, why: '' }], waiting: blocked, denial: d,
             urgent: false, held: '권한이 없어 이 업무만 보류했습니다(나머지는 계속 진행).', resumes: `${d.agent}의 보류한 업무(허용하면 다음 계획부터 다시 시도)`, grants: allow.length ? allow[0].effect : undefined });
         }
+        // 앱이 처리해 봤지만 꼭 필요한 권한(오퍼레이터 요청·같은 막힘 반복): 미션은 계속 진행하고, 허용하면 그 직원에게만 연다
+        for (const a of m.pauseKind === 'restart' ? [] : m.permAsks ?? []) {
+          const what = a.kind === 'path' ? `경로 '${a.suggestion}' 읽기` : `명령 '${a.suggestion}'`;
+          const grant = a.kind === 'command' ? `허용 범위: ${a.agent} 한 명이 '${a.suggestion}'로 시작하는 명령을 격리 복사본 안에서 실행(다른 직원·다른 명령은 그대로 막힘).` : `허용 범위: 이 경로를 읽기 전용 참고 자료로 엶(쓰기는 그대로 막힘).`;
+          out.push({ ...base, key: `${m.id}|pa|${a.sig}`, kind: 'permission', task: `권한 요청 · ${a.agent}`, question: `${a.agent}에게 ${what}을(를) 허용할까요?`, explain: `${a.why}${a.target && a.target !== a.suggestion ? `\n실제 명령: ${a.target}` : ''}`, doc: '', issue: '',
+            choices: [{ label: a.kind === 'command' ? `${a.agent}에게 '${a.suggestion}' 허용` : `참고 자료로 '${a.suggestion}' 추가`, effect: grant, recommended: false, why: '' }, { label: '허용하지 않음', effect: '오퍼레이터가 이 방법 없이 진행합니다. 같은 요청은 다시 묻지 않습니다.', recommended: false, why: '' }],
+            waiting: false, denial: a, urgent: false, held: '미션은 멈추지 않고 계속 진행 중입니다. 허용하면 다음 계획부터 이 방법을 씁니다.', resumes: '허용하면 다음 계획부터 이 직원이 이 방법을 씁니다', grants: grant });
+        }
         for (const g of m.pauseKind === 'restart' ? [] : m.gaps ?? []) {
           if (shown.has(`${g.doc}|${g.issue}`) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
           const folder = this.store.getProject(m.projectId)?.plan.folder ?? '';
@@ -458,6 +466,7 @@ export class Service {
       if (!mine.some((x) => x.it.kind !== 'merge')) continue;
       const perms = mine.filter((x) => x.it.kind === 'permission'); const allowed = perms.filter((x) => !x.choice.startsWith('허용하지 않'));
       for (const x of allowed) this.allowDenial(x.it);
+      for (const x of perms) if (x.it.key.includes('|pa|') && x.it.denial) this.missions.resolvePermAsk(missionId, x.it.denial.sig, !x.choice.startsWith('허용하지 않'));
       if (allowed.length) this.missions.retryParked(missionId, allowed.map((x) => x.it.denial!.sig));
       const withEffect = (x: { it: PendingDecision; choice: string }) => { const c = x.it.choices.find((y) => y.label === x.choice); return (c?.effect ? `${x.choice} — ${c.effect}` : x.choice).slice(0, 600); };
       const q = mine.find((x) => x.it.kind === 'question'); const gaps = mine.filter((x) => x.it.kind === 'gap');

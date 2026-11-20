@@ -21,6 +21,7 @@
 //   [[mock:gaps-options]]    근거 부족 항목에 선택지(options)를 달고 작업도 계획(사용자 결정이 있으면 그 항목은 다시 내지 않음)
 //   [[mock:gaps-options-only]] 선택지 달린 근거 부족만 내고 작업 없음 — 사용자 결정이 생기면 작업을 계획
 //   [[mock:secret-gap]]     API 키가 있어야 하는 결정(.env 저장 위치 secret 포함)만 내고 작업 없음 — 결정이 생기면 작업을 계획
+//   [[mock:perm-request]]   첫 판단에서 직원 09의 curl 허용을 요청(넓은 셸 요청은 앱이 걸러야 함)
 //   [[mock:staff]]          오퍼레이터가 직원 제안(새 직원·역할 변경, 오퍼레이터 00 변경은 걸러져야 함)을 함께 냄(기록에 있으면 다시 내지 않음)
 //   [[mock:ask-options]]     계획 질문을 선택지(questionOptions)와 함께 묻는다(답변 전 한 번)
 //   [[mock:commit-request]]  판단에서 이미 있는 미커밋 파일(pending.txt) 커밋을 요청(목록에 있으면 다시 내지 않음)
@@ -202,6 +203,7 @@ async function main() {
       if (!reviewed && cyc < 3) Object.assign(dec, { decision: 'review', summary: '전체 화면과 핵심 흐름 준비', nextFocus: '피드백 반영', checkpoint: { title: '회사 관리 전체 흐름', steps: '1. 목록 열기 → 2. 회사 선택 → 3. 메모 저장 → 다시 열어 저장값 확인', verified: '목록·상세·저장을 시연 환경에서 실제로 실행', unverified: '권한별 화면은 준비 중', features: [{ name: '회사 목록·상세', changed: '실제 API 연결', status: 'reviewable' }], decisions: [{ question: '삭제 기능을 1차에 넣을까요?', choices: [{ label: '넣는다', effect: '삭제 버튼과 확인 창을 만든다', recommended: false, why: '' }, { label: '2차로 미룬다', effect: '이번에는 숨긴다', recommended: true, why: '정책이 아직 없음' }] }], assumptions: ['메모는 최대 500자로 가정'] } });
       else Object.assign(dec, { decision: 'done', summary: '피드백 반영 완료', question: '', nextFocus: '' });
     }
+    if (prompt.includes('[[mock:perm-request]]') && cyc === 1) dec.permissionRequests = [{ agentCode: '09', command: 'curl -s http://localhost:8080/health', why: '시연 서버 응답을 직접 확인해야 합니다' }, { agentCode: '09', command: 'bash -c "echo x"', why: '넓은 셸은 묻지 않아야 함' }];
     if (prompt.includes('[[mock:milestone]]') && prompt.includes('## 커밋·main 병합') && !prompt.includes('지금 main 병합을 묻는 중')) dec.milestone = { title: '첫 화면 완성', summary: '첫 화면과 시험이 통과' };
     if (prompt.includes('[[mock:commit-request]]') && !prompt.includes('## 커밋 요청(최근)')) dec.commitRequests = [{ repo: '', files: ['pending.txt'], message: '대기 변경 커밋', why: '다음 작업에 필요' }];
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(dec), structured_output: dec, permission_denials: [] });
