@@ -365,7 +365,8 @@ export type LiveEvent =
   | { type: 'learning' }
   | { type: 'telegram' }
   | { type: 'devSync' }
-  | { type: 'qa'; projectId: string };
+  | { type: 'qa'; projectId: string }
+  | { type: 'progress'; projectId: string };
 
 // ───────── preload가 노출하는 API ─────────
 export interface WorkspaceApi {
@@ -444,8 +445,9 @@ export interface WorkspaceApi {
   telegramUnlink(): Promise<TgStatusView>;
   telegramSendTest(): Promise<string>;
   pauseMission(missionId: ID): Promise<Mission>;
-  /** 진척 메뉴: 작업 목록·변경을 사용자가 확인함 */
-  reviewWorkPlan(missionId: ID): Promise<Mission>;
+  /** 진척 메뉴: 프로젝트 진척 목록과 확인 */
+  projectProgress(projectId: ID): Promise<MissionWorkPlan | null>;
+  reviewProjectProgress(projectId: ID): Promise<MissionWorkPlan>;
   cancelDirective(missionId: ID, seq: number): Promise<Mission>;
   /** 문의 응대 직원과의 대화 */
   qaList(projectId: ID): Promise<QaMessage[]>;
@@ -683,9 +685,11 @@ export interface QaMessage { seq: number; at: string; role: 'user' | 'staff'; te
 
 /** 작업 목록 단원 상태: 시작 전 / 진행 / 검증 중 / 완료(확인 근거 필수) / 막힘 */
 export type WorkStatus = 'todo' | 'doing' | 'verifying' | 'done' | 'blocked';
-export interface WorkItem { id: string; title: string; criteria: string; status: WorkStatus; evidence: string; note: string; addedCycle: number; updatedCycle: number }
+export interface WorkPhase { id: string; title: string; goal: string }
+export interface WorkItem { id: string; phase?: string; refs?: string[]; title: string; criteria: string; status: WorkStatus; evidence: string; note: string; addedCycle: number; updatedCycle: number }
 export interface WorkChange { cycle: number; at: string; kind: 'create' | 'add' | 'remove' | 'edit'; id: string; title: string; reason: string }
 export interface MissionWorkPlan {
+  /** 큰 단계(프로젝트 진척) */ phases?: WorkPhase[];
   items: WorkItem[];
   /** 계획에서 뺀 단원(이유는 changes에) */ removed: WorkItem[];
   /** 계획 생성·단원 추가·제외·완료 기준 변경 기록(최신이 끝) */ changes: WorkChange[];
@@ -779,6 +783,8 @@ export interface MissionDetail {
   events: MissionEvent[];
   /** 전체 기록 수 */
   eventsTotal?: number;
+  /** 프로젝트 진척(큰 단계·기능 목록) */
+  progress?: MissionWorkPlan | null;
   /** 아직 계획에 들어가지 않은 추가 지시(취소 가능) */
   pendingDirectives?: { seq: number; at: string; text: string }[];
   cycles: MissionCycle[];

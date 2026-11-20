@@ -35,6 +35,20 @@ export function cycleOf(name: string): number | null {
 
 export interface CycleDoc { rel: string; cycle: number; dir: boolean; bytes: number; folder: string }
 
+const REPORT_EXT = /\.(png|jpe?g|gif|webp|svg|html?|md|txt|log)$/i;
+/** 폴더 안이 사진·보고 파일뿐인가(하위 폴더 포함, 최대 2000개까지 봄) */
+function onlyReportFiles(abs: string): boolean {
+  let n = 0; const stack = [abs];
+  while (stack.length) {
+    const p = stack.pop()!; let ents; try { ents = readdirSync(p, { withFileTypes: true }); } catch { return false; }
+    for (const e of ents) { if (++n > 2000 || e.isSymbolicLink()) return false; if (e.isDirectory()) stack.push(join(p, e.name)); else if (!REPORT_EXT.test(e.name)) return false; }
+  }
+  return n > 0;
+}
+/** 지우기 직전 확인: 연결 폴더 기준 경로가 링크 없이 그대로 그 자리에 있는가 */
+export function samePlace(folder: string, rel: string): boolean {
+  try { return realpathSync(join(folder, ...rel.split('/'))) === join(realpathSync(folder), ...rel.split('/')); } catch { return false; }
+}
 /** 폴더 안 파일 크기 합과 가장 최근에 바뀐 시각 */
 function sizeOf(abs: string, cap = 5000): { bytes: number; newest: number } {
   let total = 0; let newest = 0; let n = 0; const stack = [abs];
@@ -61,7 +75,9 @@ export function findCycleDocs(folder: string, roots: string[], outputDir: string
       if (r === `${outRoot}/reviews`) continue; // 앱 기록은 따로 정리
       const c = cycleOf(e.name);
       const isDoc = e.isFile() && /\.(md|html?)$/i.test(e.name) && e.name !== 'HISTORY.md';
-      if (docsHere && c !== null && c < currentCycle - KEEP_RECENT_CYCLES && (isDoc || e.isDirectory())) {
+      // 폴더는 화면 사진·보고 폴더로 보일 때만(이름에 screen·shot, 또는 안에 사진·문서만) — 사이클 번호가 붙은 일반 자료 폴더는 건드리지 않는다
+      const reportDir = e.isDirectory() && (/screen|shot/i.test(e.name) || onlyReportFiles(a));
+      if (docsHere && c !== null && c < currentCycle - KEEP_RECENT_CYCLES && (isDoc || reportDir)) {
         let st; try { st = statSync(a); } catch { continue; }
         const sz = e.isDirectory() ? sizeOf(a) : { bytes: st.size, newest: st.mtimeMs };
         if (now - sz.newest < MIN_AGE_MS) continue;
@@ -111,13 +127,14 @@ export function groupByFolder(docs: CycleDoc[]): { folder: string; items: CycleD
 export const BUILD_DIR = /^(\.[A-Za-z][\w.-]*?)-c(\d{1,4})$/;
 export interface BuildDir { rel: string; abs: string; group: string; cycle: number; bytes: number }
 
-export function findStaleBuilds(folder: string, roots: string[], manifestText: string, now = Date.now(), registered: string = manifestText): BuildDir[] {
+export function findStaleBuilds(folder: string, roots: string[], manifestText: string, now = Date.now(), registered: Set<string> = new Set()): BuildDir[] {
   const all: (BuildDir & { newest: number })[] = [];
   const look = (abs: string, rel: string) => {
     let ents; try { ents = readdirSync(abs, { withFileTypes: true }); } catch { return; }
     for (const e of ents) {
       if (!e.isDirectory() || e.isSymbolicLink()) continue;
-      const m = BUILD_DIR.exec(e.name); if (!m || !registered.includes(e.name)) continue;
+      const m = BUILD_DIR.exec(e.name); if (!m) continue;
+      const repo = abs.split(/[\\/]/).filter(Boolean).pop() ?? ''; if (!registered.has(`${repo}/${e.name}`)) continue; // 그 저장소의 시연용으로 등록된 폴더만
       const a = join(abs, e.name); const sz = sizeOf(a, 20000);
       all.push({ rel: rel ? `${rel}/${e.name}` : e.name, abs: a, group: `${rel}|${m[1]}`, cycle: Number(m[2]), bytes: sz.bytes, newest: sz.newest });
     }
@@ -153,9 +170,26 @@ export function dirsInUse(dirs: string[]): Promise<Set<string>> {
 }
 
 export function manifestText(path: string): string { try { return readFileSync(path, 'utf8').slice(0, 600_000); } catch { return ''; } }
-/** 시연 목록 폴더의 모든 json(지난 사본 포함)에 적힌 내용: 앱 시연용으로 등록된 적 있는 빌드 이름을 찾는 근거 */
-export function registeredText(manifestPath: string): string {
-  const dir = join(manifestPath, '..'); let out = '';
-  try { for (const n of readdirSync(dir)) if (/\.json$/i.test(n)) { try { out += readFileSync(join(dir, n), 'utf8').slice(0, 600_000); } catch { /* 무시 */ } } } catch { /* 없음 */ }
+/**
+ * 시연 목록 폴더의 모든 json(지난 사본 포함)에서 시연용으로 등록된 적 있는 빌드 폴더를 '저장소/폴더' 쌍으로 모은다.
+ * - 서비스 항목(repo가 있는 객체) 안의 값이 폴더 이름과 정확히 같으면 그 저장소의 폴더
+ * - 어느 값이든 '…/<저장소>/<폴더>…' 경로를 담고 있으면 그 저장소의 폴더
+ */
+export function registeredBuilds(manifestPath: string): Set<string> {
+  const dir = join(manifestPath, '..'); const out = new Set<string>();
+  const strings = (v: unknown, acc: string[]) => { if (typeof v === 'string') acc.push(v); else if (Array.isArray(v)) v.forEach((x) => strings(x, acc)); else if (v && typeof v === 'object') Object.values(v).forEach((x) => strings(x, acc)); return acc; };
+  const visit = (v: unknown) => {
+    if (Array.isArray(v)) { v.forEach(visit); return; }
+    if (!v || typeof v !== 'object') return;
+    const o = v as Record<string, unknown>;
+    if (typeof o.repo === 'string' && o.repo.trim()) { const repo = o.repo.trim().replace(/\/+$/, '').split('/').pop()!; for (const s of strings(o, [])) if (BUILD_DIR.test(s.trim())) out.add(`${repo}/${s.trim()}`); }
+    Object.values(o).forEach(visit);
+  };
+  let names: string[] = []; try { names = readdirSync(dir).filter((n) => /\.json$/i.test(n)); } catch { return out; }
+  for (const n of names) {
+    let text = ''; try { text = readFileSync(join(dir, n), 'utf8').slice(0, 600_000); } catch { continue; }
+    try { visit(JSON.parse(text)); } catch { /* 형식이 깨진 사본은 경로 문자열만 본다 */ }
+    for (const m of text.matchAll(/([A-Za-z0-9_.-]+)\/(\.[A-Za-z][\w.-]*?-c\d{1,4})(?=[\/"'\s]|$)/g)) out.add(`${m[1]}/${m[2]}`);
+  }
   return out;
 }

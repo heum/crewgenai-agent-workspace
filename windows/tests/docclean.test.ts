@@ -58,7 +58,13 @@ describe('문서 정리 적용', () => {
     // 성공했으면: HISTORY.md에 이름이 적힌 원본만
     mm.set(m0.id, { docTidy: t, docTidyCycle: 0 });
     writeFileSync(join(dir, 'docs/HISTORY.md'), '# 기록 요약\n원본: C1_FRONT.md, C2_FRONT.md, C3_FRONT.md, C5_FRONT.md, C6_FRONT.md, c2-screens\n'); // C4는 요약에 없음
-    eng.detail = (rid: string) => rid === 'run-x' ? { run: { status: 'succeeded' }, nodes: [{ nodeId: 'n1', status: 'succeeded' }], graph: { nodes: [{ id: 'n1', outputs: [{ path: 'docs/HISTORY.md' }] }] } } : real(rid);
+    // 작성은 성공했지만 뒤따른 Codex 리뷰가 실패했으면 지우지 않는다
+    const g2 = (cx: string) => ({ run: { status: 'succeeded' }, nodes: [{ nodeId: 'n1', status: 'succeeded' }, { nodeId: 'n2', status: cx }], graph: { nodes: [{ id: 'n1', kind: 'agent', outputs: [{ path: 'docs/HISTORY.md' }] }, { id: 'n2', kind: 'codexReview', outputs: [] }], edges: [{ source: 'n1', target: 'n2', kind: 'next' }] } });
+    eng.detail = (rid: string) => rid === 'run-x' ? g2('failed') : real(rid);
+    await svc.missions.tidyDocs(m0.id, svc.store.getProject(p.id).plan);
+    expect(existsSync(join(dir, 'docs/C1_FRONT.md'))).toBe(true);
+    mm.set(m0.id, { docTidy: t, docTidyCycle: 0 });
+    eng.detail = (rid: string) => rid === 'run-x' ? g2('succeeded') : real(rid);
     await svc.missions.tidyDocs(m0.id, svc.store.getProject(p.id).plan);
     expect(['C1_FRONT.md', 'C2_FRONT.md', 'C3_FRONT.md', 'C4_FRONT.md', 'c2-screens'].map((f) => existsSync(join(dir, 'docs', f)))).toEqual([false, false, false, true, false]);
     expect(existsSync(join(dir, 'docs/C5_FRONT.md'))).toBe(true); // 바뀐 것
@@ -79,15 +85,18 @@ describe('지난 사이클 시연 빌드 정리', () => {
     put(dir, 'web/.demo-data-c31/db.txt'); put(dir, 'api/.next-demo-c10/x');
     writeFileSync(join(dir, 'web/.next-demo-c51/BUILD_ID'), 'new'); // 방금 바뀜
     const cur = '"DEMO_DIST_DIR": ".next-demo-c98", "x": "../web/.next-demo-c48/a"';
-    const c = findStaleBuilds(dir, ['.'], cur, Date.now(), cur + ' .next-demo-c31 .next-demo-c51 .next-demo-c10').map((b) => b.rel);
+    const c = findStaleBuilds(dir, ['.'], cur, Date.now(), new Set(['web/.next-demo-c31', 'web/.next-demo-c51', 'web/.next-demo-c48', 'other/.next-demo-c10'])).map((b) => b.rel);
     expect(c).toEqual(['web/.next-demo-c31']);
     // 시연 목록에 등록된 적 없는 같은 모양의 폴더(사용자 백업 등)는 건드리지 않는다
     expect(findStaleBuilds(dir, ['.'], cur)).toEqual([]);
+    // 다른 저장소의 같은 이름 폴더도 등록된 것으로 보지 않는다
+    expect(findStaleBuilds(dir, ['.'], cur, Date.now(), new Set(['other/.next-demo-c31']))).toEqual([]);
   });
   it.skipIf(process.platform === 'win32')('git이 무시하고 추적하지 않는 빌드만, 실제 정리 단계에서 지운다(Windows는 열린 파일을 확인할 수 없어 지우지 않음)', async () => {
     const dir = tmpProject(); const g = gitInit(dir); const svc = mkService(dir);
     writeFileSync(join(dir, '.gitignore'), '.next-demo-*\n');
-    put(dir, 'out/demo/demo-services.old.json', '{"DEMO_DIST_DIR": ".next-demo-c1", "b": ".next-demo-c2", "c": ".next-demo-c3"}');
+    const repoName = dir.split('/').filter(Boolean).pop();
+    put(dir, 'out/demo/demo-services.old.json', JSON.stringify({ services: [{ id: 'w', repo: repoName, env: { DEMO_DIST_DIR: '.next-demo-c1' } }, { id: 'w2', repo: repoName, env: { DEMO_DIST_DIR: '.next-demo-c2' } }, { id: 'w3', repo: repoName, env: { DEMO_DIST_DIR: '.next-demo-c3' } }] }));
     for (const c of [1, 2, 3]) put(dir, `.next-demo-c${c}/BUILD_ID`);
     for (const c of [1, 2]) put(dir, `.cache-c${c}/kept.txt`);
     g('add', '-A'); g('commit', '-q', '-m', '빌드');
@@ -116,6 +125,21 @@ describe('삭제 안전 검사', () => {
     const out = tmpProject(); put(out, 'docs/C1_FRONT.md'); put(out, '.next-demo-c1/x'); put(out, '.next-demo-c2/x');
     const dir = tmpProject(); symlinkSync(out, join(dir, 'web'));
     expect(findCycleDocs(dir, ['web'], 'out', 20)).toEqual([]);
-    expect(findStaleBuilds(dir, ['web'], '', Date.now(), '.next-demo-c1 .next-demo-c2')).toEqual([]);
+    expect(findStaleBuilds(dir, ['web'], '', Date.now(), new Set(['web/.next-demo-c1', 'web/.next-demo-c2']))).toEqual([]);
+  });
+});
+
+describe('시연 빌드 등록 확인', () => {
+  it('서비스의 repo와 폴더 이름, 또는 저장소/폴더 경로로만 등록을 인정한다', async () => {
+    const { registeredBuilds } = await import('../src/main/docclean');
+    const dir = tmpProject();
+    put(dir, 'demo/demo-services.json', JSON.stringify({ services: [{ repo: 'web', env: { DEMO_DIST_DIR: '.next-demo-c98', X: 'c31' } }, { repo: 'api', needs: ['../api/.demo-data-c31/token'] }] }));
+    put(dir, 'demo/old.json', 'not json ../web/.next-demo-c51/BUILD_ID');
+    expect([...registeredBuilds(join(dir, 'demo/demo-services.json'))].sort()).toEqual(['api/.demo-data-c31', 'web/.next-demo-c51', 'web/.next-demo-c98']);
+  });
+  it('사이클 번호가 붙은 일반 자료 폴더는 문서 정리 대상이 아니다', () => {
+    const dir = tmpProject();
+    put(dir, 'app/docs/c1-customers/data.csv'); put(dir, 'app/docs/c2-review/a.png'); put(dir, 'app/docs/c3-shots/x.bin');
+    expect(findCycleDocs(dir, ['app'], 'out', 20).map((d) => d.rel)).toEqual(['app/docs/c2-review', 'app/docs/c3-shots']);
   });
 });

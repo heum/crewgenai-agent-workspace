@@ -185,7 +185,7 @@ export default function App() {
                   onDraftUsed={() => setDraft(null)}
                 />
               )}
-              {tab === 'progress' && <ProgressTab key={project.id} project={project} onOpenMission={(id) => { setTab('mission'); setFocusMission({ id, n: Date.now() }); }} />}
+              {tab === 'progress' && <ProgressTab key={project.id} project={project} />}
               {tab === 'plan' && <PlanTab key={project.id} project={project} onSaved={onProjectSaved} onUseTemplate={(text) => { setDraft(text); setTab('mission'); }} />}
               {tab === 'agents' && <AgentsTab key={project.id} project={project} />}
               {tab === 'office' && <OfficeTab key={project.id} project={project} />}

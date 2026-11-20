@@ -2188,3 +2188,14 @@ textarea.input {
 .qa-directive-text { white-space: pre-wrap; }
 .qa-input { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line, #e4e7ec); align-items: flex-end; }
 .qa-input textarea { flex: 1; resize: none; }
+/* 진척: 큰 단계 */
+.phase-list { display: flex; flex-direction: column; gap: 8px; }
+.phase { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.phase.is-current { border-color: var(--accent, #2f5bea); }
+.phase.is-done { opacity: 0.8; }
+.phase-head { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.phase-no { width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: var(--line, #e4e7ec); font-weight: 600; font-size: 12px; flex: none; }
+.phase.is-current .phase-no { background: var(--accent, #2f5bea); color: #fff; }
+.phase-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; flex: 1; min-width: 0; }
+.phase-stat { white-space: nowrap; }
+.phase-stat .bad { color: #d6453d; }

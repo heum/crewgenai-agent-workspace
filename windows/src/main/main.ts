@@ -259,7 +259,8 @@ function register() {
   h('saveSettings', (p, key) => s().saveSettings(p, key));
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));
-  h('reviewWorkPlan', (id) => s().missions.reviewWorkPlan(id));
+  h('projectProgress', (pid) => s().missions.progress(pid));
+  h('reviewProjectProgress', (pid) => s().missions.reviewProgress(pid));
   h('cancelDirective', (id, seq) => s().missions.cancelDirective(id, Number(seq)));
   h('qaList', (pid) => s().missions.qaList(pid));
   h('qaAsk', (pid, text) => s().missions.qaAsk(pid, String(text ?? '')));

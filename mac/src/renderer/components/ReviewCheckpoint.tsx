@@ -2,7 +2,7 @@
 // 이번에 만든 큰 기능·달라진 점, 바로 여는 시연, 눌러 볼 순서와 예상 결과, 실제 확인한 범위와 미완성·미검증, 가정하고 진행한 세부,
 // 사용자가 정할 핵심(최대 3, 추천 표시만 하고 자동으로 고르지 않음), 묶은 피드백. 고르지 않은 결정은 다음 검토 지점에 다시 나온다.
 import { useRef, useState } from 'react';
-import type { Mission } from '../../shared/types';
+import type { Mission, MissionWorkPlan } from '../../shared/types';
 import { useAction, ws } from '../api';
 import { Banner } from './common';
 import { Markdown } from '../markdown';
@@ -13,7 +13,7 @@ const REASON: Record<string, string> = {
   blocked: '실행 준비 확인에서 막혀 작업을 배정하지 않았습니다',
 };
 
-export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: Mission; onChanged: () => Promise<void> | void }) {
+export default function ReviewCheckpoint({ mission: m, progress, onChanged }: { mission: Mission; progress?: MissionWorkPlan | null; onChanged: () => Promise<void> | void }) {
   const c = m.checkpoint!;
   const act = useAction();
   const [picks, setPicks] = useState<Record<number, string>>({});
@@ -38,7 +38,7 @@ export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: M
         <span role="listitem" className="sum-chip">만들어진 것 <b>{c.features.length}</b>{c.features.some((f) => f.status === 'verified' || f.status === 'reviewable') ? <> · 검증 <b>{c.features.filter((f) => f.status === 'verified' || f.status === 'reviewable').length}</b></> : null}</span>
         {c.decisions.length > 0 && <span role="listitem" className="sum-chip is-ask">정할 것 <b>{c.decisions.length}</b></span>}
         {c.assumptions.length > 0 && <span role="listitem" className="sum-chip">가정하고 진행 <b>{c.assumptions.length}</b></span>}
-        {m.workPlan && m.workPlan.items.length > 0 && (() => { const wp = m.workPlan; const done = wp.items.filter((i) => i.status === 'done').length; const fresh = wp.changes.length - (wp.reviewedChanges ?? 0);
+        {progress && progress.items.length > 0 && (() => { const wp = progress; const done = wp.items.filter((i) => i.status === 'done').length; const fresh = wp.changes.length - (wp.reviewedChanges ?? 0);
           return <button role="listitem" type="button" className={`sum-chip ${fresh > 0 ? 'is-ask' : ''}`} title="진척 메뉴에서 작업 목록 보기" onClick={() => window.dispatchEvent(new CustomEvent('crewgenai:goto-tab', { detail: 'progress' }))}>
             진척 <b>{done}/{wp.items.length}</b>{fresh > 0 ? <> · 계획 확인 <b>{fresh}</b></> : null}</button>; })()}
         {!!c.blocked?.length && <span role="listitem" className="sum-chip is-bad">막힘 <b>{c.blocked.length}</b></span>}

@@ -79,24 +79,23 @@ async function main() {
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(ans), structured_output: ans, permission_denials: [] });
     process.exit(0);
   }
-  // 진척 관리 직원: 작업 목록 갱신
-  if (schema && prompt.includes('# 작업 목록 갱신')) {
+  // 진척 관리 직원: 프로젝트 진척(큰 단계·기능 목록) 갱신
+  if (schema && prompt.includes('# 진척 갱신')) {
     const dec = (prompt.match(/오퍼레이터 판단\((\w+)\)/) || [])[1];
-    const has = /## 지금 작업 목록\n- W/.test(prompt);
+    const has = /## 지금 진척 목록\n(### |- W)/.test(prompt);
     let wp;
     if (prompt.includes('[[mock:workplan]]') || prompt.includes('[[mock:workplan-stuck]]')) {
       const stuck = prompt.includes('[[mock:workplan-stuck]]');
-      wp = !has ? { summary: '3개 중 1개 완료', items: [
-        { title: '목록 화면', criteria: '목록 시험 통과', status: 'done', evidence: 'npm test 3 passed' },
-        { title: '상세 화면', criteria: '상세 시험 통과', status: 'done', evidence: '' },
-        { title: '저장', criteria: '저장 후 다시 열어 값 확인', status: 'todo' }] }
-        : { summary: stuck ? '3개 중 2개 완료' : '모두 완료', items: [
-          { id: 'W1', title: '목록 화면', criteria: '목록 시험 통과', status: 'done', evidence: 'npm test 3 passed' },
-          { id: 'W2', title: '상세 화면', criteria: '상세 시험 통과', status: 'done', evidence: 'npm test 2 passed' },
-          { id: 'W3', title: '저장', criteria: '저장 후 다시 열어 값 확인', status: stuck ? 'doing' : 'done', evidence: stuck ? '' : '화면 확인 기록 save.png' }],
+      wp = !has ? { summary: '3개 중 1개 완료', phases: [{ title: '기반', goal: '데이터 저장' }, { title: '화면', goal: '목록·상세' }], items: [
+        { phase: '화면', title: '목록 화면', criteria: '목록 시험 통과', status: 'done', refs: ['FN-001'], evidence: 'npm test 3 passed' },
+        { phase: '화면', title: '상세 화면', criteria: '상세 시험 통과', status: 'done', refs: ['FN-002'], evidence: '' },
+        { phase: '기반', title: '저장', criteria: '저장 후 다시 열어 값 확인', status: 'todo', refs: ['FN-003'] }] }
+        : { summary: stuck ? '3개 중 2개 완료' : '모두 완료', phases: [], items: [
+          { id: 'W2', phase: 'P2', title: '상세 화면', criteria: '상세 시험 통과', status: 'done', evidence: 'npm test 2 passed' },
+          { id: 'W3', phase: 'P1', title: '저장', criteria: '저장 후 다시 열어 값 확인', status: stuck ? 'doing' : 'done', evidence: stuck ? '' : '화면 확인 기록 save.png' }],
           ...(stuck ? { removed: [{ id: 'W3', reason: '' }] } : {}) };
     } else {
-      wp = { summary: '', items: [{ ...(has ? { id: 'W1' } : {}), title: '지시 완료', criteria: '오퍼레이터가 완료로 판단', status: dec === 'done' ? 'done' : 'doing', evidence: dec === 'done' ? '오퍼레이터 완료 판단(모의)' : '' }] };
+      wp = { summary: '', phases: has ? [] : [{ title: '전체', goal: '지시 완료' }], items: [{ ...(has ? { id: 'W1' } : {}), phase: '전체', title: '지시 완료', criteria: '오퍼레이터가 완료로 판단', status: dec === 'done' ? 'done' : 'doing', evidence: dec === 'done' ? '오퍼레이터 완료 판단(모의)' : '' }] };
     }
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(wp), structured_output: wp, permission_denials: [] });
     process.exit(0);

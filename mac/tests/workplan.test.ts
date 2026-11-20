@@ -24,7 +24,7 @@ describe('작업 목록 반영 규칙', () => {
     expect(b.plan!.items.map((i) => [i.id, i.status])).toEqual([['W1', 'done'], ['W2', 'verifying'], ['W3', 'doing'], ['W4', 'todo']]);
     expect(b.changed.map((c) => [c.kind, c.id, c.reason])).toEqual([['add', 'W4', '추가 지시']]);
     expect(b.notes.join(' ')).toContain('W2: 이유 없이');
-    expect(b.notes.join(' ')).toContain('W1: 완료한 단원은 빼지 않음');
+    expect(b.notes.join(' ')).toContain('W1: 완료한 기능은 빼지 않음');
     const c = mergeWorkPlan(b.plan, { changeReason: '범위 축소 지시', items: [], removed: [{ id: 'W4', reason: '사용자가 범위에서 뺌' }] }, 3, 't');
     expect(c.plan!.items.map((i) => i.id)).toEqual(['W1', 'W2', 'W3']);
     expect(c.plan!.removed.map((i) => i.id)).toEqual(['W4']);
@@ -39,6 +39,10 @@ describe('작업 목록 반영 규칙 — 리뷰 반영', () => {
     expect(b.plan!.items[0].status).toBe('verifying');
     const c = mergeWorkPlan(b.plan, { items: [{ id: 'W1', title: '로그인', criteria: '로그인과 2단계 인증 성공', status: 'done', evidence: '2fa test 2 passed' }] }, 3, 't');
     expect(c.plan!.items[0].status).toBe('done');
+    // 검증 중이던 기능도 기준이 바뀌면 예전 근거가 지워진다
+    const d = mergeWorkPlan(c.plan, { items: [{ id: 'W1', title: '로그인', criteria: '로그인·2단계·잠금', status: 'verifying' }] }, 4, 't');
+    expect(d.plan!.items[0].evidence).toBe('');
+    expect(mergeWorkPlan(d.plan, { items: [{ id: 'W1', title: '로그인', status: 'done', criteria: '로그인·2단계·잠금' }] }, 5, 't').plan!.items[0].status).toBe('verifying');
   });
   it('변경 기록을 줄여도 확인하지 않은 변경 수는 그대로 보인다', () => {
     let p = mergeWorkPlan(null, { items: [{ title: 'A', criteria: 'a', status: 'todo' }] }, 1, 't').plan!;
@@ -54,12 +58,15 @@ describe('진척 관리 직원', () => {
     const { svc, p } = setup();
     svc.store.db.prepare('DELETE FROM agents WHERE id=?').run(svc.store.listAgents(p.id).find((a) => a.code === 'PM')!.id); // 진척 관리 직원이 생기기 전의 프로젝트
     const m0 = await svc.startMission(p.id, '[[mock:workplan]] 문서를 정리하라');
-    const m1 = await until(() => { const m = svc.missions.get(m0.id); return m.workPlan?.items.length ? m : null; });
-    expect(m1.workPlan!.items.map((i) => [i.id, i.status])).toEqual([['W1', 'done'], ['W2', 'verifying'], ['W3', 'todo']]);
+    const w1 = await until(() => { const w = svc.missions.progress(p.id); return w?.items.length ? w : null; });
+    expect(w1.items.map((i) => [i.id, i.phase, i.status])).toEqual([['W1', 'P2', 'done'], ['W2', 'P2', 'verifying'], ['W3', 'P1', 'todo']]);
+    expect(w1.phases!.map((x) => [x.id, x.title])).toEqual([['P1', '기반'], ['P2', '화면']]);
+    expect(w1.items[0].refs).toEqual(['FN-001']);
     expect(svc.store.listAgents(p.id).some((a) => a.code === 'PM' && a.name === '진척 관리')).toBe(true);
-    expect(svc.missions.reviewWorkPlan(m0.id).workPlan!.reviewedChanges).toBe(1);
-    const done = await until(() => { const m = svc.missions.get(m0.id); return m.status === 'done' ? m : null; });
-    expect(done.workPlan!.items.every((i) => i.status === 'done')).toBe(true);
+    expect(svc.missions.reviewProgress(p.id).reviewedChanges).toBe(1);
+    await until(() => svc.missions.get(m0.id).status === 'done');
+    expect(svc.missions.progress(p.id)!.items.every((i) => i.status === 'done')).toBe(true);
+    expect(svc.missions.detail(m0.id).progress!.items).toHaveLength(3);
     const t = texts(svc, m0.id).join('\n');
     expect(t).toContain('진척 관리 직원을 채용했습니다');
     expect(t).toContain("'검증 중'으로 둠");
@@ -69,13 +76,12 @@ describe('진척 관리 직원', () => {
     svc.close();
   });
 
-  it('오퍼레이터가 완료로 판단해도 끝나지 않은 단원이 남으면 계속 진행하고, 이유 없는 제외는 받지 않는다', async () => {
+  it('프로젝트에 남은 기능이 있어도 미션 완료는 오퍼레이터 판단을 따르고 완료 보고에 남은 진척을 보이며, 이유 없는 제외는 받지 않는다', async () => {
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '[[mock:workplan-stuck]] 문서를 정리하라');
-    await until(() => texts(svc, m0.id).some((x) => x.includes('끝나지 않은 단원이 남아')));
-    const m = svc.missions.get(m0.id);
-    expect(m.status).not.toBe('done');
-    expect(m.workPlan!.items.find((i) => i.id === 'W3')!.status).toBe('doing');
+    const m = await until(() => { const x = svc.missions.get(m0.id); return x.status === 'done' ? x : null; });
+    expect(m.question).toContain('프로젝트 진척: 단계 2개 · 기능 3개 중 2개 완료');
+    expect(svc.missions.progress(p.id)!.items.find((i) => i.id === 'W3')!.status).toBe('doing');
     expect(texts(svc, m0.id).join('\n')).toContain('W3: 이유 없이 빼려 해 그대로 둠');
     await svc.missions.stop(m0.id); svc.close();
   });
@@ -86,7 +92,8 @@ describe('진척 관리 직원', () => {
     svc.setAgentActive(agents.find((a) => a.code === 'PM')!.id, false);
     const m0 = await svc.startMission(p.id, '문서를 정리하라');
     const done = await until(() => { const m = svc.missions.get(m0.id); return m.status === 'done' ? m : null; });
-    expect(done.workPlan ?? null).toBeNull();
+    expect(done.status).toBe('done');
+    expect(svc.missions.progress(p.id)).toBeNull();
     svc.close();
   });
 });

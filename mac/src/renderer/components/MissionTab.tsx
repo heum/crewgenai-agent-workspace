@@ -414,7 +414,7 @@ const MissionView = memo(function MissionView({ missionId, agents, onOpenRun, on
       </div>
       {/* 지금 단계·지금 일하는 직원: 결과 카드보다 위에 두어 늘 보이게 */}
       <LoopStrip stage={m.stage} live={live} cycle={m.cycle} maxCycles={m.maxCycles} working={d.working.filter((w) => w.missionId === m.id)} run={d.currentRun} agents={agents} />
-      {m.checkpoint && !['stopped', 'failed'].includes(m.status) && <ReviewCheckpoint mission={m} onChanged={async () => { await detail.reload(); onChanged(); }} />}
+      {m.checkpoint && !['stopped', 'failed'].includes(m.status) && <ReviewCheckpoint mission={m} progress={d.progress} onChanged={async () => { await detail.reload(); onChanged(); }} />}
       {m.status === 'waiting_user' && m.pauseKind === 'restart' && !m.checkpoint && (
         <div className="limit-card" role="status">
           <strong>앱이 다시 시작되어 잠시 멈췄습니다</strong>

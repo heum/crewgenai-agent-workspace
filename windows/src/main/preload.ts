@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { LiveEvent, WorkspaceApi } from '../shared/types';
 
 const methods = [
-  'applyDecisions', 'saveSecret', 'pauseMission', 'reviewWorkPlan', 'cancelDirective', 'qaList', 'qaAsk', 'qaClear', 'qaSendDirective', 'resumeMission', 'telegramStatus', 'telegramSetToken', 'telegramTest', 'telegramSetOptions', 'telegramLinkCode', 'telegramLinkConfirm', 'telegramUnlink', 'telegramSendTest', 'listProjects', 'createProject', 'updatePlan', 'planHistory', 'pickFolder', 'pickFiles', 'pickSubfolder',
+  'applyDecisions', 'saveSecret', 'pauseMission', 'projectProgress', 'reviewProjectProgress', 'cancelDirective', 'qaList', 'qaAsk', 'qaClear', 'qaSendDirective', 'resumeMission', 'telegramStatus', 'telegramSetToken', 'telegramTest', 'telegramSetOptions', 'telegramLinkCode', 'telegramLinkConfirm', 'telegramUnlink', 'telegramSendTest', 'listProjects', 'createProject', 'updatePlan', 'planHistory', 'pickFolder', 'pickFiles', 'pickSubfolder',
   'revealInFinder', 'openPath', 'openLocalUrl', 'demoInfo', 'demoApprove', 'demoStart', 'demoStop', 'demoLog', 'demoRequest', 'demoReset', 'previewFile', 'readTextFile',
   'listAgents', 'saveAgent', 'duplicateAgent', 'setAgentActive', 'loadAgentTemplates', 'agentTemplateSets', 'fireAgent',
   'latestGraph', 'listGraphVersions', 'validateGraph', 'saveGraph', 'defaultGraph',
