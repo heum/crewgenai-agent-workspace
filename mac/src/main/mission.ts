@@ -3,6 +3,9 @@
 //   (담당 Agent 수행 → Codex 리뷰 → Claude 재검토 → [검사] → 취합)
 // → 오퍼레이터 판단(계속 / 사용자 확인 / 완료) → 사용자가 멈출 때까지 반복
 // 오퍼레이터는 작업 완료·검토 필요·추가 정보 필요·사이클 상한 도달 때만 사용자에게 묻는다.
+import { PM_AGENT, PM_CODE } from './engine/templates';
+import { defaultCharacter } from '../shared/characterIds';
+import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, progressLine, workPlanSection, WORK_STATUS_LABEL, type RawWorkPlan } from './workplan';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { isolatedDir } from './engine/fsutil';
@@ -303,7 +306,9 @@ export class MissionRunner {
   events(id: string): MissionEvent[] {
     return (this.d.store.db.prepare('SELECT data FROM mission_events WHERE mission_id=? ORDER BY seq').all(id) as Row[]).map((r) => JSON.parse(String(r.data)) as MissionEvent);
   }
-  detail(id: string): MissionDetail {
+  private filesCache = new Map<string, { key: string; at: number; files: MissionFile[] }>();
+  /** eventLimit: 화면에는 최근 기록만 보낸다(0이면 전부). 결과물 파일 목록은 기록이 늘지 않으면 30초 동안 다시 계산하지 않는다 */
+  detail(id: string, eventLimit = 0): MissionDetail {
     const mission = this.get(id);
     const cycles = (this.d.store.db.prepare('SELECT cycle, run_id FROM mission_cycles WHERE mission_id=? ORDER BY cycle').all(id) as Row[]).map((r) => {
       const run = this.d.store.getRun(String(r.run_id));
@@ -313,10 +318,75 @@ export class MissionRunner {
     let currentRun: RunDetail | null = null;
     if (runId) { try { currentRun = this.d.engine.detail(runId); } catch { currentRun = null; } }
     const events = this.events(id);
-    return { mission: redactDeep(mission), events, cycles, currentRun, files: this.files(mission, cycles, events), working: this.working(mission.projectId) };
+    const key = `${events.length}:${cycles.length}`; const c = this.filesCache.get(id);
+    const files = c && c.key === key && Date.now() - c.at < 30000 ? c.files : this.files(mission, cycles, events);
+    if (files !== c?.files) this.filesCache.set(id, { key, at: Date.now(), files });
+    return { mission: redactDeep(mission), events: eventLimit > 0 ? events.slice(-eventLimit) : events, eventsTotal: events.length, cycles, currentRun, files, working: this.working(mission.projectId) };
   }
 
   /** 프로젝트에서 지금 일하는 직원: 실행 중인 시도(작성·검토·Codex·검사)와 진행 중인 오퍼레이터 호출 */
+  /** 진척 관리 직원: 판단 직후 작업 목록을 갱신한다. 실패해도 미션은 계속한다(다음 사이클에 다시) */
+  private async updateWorkPlan(id: string, plan: PlanFields, judge: Judge, runId: string): Promise<void> {
+    const m = this.get(id);
+    const pm = this.progressAgent(m.projectId);
+    if (!pm) return;
+    try {
+      const raw = await this.callOperator<RawWorkPlan>(m, plan, this.workPlanPrompt(m, plan, judge, runId), WORKPLAN_SCHEMA, `${id}:progress`, pm);
+      if (this.closed || this.get(id).status === 'stopped') return;
+      const cur = this.get(id);
+      const r = mergeWorkPlan(cur.workPlan, raw, cur.cycle, now());
+      if (!r.plan) return;
+      const next = this.set(id, { workPlan: r.plan });
+      const head = !cur.workPlan?.items.length ? `${pm.code} ${pm.name}: 작업 목록을 만들었습니다 — ${progressLine(r.plan)}. 진척 메뉴에서 확인하세요(개발은 계속).` : `${pm.code} ${pm.name}: ${progressLine(r.plan)}`;
+      const ch = r.changed.filter((c) => c.kind !== 'create').map((c) => `${c.kind === 'add' ? '추가' : c.kind === 'remove' ? '제외' : '변경'} ${c.id} ${c.title}(${c.reason})`);
+      this.event(next, 'system', [head, ...(ch.length ? [`계획 변경(사용자 확인 필요): ${ch.join(' / ')}`] : []), ...r.notes.slice(0, 5)].join('\n'), { workPlan: true });
+    } catch (e) {
+      if (this.closed) throw e;
+      this.event(this.get(id), 'system', `${pm.code} ${pm.name}: 작업 목록을 갱신하지 못했습니다(다음 사이클에 다시 시도) — ${redact((e as Error).message).slice(0, 200)}`);
+    }
+  }
+  /** 진척 관리 직원(없으면 한 번 채용, 휴가·해고 중이면 갱신하지 않음) */
+  private progressAgent(projectId: string): Agent | null {
+    const all = this.d.store.listAgents(projectId, true);
+    const pm = all.find((a) => a.code === PM_CODE);
+    if (pm) return pm.active && !(pm as Agent & { fired?: boolean }).fired ? pm : null;
+    if (!all.some((a) => a.code === '00')) return null;
+    const a = this.d.store.saveAgent(projectId, null, { ...PM_AGENT(), character: defaultCharacter(PM_AGENT()) });
+    for (const mm of this.list(projectId).filter((x) => ['planning', 'running', 'evaluating', 'waiting_user'].includes(x.status))) this.event(mm, 'system', `${a.code} ${a.name} 직원을 채용했습니다: 미션 작업 목록(단원·완료 기준·상태)을 사이클마다 갱신합니다.`);
+    return a;
+  }
+  /** 사용자가 진척 메뉴에서 작업 목록·변경을 확인함 */
+  reviewWorkPlan(id: string): Mission {
+    const m = this.get(id); const wp = m.workPlan;
+    if (!wp) throw new Error('아직 작업 목록이 없습니다.');
+    const next = this.set(id, { workPlan: { ...wp, reviewedChanges: wp.changes.length, reviewedAt: now() } });
+    this.event(next, 'system', `사용자가 작업 목록을 확인했습니다(${progressLine(wp)}).`);
+    return next;
+  }
+  private workPlanPrompt(m: Mission, plan: PlanFields, judge: Judge, runId: string): string {
+    const d = this.d.engine.detail(runId);
+    const res = (this.get(m.id).results ?? []).map((r) => `- [${r.status}] ${r.title}: ${r.changed}${r.verified ? ` · 확인: ${r.verified}` : ''}${r.remaining ? ` · 남음: ${r.remaining}` : ''}`);
+    const wp = m.workPlan;
+    return [
+      '# 작업 목록 갱신', '',
+      '당신은 진척 관리 담당이다. 미션 작업 목록(단원·완료 기준·상태·확인 근거)을 갱신한다. 파일은 수정하지 않는다(읽기만).', '',
+      '## 사용자 지시', m.prompt, '',
+      '## 프로젝트', `- 목표: ${plan.goal}`, `- 완료 조건: ${plan.doneCriteria || '(미입력)'}`, `- 작업 범위: ${plan.scope}`, '',
+      `## 사이클 ${m.cycle} 오퍼레이터 판단(${judge.decision})`, judge.summary.slice(0, 6000), '', `다음 초점: ${judge.nextFocus}`, '',
+      '## 이번 사이클 결과물', ...(res.length ? res : ['- (없음)']), `- 실행 결과: ${d.run.status}`, '',
+      '## 지금까지의 판단·사용자 답변(추가 지시 포함)', this.history(m).slice(-8000), '',
+      ...(wp?.items.length ? ['## 지금 작업 목록', ...wp.items.map((i) => `- ${i.id} [${i.status}] ${i.title} — 완료 기준: ${i.criteria}${i.evidence ? ` · 근거: ${i.evidence}` : ''}${i.note ? ` · 메모: ${i.note}` : ''}`),
+        ...(wp.removed.length ? ['### 뺀 단원', ...wp.removed.map((i) => `- ${i.id} ${i.title}`)] : []), ''] : ['## 지금 작업 목록', '- 없음. 이번에 처음 만든다.', '']),
+      '## 규칙',
+      wp?.items.length
+        ? '- items에 모든 단원을 id와 함께 다시 쓰고 status·evidence·note를 이번 결과로 고친다. 새 단원은 id를 비운다(앱이 붙인다). 완료 기준을 바꾸거나 새 단원을 더하거나 단원을 빼면(removed: id와 이유) changeReason에 어느 사용자 지시·발견 때문인지 쓴다. 사용자 지시가 바뀌지 않았으면 범위를 바꾸지 않는다.'
+        : '- 사용자 지시와 완료 조건을 단원 5~15개로 나눈다. 단원은 사용자가 직접 확인할 수 있는 기능 묶음이고, criteria는 무엇을 확인하면 끝인지(시험·화면·파일) 한 문장이다. 지금까지 이미 끝난 단원은 근거와 함께 done으로 둔다. changeReason은 비운다.',
+      `- status: ${Object.entries(WORK_STATUS_LABEL).map(([k, v]) => `${k}(${v})`).join(', ')}. done은 직접 확인된 근거(시험 명령과 결과 수, 결과 파일, 화면 확인 기록)를 evidence에 쓸 때만. 근거가 없으면 verifying.`,
+      '- blocked는 막힌 이유를 note에 쓴다. 사용자가 정하지 않은 범위를 가정해 넣었으면 note에 "가정"이라고 쓴다.',
+      '- summary는 진척 한 줄 요약(몇 개 중 몇 개 완료, 무엇이 막힘)이다.',
+    ].join('\n');
+  }
+
   working(projectId: string): WorkingItem[] {
     const out: WorkingItem[] = [];
     const agents = new Map(this.d.store.listAgents(projectId).map((a) => [a.id, a]));
@@ -325,6 +395,8 @@ export class MissionRunner {
       if (!this.procs.has(m.id) || !['planning', 'evaluating'].includes(m.status)) continue;
       out.push({ agentId: op?.id ?? null, who: `${op ? `${op.code} ${op.name}` : '00 총괄'}(오퍼레이터)`, kind: 'operator', task: m.status === 'planning' ? `사이클 ${m.cycle} 계획` : `사이클 ${m.cycle} 판단`, runId: null, missionId: m.id, since: m.updatedAt });
     }
+    const pm = [...agents.values()].find((a) => a.code === PM_CODE);
+    for (const m of this.list(projectId)) if (this.procs.has(`${m.id}:progress`)) out.push({ agentId: pm?.id ?? null, who: pm ? `${pm.code} ${pm.name}` : '진척 관리', kind: 'operator', task: `사이클 ${m.cycle} 작업 목록 갱신`, runId: null, missionId: m.id, since: m.updatedAt });
     for (const r of this.d.store.listRuns(projectId)) {
       if (!this.d.engine.isActive(r.id)) continue;
       let labels = new Map<string, string>();
@@ -1201,6 +1273,16 @@ export class MissionRunner {
         }));
         { const reqs = this.devSyncOn() ? [] : cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
           if (reqs.length) { m = this.set(id, { commitRequests: [...(this.get(id).commitRequests ?? []), ...reqs].slice(-30) }); for (const r of reqs) this.event(m, 'system', `커밋 승인 요청: ${r.repo || '(연결 폴더)'} · 파일 ${r.files.length}개 · "${r.message}" — 사용자가 승인해야 커밋합니다.`, { commitRequest: r.id }); } }
+        await this.updateWorkPlan(id, project.plan, judge, run.id);
+        if (this.closed || this.get(id).status === 'stopped') return;
+        { const wp = this.get(id).workPlan;
+          if (judge.decision === 'done' && wp?.items.length && !allDone(wp)) {
+            this.event(m, 'system', `오퍼레이터가 완료로 판단했지만 작업 목록에 끝나지 않은 단원이 남아 계속 진행합니다(${progressLine(wp)}).`);
+            judge.decision = 'continue';
+          } else if (judge.decision !== 'done' && judge.decision !== 'ask_user' && allDone(wp)) {
+            this.event(m, 'system', `작업 목록의 모든 단원이 완료돼 미션을 완료 검토로 멈춥니다(${progressLine(wp)}).`);
+            judge.decision = 'done';
+          } }
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0);
           this.set(id, { status: 'done', stage: 'done', summary: judge.summary, question: `완료 보고: ${judge.summary}${open ? `\n(보류한 업무 ${open}건은 확인이 필요합니다)` : ''}` });
@@ -1466,7 +1548,7 @@ export class MissionRunner {
       `- 지금까지 사용량: ${this.usageLine(m)}`, ''];
   }
   private staffFor(m: Mission): Agent[] {
-    const all = this.d.ensureAgents(m.projectId).filter((a) => a.active);
+    const all = this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== PM_CODE); // 진척 관리는 작업 배정·검토 대상이 아니다
     const ids = m.limits?.staff;
     return ids?.length ? all.filter((a) => a.code === '00' || ids.includes(a.id)) : all;
   }
@@ -1683,6 +1765,7 @@ export class MissionRunner {
       ...this.limitSection(m),
       ...this.planFixSection(m),
       ...this.techSection(m),
+      ...workPlanSection(m.workPlan),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
       '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}`), '',
@@ -1808,6 +1891,7 @@ export class MissionRunner {
       ...this.learnedSection(m.projectId),
       '## 사용자 지시', m.prompt, '', `## 사이클: ${m.cycle} (지난 검토 이후 자동 진행 ${m.sinceReview ?? 0}회, 검토 없이 ${this.reviewBudget()}회까지 진행)`, '',
       '## 프로젝트 완료 조건', plan.doneCriteria || '(미입력)', '',
+      ...workPlanSection(m.workPlan),
       `## 실행 결과: ${d.run.status}${d.run.reason ? ` — ${d.run.reason}` : ''}`, ...(failed.length ? ['### 실패 단계', ...failed.map((f) => `- ${f}`)] : []), '',
       '## 리뷰 기록', ...(reviews.length ? reviews : ['- (없음)']), '',
       '## 앱이 직접 확인한 시연 결과(이번 판단 직전, 사실로 쓴다)', ...((this.demoChecks.get(m.id) ?? []).length ? this.demoChecks.get(m.id)! : ['- (시연 목록이 없거나 확인할 서비스가 없음)']), '',
@@ -1816,7 +1900,7 @@ export class MissionRunner {
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
-      '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다.',
+      '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다. 작업 목록이 있으면 모든 단원이 완료일 때만 done이다(앱이 남은 단원이 있는 done은 받지 않는다). 작업 목록 갱신은 진척 관리 직원이 하니 summary에 단원 상태를 길게 다시 쓰지 않는다.',
       FLOW_RULE, CHECKPOINT_RULE, ...this.assumptionsSection(m),
       '- ask_user: 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
       '- continue: 남은 일이 분명하고 사용자 확인 없이 진행할 수 있을 때(작은 판단·세부는 가정하고 진행). nextFocus에 다음 사이클의 초점을 쓴다.',
@@ -1863,11 +1947,11 @@ export class MissionRunner {
 
   /** 오퍼레이터 호출: Claude CLI(읽기 전용 도구, 구조화 출력). 모의 실행이면 모의 CLI를 쓴다. */
   /** key: 프로세스 관리 칸(기본은 미션 ID). 배운 것 정리는 계획 호출과 칸을 나눠 서로의 정리 과정이 겹치지 않게 한다. */
-  private async callOperator<T>(m: Mission, plan: PlanFields, prompt: string, schema: object, key: string = m.id): Promise<T> {
+  private async callOperator<T>(m: Mission, plan: PlanFields, prompt: string, schema: object, key: string = m.id, as?: Agent): Promise<T> {
     const ex = this.d.executor();
-    const op = this.d.store.listAgents(m.projectId).find((a) => a.code === '00');
+    const op = as ?? this.d.store.listAgents(m.projectId).find((a) => a.code === '00');
     const args = buildClaudeArgs({
-      prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. ${op?.instructions ?? ''}`.slice(0, 4000), cwd: plan.folder,
+      prompt, appendSystemPrompt: (as ? `당신은 CREWGENAI 개발팀의 ${as.code} ${as.name} 담당이다. ${as.instructions}` : `당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. ${op?.instructions ?? ''}`).slice(0, 4000), cwd: plan.folder,
       tools: ['Read', 'Grep', 'Glob'], editScopes: [], allowedCommands: [], readDirs: this.operatorReadDirs(m), sessionId: randomUUID(), resumeSessionId: null,
       jsonSchema: schema, model: op?.model ?? '', effort: op?.effort, maxBudgetUsd: op?.maxBudgetUsd ?? null,
     });

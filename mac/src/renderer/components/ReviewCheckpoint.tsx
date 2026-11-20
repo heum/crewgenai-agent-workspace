@@ -38,6 +38,9 @@ export default function ReviewCheckpoint({ mission: m, onChanged }: { mission: M
         <span role="listitem" className="sum-chip">만들어진 것 <b>{c.features.length}</b>{c.features.some((f) => f.status === 'verified' || f.status === 'reviewable') ? <> · 검증 <b>{c.features.filter((f) => f.status === 'verified' || f.status === 'reviewable').length}</b></> : null}</span>
         {c.decisions.length > 0 && <span role="listitem" className="sum-chip is-ask">정할 것 <b>{c.decisions.length}</b></span>}
         {c.assumptions.length > 0 && <span role="listitem" className="sum-chip">가정하고 진행 <b>{c.assumptions.length}</b></span>}
+        {m.workPlan && m.workPlan.items.length > 0 && (() => { const wp = m.workPlan; const done = wp.items.filter((i) => i.status === 'done').length; const fresh = wp.changes.length - (wp.reviewedChanges ?? 0);
+          return <button role="listitem" type="button" className={`sum-chip ${fresh > 0 ? 'is-ask' : ''}`} title="진척 메뉴에서 작업 목록 보기" onClick={() => window.dispatchEvent(new CustomEvent('crewgenai:goto-tab', { detail: 'progress' }))}>
+            진척 <b>{done}/{wp.items.length}</b>{fresh > 0 ? <> · 계획 확인 <b>{fresh}</b></> : null}</button>; })()}
         {!!c.blocked?.length && <span role="listitem" className="sum-chip is-bad">막힘 <b>{c.blocked.length}</b></span>}
         {c.unverified?.trim() && <span role="listitem" className="sum-chip is-warn">미완성·미검증 있음</span>}
       </div>

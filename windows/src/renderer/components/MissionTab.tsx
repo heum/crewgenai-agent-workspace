@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react';
 import { autoLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionResult, MissionRef, RefSnippet, StaffProposal, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail } from '../../shared/types';
 import { MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS_LABEL, RUN_STATUS_LABEL, billingLabel } from '../../shared/types';
 import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
@@ -45,9 +45,12 @@ function useMissionList(projectId: string) {
 }
 
 /** 미션 상세 — 미션·이벤트·현재 실행의 실시간 이벤트에 맞춰 ~300ms 간격으로 다시 불러온다 */
-function useMissionDetail(missionId: string | null) {
-  const detail = useLoad(() => (missionId ? ws().missionDetail(missionId) : Promise.resolve(null)), [missionId]);
+// 직원이 일하는 동안 실행 이벤트가 쉬지 않고 오므로, 다시 불러오기는 최소 1.5초 간격으로 묶는다(입력이 버벅이지 않게)
+const DETAIL_GAP_MS = 1500;
+function useMissionDetail(missionId: string | null, eventLimit: number) {
+  const detail = useLoad(() => (missionId ? ws().missionDetail(missionId, eventLimit) : Promise.resolve(null)), [missionId, eventLimit]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const last = useRef(0);
   const reloadRef = useRef(detail.reload);
   reloadRef.current = detail.reload;
   const runIdRef = useRef<string | null>(null);
@@ -61,13 +64,14 @@ function useMissionDetail(missionId: string | null) {
         (e.type === 'missionEvent' && e.event.missionId === missionId) ||
         (!!runId &&
           ((e.type === 'run' && e.run.id === runId) || (e.type === 'node' && e.state.runId === runId) || (e.type === 'attempt' && e.attempt.runId === runId)));
-      if (!hit) return;
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => void reloadRef.current(), 300);
+      if (!hit || timer.current) return; // 이미 예약됨
+      const wait = Math.max(300, DETAIL_GAP_MS - (Date.now() - last.current));
+      timer.current = setTimeout(() => { timer.current = null; last.current = Date.now(); void reloadRef.current(); }, wait);
     });
     return () => {
       off();
       if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
     };
   }, [missionId]);
   return detail;
@@ -111,6 +115,12 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
   // 확인이 필요한 미션(사용자 답변 대기)을 맨 위에
   const ordered = useMemo(() => (list.data ? [...list.data].sort((a, b) => Number(b.status === 'waiting_user') - Number(a.status === 'waiting_user')) : null), [list.data]);
   const mission = sel && sel !== NEW ? list.data?.find((m) => m.id === sel) ?? null : null;
+  // 지시 입력 때마다 미션 화면 전체가 다시 그려지지 않게 콜백을 고정한다
+  const openRunRef = useRef(onOpenRun); openRunRef.current = onOpenRun;
+  const openRun = useCallback((id: string) => openRunRef.current(id), []);
+  const listReload = useRef(list.reload); listReload.current = list.reload;
+  const viewChanged = useCallback(() => void listReload.current(), []);
+  const noAgents = useMemo<Agent[]>(() => [], []);
 
   return (
     <div className="mission-layout">
@@ -136,7 +146,7 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
       <section className="mission-center">
         <div className="mission-main">
           {sel && sel !== NEW ? (
-            <MissionView key={sel} missionId={sel} agents={agents.data ?? []} onOpenRun={onOpenRun} onChanged={() => void list.reload()} />
+            <MissionView key={sel} missionId={sel} agents={agents.data ?? noAgents} onOpenRun={openRun} onChanged={viewChanged} />
           ) : (
             <NewMissionIntro ready={ready.data} onGoTab={onGoTab} onRecheck={() => void ready.reload()} />
           )}
@@ -372,8 +382,10 @@ function Composer({ project, mission, ready, text, setText, onGoTab, onShowMissi
   );
 }
 
-function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: string; agents: Agent[]; onOpenRun: (runId: string) => void; onChanged: () => void }) {
-  const detail = useMissionDetail(missionId);
+const EVENT_PAGE = 150;
+const MissionView = memo(function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: string; agents: Agent[]; onOpenRun: (runId: string) => void; onChanged: () => void }) {
+  const [eventLimit, setEventLimit] = useState(EVENT_PAGE);
+  const detail = useMissionDetail(missionId, eventLimit);
   const act = useAction();
   const d = detail.data;
   if (detail.loading && !d) return <Loading />;
@@ -446,7 +458,11 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       <Fold id="files" title="결과물 파일" count={d.files.length} extra={<span className="muted small">경로를 누르면 기본 앱으로 열립니다</span>}>
         <FileList files={d.files} />
       </Fold>
-      <Fold id="timeline" title="진행 기록" count={d.events.length}>
+      <Fold id="timeline" title="진행 기록" count={d.eventsTotal ?? d.events.length}>
+        {(d.eventsTotal ?? 0) > d.events.length && (
+          <div className="row gap small pad"><span className="muted">최근 {d.events.length}건만 표시 중(전체 {d.eventsTotal}건)</span>
+            <button className="btn-link small" disabled={detail.loading} onClick={() => setEventLimit((n) => n + EVENT_PAGE * 2)}>이전 기록 더 보기</button></div>
+        )}
         <Timeline events={d.events} files={d.files} />
       </Fold>
       <Fold id="flow" title="사이클 히스토리" count={d.cycles.length}>
@@ -455,7 +471,7 @@ function MissionView({ missionId, agents, onOpenRun, onChanged }: { missionId: s
       </Fold>
     </div>
   );
-}
+});
 
 /**
  * 접었다 펼 수 있는 운영 화면 구역. 제목 줄을 누르면 접히고, 접힌 상태는 다음에 열 때도 유지된다(이 컴퓨터에만 저장).
@@ -541,13 +557,15 @@ export function WorkingRow({ items }: { items: WorkingItem[] }) {
 }
 
 /** 결과물 파일: 경로를 누르면 기본 앱으로 열고, 탐색기에서 위치를 보여 준다. */
+const FILE_PAGE = 100;
 function FileList({ files }: { files: MissionFile[] }) {
   const act = useAction();
+  const [n, setN] = useState(FILE_PAGE);
   if (!files.length) return <div className="muted small pad">아직 만든 결과물이 없습니다. 담당 직원이 파일을 만들면 여기에 경로가 나타납니다.</div>;
   return (
     <div className="file-list">
       {act.error && <Banner>{act.error}</Banner>}
-      {files.map((f) => (
+      {files.slice(0, n).map((f) => (
         <div key={f.relPath} className={`file-row ${f.exists ? '' : 'gone'}`}>
           <button className="file-path" disabled={!f.exists || act.busy} title={f.exists ? `${f.path}\n누르면 기본 앱으로 엽니다` : '파일이 없습니다(삭제·이동됨)'} onClick={() => void act.run(async () => { const err = await ws().openPath(f.path); if (err) throw new Error(err); })}>
             {f.relPath}
@@ -556,6 +574,7 @@ function FileList({ files }: { files: MissionFile[] }) {
           {f.exists && <button className="btn-link small" onClick={() => void act.run(() => ws().revealInFinder(f.path))}>탐색기</button>}
         </div>
       ))}
+      {files.length > n && <button className="btn-link small" onClick={() => setN((x) => x + FILE_PAGE * 3)}>파일 {files.length - n}개 더 보기(최신 사이클 먼저)</button>}
     </div>
   );
 }
@@ -1135,7 +1154,18 @@ function pretty(data: string): string {
   }
 }
 
-function Timeline({ events, files = [] }: { events: MissionEvent[]; files?: MissionFile[] }) {
+/** 기록 상세: 펼칠 때만 정리해서 그린다(기록이 많을 때 매번 JSON을 다시 해석하지 않게) */
+function EventData({ data }: { data: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="collapsible" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary><span className="small">상세</span></summary>
+      {open && <div className="collapsible-body"><pre className="pre small">{pretty(data)}</pre></div>}
+    </details>
+  );
+}
+const Timeline = memo(TimelineView, (a, b) => (a.files?.length ?? 0) === (b.files?.length ?? 0) && a.events.length === b.events.length && a.events.at(-1)?.seq === b.events.at(-1)?.seq && a.events[0]?.seq === b.events[0]?.seq);
+function TimelineView({ events, files = [] }: { events: MissionEvent[]; files?: MissionFile[] }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     // 기록 상자 안에서만 아래로 이동한다(화면 전체를 움직여 루프 다이어그램이 가려지지 않게)
@@ -1152,11 +1182,7 @@ function Timeline({ events, files = [] }: { events: MissionEvent[]; files?: Miss
               <span>{EVENT_ICON[e.kind]}</span> {EVENT_LABEL[e.kind]} · 사이클 {e.cycle} · {fmtDate(e.at)}
             </div>
             <div className="tl-text"><LinkedText text={e.text} files={files} /></div>
-            {e.data && e.data !== '{}' && e.data !== 'null' && (
-              <Collapsible title={<span className="small">상세</span>}>
-                <pre className="pre small">{pretty(e.data)}</pre>
-              </Collapsible>
-            )}
+            {e.data && e.data !== '{}' && e.data !== 'null' && <EventData data={e.data} />}
           </div>
         );
       })}

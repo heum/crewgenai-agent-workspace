@@ -10,11 +10,13 @@ import RunTab from './components/RunTab';
 import ReviewTab from './components/ReviewTab';
 import MissionTab from './components/MissionTab';
 import OfficeTab from './components/OfficeTab';
+import ProgressTab from './components/ProgressTab';
 import DecisionCenter from './components/DecisionCenter';
 
-type Tab = 'mission' | 'plan' | 'agents' | 'office' | 'flow' | 'run' | 'review';
+type Tab = 'mission' | 'progress' | 'plan' | 'agents' | 'office' | 'flow' | 'run' | 'review';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'mission', label: '운영' },
+  { id: 'progress', label: '진척' },
   { id: 'plan', label: '기획' },
   { id: 'agents', label: '직원' },
   { id: 'office', label: '사무실' },
@@ -50,8 +52,9 @@ export default function App() {
   // 다른 화면(사무실 등)에서 미션 화면으로 이동
   useEffect(() => {
     const go = (e: Event) => { const d = (e as CustomEvent<{ projectId: string; missionId: string }>).detail; if (!d) return; setSelectedId(d.projectId); setTab('mission'); setFocusMission({ id: d.missionId, n: Date.now() }); };
-    window.addEventListener('crewgenai:goto-mission', go);
-    return () => window.removeEventListener('crewgenai:goto-mission', go);
+    const goTab = (e: Event) => { const t = (e as CustomEvent<string>).detail; if (TABS.some((x) => x.id === t)) setTab(t as Tab); };
+    window.addEventListener('crewgenai:goto-mission', go); window.addEventListener('crewgenai:goto-tab', goTab);
+    return () => { window.removeEventListener('crewgenai:goto-mission', go); window.removeEventListener('crewgenai:goto-tab', goTab); };
   }, []);
   // '지금 확인': 결정 팝업에 그 항목이 있으면 화면을 옮기지 않고 팝업으로 연다. 팝업으로 다룰 수 없는 항목만 해당 화면으로 이동
   const goAttention = (it: AttentionItem) => {
@@ -181,6 +184,7 @@ export default function App() {
                   onDraftUsed={() => setDraft(null)}
                 />
               )}
+              {tab === 'progress' && <ProgressTab key={project.id} project={project} onOpenMission={(id) => { setTab('mission'); setFocusMission({ id, n: Date.now() }); }} />}
               {tab === 'plan' && <PlanTab key={project.id} project={project} onSaved={onProjectSaved} onUseTemplate={(text) => { setDraft(text); setTab('mission'); }} />}
               {tab === 'agents' && <AgentsTab key={project.id} project={project} />}
               {tab === 'office' && <OfficeTab key={project.id} project={project} />}

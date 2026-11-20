@@ -259,6 +259,7 @@ function register() {
   h('saveSettings', (p, key) => s().saveSettings(p, key));
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));
+  h('reviewWorkPlan', (id) => s().missions.reviewWorkPlan(id));
   h('attention', () => s().attention());
   h('pendingDecisions', (all) => s().pendingDecisions(all === true));
   h('commitPreview', (id: string, rid: string) => s().commitPreview(id, rid));
@@ -271,7 +272,7 @@ function register() {
   h('workingNow', (pid) => s().missions.working(pid));
   h('missionReadiness', (pid, refresh) => s().missionReadiness(pid, !!refresh));
   h('startMission', (pid, prompt, limits) => s().startMission(pid, prompt, limits && typeof limits === 'object' ? limits as never : null));
-  h('missionDetail', (id) => s().missions.detail(id));
+  h('missionDetail', (id, n) => s().missions.detail(id, typeof n === 'number' && n >= 0 ? Math.floor(n) : 150));
   h('reviewMission', (id, picks, feedback, action) => s().missions.review(id, Array.isArray(picks) ? picks : [], String(feedback ?? ''), action === 'stop' ? 'stop' : 'continue'));
   h('answerMission', (id, text, action, keepPending) => s().missions.answer(id, text, action, keepPending === true ? 'pending' : undefined));
   h('stopMission', (id) => s().missions.stop(id));

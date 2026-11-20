@@ -22,6 +22,8 @@
 //   [[mock:gaps-options-only]] 선택지 달린 근거 부족만 내고 작업 없음 — 사용자 결정이 생기면 작업을 계획
 //   [[mock:secret-gap]]     API 키가 있어야 하는 결정(.env 저장 위치 secret 포함)만 내고 작업 없음 — 결정이 생기면 작업을 계획
 //   [[mock:perm-request]]   첫 판단에서 직원 09의 curl 허용을 요청(넓은 셸 요청은 앱이 걸러야 함)
+//   [[mock:workplan]]       진척 관리: 첫 갱신에서 단원 3개(하나는 근거 없는 완료), 다음 갱신에서 모두 근거와 함께 완료
+//   [[mock:workplan-stuck]] 진척 관리: 다음 갱신에서도 W3이 남고, 이유 없이 W3을 빼려 함(앱이 거부해야 함)
 //   [[mock:staff]]          오퍼레이터가 직원 제안(새 직원·역할 변경, 오퍼레이터 00 변경은 걸러져야 함)을 함께 냄(기록에 있으면 다시 내지 않음)
 //   [[mock:ask-options]]     계획 질문을 선택지(questionOptions)와 함께 묻는다(답변 전 한 번)
 //   [[mock:commit-request]]  판단에서 이미 있는 미커밋 파일(pending.txt) 커밋을 요청(목록에 있으면 다시 내지 않음)
@@ -70,6 +72,28 @@ async function main() {
   if (prompt.includes('[[mock:leak]]')) out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: 'env: ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKE1234 token: ghp_FAKEFAKEFAKEFAKEFAKEFAKE12' }] } });
   const isOperator = prompt.includes('# 오퍼레이터 ');
   // 실행 환경 점검: [[mock:probe-fail]]이 프로젝트 경로에 있으면 쓰기 실패로, 아니면 모두 됨으로 보고
+  // 진척 관리 직원: 작업 목록 갱신
+  if (schema && prompt.includes('# 작업 목록 갱신')) {
+    const dec = (prompt.match(/오퍼레이터 판단\((\w+)\)/) || [])[1];
+    const has = /## 지금 작업 목록\n- W/.test(prompt);
+    let wp;
+    if (prompt.includes('[[mock:workplan]]') || prompt.includes('[[mock:workplan-stuck]]')) {
+      const stuck = prompt.includes('[[mock:workplan-stuck]]');
+      wp = !has ? { summary: '3개 중 1개 완료', items: [
+        { title: '목록 화면', criteria: '목록 시험 통과', status: 'done', evidence: 'npm test 3 passed' },
+        { title: '상세 화면', criteria: '상세 시험 통과', status: 'done', evidence: '' },
+        { title: '저장', criteria: '저장 후 다시 열어 값 확인', status: 'todo' }] }
+        : { summary: stuck ? '3개 중 2개 완료' : '모두 완료', items: [
+          { id: 'W1', title: '목록 화면', criteria: '목록 시험 통과', status: 'done', evidence: 'npm test 3 passed' },
+          { id: 'W2', title: '상세 화면', criteria: '상세 시험 통과', status: 'done', evidence: 'npm test 2 passed' },
+          { id: 'W3', title: '저장', criteria: '저장 후 다시 열어 값 확인', status: stuck ? 'doing' : 'done', evidence: stuck ? '' : '화면 확인 기록 save.png' }],
+          ...(stuck ? { removed: [{ id: 'W3', reason: '' }] } : {}) };
+    } else {
+      wp = { summary: '', items: [{ ...(has ? { id: 'W1' } : {}), title: '지시 완료', criteria: '오퍼레이터가 완료로 판단', status: dec === 'done' ? 'done' : 'doing', evidence: dec === 'done' ? '오퍼레이터 완료 판단(모의)' : '' }] };
+    }
+    out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(wp), structured_output: wp, permission_denials: [] });
+    process.exit(0);
+  }
   if (prompt.includes('# 실행 환경 점검')) {
     const res = { output: prompt.includes('probe-nowrite') ? 'READ_OK\nNODE: v20' : 'W_OK\nPORT_OK\nREAD_OK\nNODE: v20' };
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(res), structured_output: res, permission_denials: [], total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 5 } });

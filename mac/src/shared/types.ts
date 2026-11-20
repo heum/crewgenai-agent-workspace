@@ -442,6 +442,8 @@ export interface WorkspaceApi {
   telegramUnlink(): Promise<TgStatusView>;
   telegramSendTest(): Promise<string>;
   pauseMission(missionId: ID): Promise<Mission>;
+  /** 진척 메뉴: 작업 목록·변경을 사용자가 확인함 */
+  reviewWorkPlan(missionId: ID): Promise<Mission>;
   resumeMission(missionId: ID): Promise<Mission>;
   /** 승인 커밋: 화면에 보여 줄 내용, 승인(보여 준 hash가 지금과 같을 때만), 거절 */
   commitPreview(missionId: ID, requestId: string): Promise<CommitPreview>;
@@ -453,7 +455,8 @@ export interface WorkspaceApi {
   markLearningsReviewed(ids: ID[]): Promise<void>;
   missionReadiness(projectId: ID, refresh?: boolean): Promise<MissionReadiness>;
   startMission(projectId: ID, prompt: string, limits?: MissionLimits | null): Promise<Mission>;
-  missionDetail(missionId: ID): Promise<MissionDetail>;
+  /** eventLimit: 최근 기록 몇 개만(기본 150, 0이면 전부) */
+  missionDetail(missionId: ID, eventLimit?: number): Promise<MissionDetail>;
   /** keepPending: 질문에만 답하고 보류한 업무·근거 부족 항목은 그대로 둔다(선택지 버튼) */
   answerMission(missionId: ID, text: string, action: 'continue' | 'stop', keepPending?: boolean): Promise<Mission>;
   /** 검토 지점 답변: 고른 결정과 묶은 피드백을 한 번에 보내고 이어서 진행(또는 종료) */
@@ -653,8 +656,23 @@ export interface Mission {
   limitUntil?: string | null;
   /** Claude 한도 대기 상태(앱이 예약·관리): 사유, 해제 시각을 알았는지, 다음 확인 시각, 재시도 횟수·마지막 결과, 재개할 작업 */
   limitWait?: MissionLimitWait | null;
+  /** 작업 목록(단원·완료 기준·상태): 오퍼레이터가 판단 때마다 갱신, 진척 메뉴에서 본다 */
+  workPlan?: MissionWorkPlan | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 작업 목록 단원 상태: 시작 전 / 진행 / 검증 중 / 완료(확인 근거 필수) / 막힘 */
+export type WorkStatus = 'todo' | 'doing' | 'verifying' | 'done' | 'blocked';
+export interface WorkItem { id: string; title: string; criteria: string; status: WorkStatus; evidence: string; note: string; addedCycle: number; updatedCycle: number }
+export interface WorkChange { cycle: number; at: string; kind: 'create' | 'add' | 'remove' | 'edit'; id: string; title: string; reason: string }
+export interface MissionWorkPlan {
+  items: WorkItem[];
+  /** 계획에서 뺀 단원(이유는 changes에) */ removed: WorkItem[];
+  /** 계획 생성·단원 추가·제외·완료 기준 변경 기록(최신이 끝) */ changes: WorkChange[];
+  createdCycle: number;
+  /** 사용자가 확인한 변경 수(changes.length보다 작으면 확인하지 않은 변경이 있음) */ reviewedChanges: number;
+  reviewedAt: string | null;
 }
 
 /** 근거 문서 보완 요청 한 건 */
@@ -738,7 +756,10 @@ export interface MissionCycle { cycle: number; runId: ID; status: RunStatus; gra
 
 export interface MissionDetail {
   mission: Mission;
+  /** 기록(화면 요청이면 최근 것만) */
   events: MissionEvent[];
+  /** 전체 기록 수 */
+  eventsTotal?: number;
   cycles: MissionCycle[];
   currentRun: RunDetail | null; // 현재(또는 마지막) 사이클 실행 — 실시간 다이어그램용
   /** 이 미션이 만든 결과물·기록에 나온 프로젝트 안 파일(바로 열기용). 최신 사이클 먼저 */
