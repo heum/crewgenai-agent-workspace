@@ -30,13 +30,14 @@ const COMMON = [
   '[보고 형식] 수행 내용 / 변경 파일 / 검증(실행한 명령·결과) / 쓴 스킬 / 가정한 것 / 남은 문제 / 결정 필요',
 ].join('\n');
 
-interface Spec { mission: string; why: string; does: string[]; good: string; donts: string[]; skills?: string; output?: string; done?: string }
+interface Spec { mission: string; why: string; does: string[]; good: string; donts: string[]; skills?: string; output?: string; done?: string; extra?: string }
 const brief = (s: Spec) => [
   `[역할] ${s.mission}`,
   `[목적] ${s.why}`,
   '[맡는 일]', ...s.does.map((d, i) => `${i + 1}. ${d}`),
   `[좋은 결과] ${s.good}`,
   '[하지 않는 일]', ...s.donts.map((d) => `- ${d}`),
+  ...(s.extra ? [s.extra] : []),
   ...(s.skills ? [`[이 역할에 맞는 스킬] ${s.skills}(이 PC에 있을 때)`] : []),
   COMMON,
 ].join('\n');
@@ -95,6 +96,15 @@ export const HD_AGENT = (): AgentFields => base(HD_CODE, '문의 응대', '프�
   output: '질문에 대한 짧은 답(근거 위치 포함)과, 필요하면 추가 지시 제안',
 }, RO, 'fast', 'medium');
 
+/** 화면 작업 기준: '예쁘게' 같은 피드백이 사이클을 넘어가며 흐려지지 않게, 화면 모양은 기준 문서로 고정하고 그것을 따른다 */
+const SCREEN = [
+  '[화면 기준] 화면 모양(버튼·간격·목록·배지·문구 배치)을 바꾸는 작업이면, 시작할 때 화면 기준 문서(프런트 저장소의 docs/UI_STANDARD.md, 없으면 첫 화면 작업에서 지금 코드의 값으로 초안을 만든다)를 먼저 읽고 따른다.',
+  '- 문서의 [확정]·[현재] 항목과 다르게 만들지 않는다. 문서에 없는 모양을 새로 정했으면 보고의 \'가정한 것\'에 적고 그 문서에 [제안]으로 한 줄 더한다.',
+  '- 모양을 다듬는 작업은 화면 다듬기 스킬(예: make-interfaces-feel-better), 새 화면·큰 변경은 프런트엔드 디자인 스킬(예: frontend-design)을 먼저 부른다(이 PC에 있을 때).',
+  '- 전후 화면 사진을 PC·모바일 같은 폭·같은 데이터로 남기고, 바뀐 곳을 화면 위치로 보고한다.',
+  '- 사용자 피드백을 반영했으면 기준 문서의 해당 항목을 [확정]으로 고치고 어느 피드백인지 적는다.',
+].join('\n');
+
 /** 소프트웨어 개발팀 표준(16명) */
 const DEV: AgentFields[] = [
   LEAD('개발팀'),
@@ -151,7 +161,8 @@ const DEV: AgentFields[] = [
     good: '팀장이 시연 주소를 열어 보고에 적힌 순서대로 눌렀을 때 그대로 동작하고, 실패·빈 상태에서도 화면이 깨지지 않는다.',
     donts: ['모의 동작을 실제 연결로 보고하지 않는다.', '서버 권한 확인을 화면 숨김으로 대신하지 않는다.'],
     skills: '프런트엔드 디자인(예: frontend-design), 화면 다듬기(예: make-interfaces-feel-better), 접근성·UX 점검(예: audit-as-a11y-eng, audit-as-ux-eng), 체계적 디버깅',
-    output: '변경한 화면 코드와 연결 상태(실제/모의), 눌러 볼 순서, 변경 요약',
+    extra: SCREEN,
+    output: '변경한 화면 코드와 연결 상태(실제/모의), 눌러 볼 순서, 전후 화면 사진, 변경 요약',
   }),
   base('05', '데이터·DB', '스키마·마이그레이션·쿼리·데이터 무결성', {
     mission: '데이터 구조(스키마), 마이그레이션, 쿼리 성능, 데이터 무결성을 다루는 담당이다.',
@@ -335,6 +346,7 @@ const GENERAL: AgentFields[] = [
     good: '완료 기준을 하나씩 만족했다는 근거가 보고에 있고, 검토자가 지적 없이 승인할 수 있다.',
     donts: ['완료 기준을 낮춰 맞추지 않는다.', '확인하지 않은 내용을 결과물에 넣지 않는다.'],
     skills: '시험 주도 개발, 체계적 디버깅, 문서 작성 스킬(예: docs) — 결과물 종류에 맞는 것',
+    extra: SCREEN,
     output: '작성한 결과물과 변경 요약',
   }),
   base('04', '검증·시험', '결과물이 완료 기준을 만족하는지 실제로 확인·시험', {

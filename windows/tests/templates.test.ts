@@ -41,6 +41,14 @@ describe('직원 기본 템플릿', () => {
     });
   }
 
+  it('화면을 만드는 기본 직원(개발팀 04·범용 03)에는 화면 기준 묶음이 있다', async () => {
+    const { TEMPLATE_SETS } = await import('../src/main/engine/templates');
+    for (const [set, code] of [['dev', '04'], ['general', '03']] as const) {
+      const a = TEMPLATE_SETS[set].agents.find((x) => x.code === code)!;
+      expect(a.instructions).toContain('[화면 기준]'); expect(a.instructions).toContain('docs/UI_STANDARD.md');
+    }
+  });
+
   it('다시 불러오거나 다른 세트를 불러와도 같은 코드의 기존 직원은 바꾸지 않는다', () => {
     const dir = tmpProject(); const svc = mkService(dir);
     const p = svc.createProject(plan(dir));
