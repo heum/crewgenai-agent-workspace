@@ -1141,6 +1141,7 @@ function SnapshotCard({ mission }: { mission: Mission }) {
 function CycleHistory({ detail, agents, onOpenRun }: { detail: MissionDetail; agents: Agent[]; onOpenRun: (runId: string) => void }) {
   const list = [...detail.cycles].sort((a, b) => b.cycle - a.cycle || 0);
   const [sel, setSel] = useState<string | null>(null);
+  const [limit, setLimit] = useState(10); // 사이클이 많아도 최근 것부터 몇 개만
   const cur = sel ?? detail.currentRun?.run.id ?? list[0]?.runId ?? null;
   const other = useLoad(() => (cur && cur !== detail.currentRun?.run.id ? ws().runDetail(cur) : Promise.resolve(null)), [cur, detail.currentRun?.run.id]);
   const run = cur && cur === detail.currentRun?.run.id ? detail.currentRun : other.data;
@@ -1149,12 +1150,12 @@ function CycleHistory({ detail, agents, onOpenRun }: { detail: MissionDetail; ag
   return (
     <div className="cycle-history">
       <div className="cycle-chips" role="tablist" aria-label="사이클 고르기">
-        {list.slice(0, 30).map((c) => (
+        {list.filter((c, i) => i < limit || c.runId === cur).map((c) => (
           <button key={`${c.cycle}-${c.runId}`} role="tab" aria-selected={c.runId === cur} className={`cycle-chip${c.runId === cur ? ' is-on' : ''} st-${c.status}`} onClick={() => setSel(c.runId)} title={`사이클 ${c.cycle} · 흐름 v${c.graphVersion} · ${RUN_STATUS_LABEL[c.status]}`}>
             {c.cycle}<span className="cycle-dot" />
           </button>
         ))}
-        {list.length > 30 && <span className="muted small">이전 {list.length - 30}개는 실행 탭에서</span>}
+        {list.length > limit && <button className="btn-link small" onClick={() => setLimit((n) => n + 20)}>이전 사이클 {list.length - limit}개 더 보기</button>}
       </div>
       {at && (
         <div className="row between small cycle-history-head">

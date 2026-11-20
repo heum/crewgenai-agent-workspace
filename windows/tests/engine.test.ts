@@ -141,6 +141,10 @@ describe('4. 자동 검사와 교차검토', () => {
     expect(fin.status).toBe('failed');
     expect(fin.reason).toContain('재작업 상한');
     expect(svc.store.checks(run.id).every((c) => !c.ok)).toBe(true);
+    // 실패해도 그 시점까지의 결과를 결과물로 볼 수 있다(파일은 만들지 않고 앱 기록에만)
+    const dv = svc.engine.detail(run.id).deliverable!;
+    expect(dv.markdown).toContain('실패한 실행의 중간 결과');
+    expect(dv.reportPath).toBe('');
     svc.close();
   });
 

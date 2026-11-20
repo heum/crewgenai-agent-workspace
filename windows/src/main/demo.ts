@@ -9,7 +9,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, re
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { DemoApi, DemoData, DemoInfo, DemoResponse, DemoService, DemoState, PlanFields } from '../shared/types';
+import type { DemoApi, DemoData, DemoInfo, DemoResponse, DemoService, DemoState, PlanFields, DemoAsk } from '../shared/types';
 import { cleanEnv, redact } from './cli/claudeCli';
 
 export const DEMO_FILE = 'demo/demo-services.json';
@@ -82,8 +82,17 @@ export function readManifest(plan: PlanFields): { services: DemoService[]; apis:
   return out;
 }
 
-/** 승인 기준: 명령·폴더·환경값·포트가 같아야 이전 승인이 유효하다 */
+/** 화면에 보여 준 내용 그대로의 확인값(승인 창·확인함에서 본 것과 실행 직전 목록이 같은지 대조) */
 export function serviceHash(s: DemoService) { return createHash('sha256').update(JSON.stringify([real(s.cwd), s.start, s.env, s.port])).digest('hex').slice(0, 24); }
+/** 포트 번호만 지운 값: PORT가 들어간 환경값, 주소의 :포트, --port·-p·PORT= 인자의 숫자 */
+const noPort = (v: string) => v.replace(/\b(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):\d{2,5}\b/g, '$1:<port>').replace(/^(--port=|PORT=)\d{2,5}$/i, '$1<port>');
+/** 승인 기준(2026-11 사용자 결정): 명령·폴더·환경값이 같으면 포트만 바뀌어도 이전 승인이 유효하다 */
+export function approvalHash(s: DemoService) {
+  const env = Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, /PORT/i.test(k) ? '<port>' : noPort(String(v))]));
+  const start = s.start.map((a, i) => (/^\d{2,5}$/.test(a) && /^(--port|-p)$/.test(s.start[i - 1] ?? '') ? '<port>' : noPort(a)));
+  return createHash('sha256').update(JSON.stringify(['v2', real(s.cwd), start, env])).digest('hex').slice(0, 24);
+}
+
 
 /** 프로세스와 그 하위 프로세스를 함께 끈다(Windows) */
 function killTree(pid: number) { try { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* 이미 끝남 */ } }
@@ -100,22 +109,22 @@ export class DemoManager {
   private key(projectId: string, id: string) { return `${projectId}:${id}`; }
   approved(projectId: string, s: DemoService) {
     const r = this.db.prepare('SELECT hash FROM demo_approvals WHERE project_id=? AND service_id=?').get(projectId, s.id) as { hash?: string } | undefined;
-    return r?.hash === serviceHash(s);
+    return !!r?.hash && (r.hash === approvalHash(s) || r.hash === serviceHash(s)); // 예전 기준으로 받은 승인도 그대로 인정
   }
   /** shownHash: 사용자가 승인 창에서 본 명령의 확인값. 그 사이 목록이 바뀌었으면 승인하지 않는다. */
   approve(projectId: string, s: DemoService, shownHash?: string) {
     if (shownHash !== undefined && shownHash !== serviceHash(s)) throw new Error('승인 창을 연 뒤 시연 목록의 명령·폴더·환경값이 바뀌었습니다. 다시 열어 바뀐 내용을 확인하세요.');
-    this.db.prepare('INSERT OR REPLACE INTO demo_approvals VALUES(?,?,?,?)').run(projectId, s.id, serviceHash(s), new Date().toISOString());
+    this.db.prepare('INSERT OR REPLACE INTO demo_approvals VALUES(?,?,?,?)').run(projectId, s.id, approvalHash(s), new Date().toISOString());
   }
 
-  async health(s: DemoService): Promise<boolean> {
-    if (!s.port) return false;
-    try {
-      const ctl = AbortSignal.timeout(1500);
-      const r = await safeFetch(`http://127.0.0.1:${s.port}${s.health}`, { signal: ctl, redirect: 'manual' });
-      return r.status < 500;
-    } catch { return false; }
+  async health(s: DemoService): Promise<boolean> { const c = await this.probe(s); return c !== null && c < 500; }
+  /** 상태 확인 경로의 응답 코드(응답 없음이면 null) */
+  async probe(s: DemoService): Promise<number | null> {
+    if (!s.port) return null;
+    try { const r = await safeFetch(`http://127.0.0.1:${s.port}${s.health}`, { signal: AbortSignal.timeout(1500), redirect: 'manual' }); return r.status; } catch { return null; }
   }
+  /** 앱이 켠 서비스인가(살아 있는 것) */
+  ours(projectId: string, id: string): boolean { const p = this.procs.get(this.key(projectId, id)); return !!p && p.exited === null; }
 
   async state(projectId: string, s: DemoService): Promise<DemoState> {
     const p = this.procs.get(this.key(projectId, s.id));
@@ -233,7 +242,10 @@ export async function demoInfo(m: DemoManager, projectId: string, plan: PlanFiel
  * 상태 확인 경로와 데이터를 바꾸지 않는 요청(GET, 로그인처럼 값을 잡아 두는 POST)을 목록 순서대로 보내 결과를 남긴다.
  * 직원 세션에서 서버를 오래 띄워 기다리다 시간 제한에 걸리는 일을 없애고, 판단·검토 지점에 실제 확인 근거를 준다.
  */
-export async function verifyDemo(mgr: DemoManager, projectId: string, plan: PlanFields): Promise<string[]> {
+export function demoAsk(s: DemoService, kind: DemoAsk['kind'], why: string): DemoAsk {
+  return { serviceId: s.id, name: s.name, kind, hash: serviceHash(s), why, command: s.start.join(' ').slice(0, 300), folder: s.repo || '.', port: s.port, env: Object.keys(s.env).slice(0, 30) };
+}
+export async function verifyDemo(mgr: DemoManager, projectId: string, plan: PlanFields, asks: DemoAsk[] = []): Promise<string[]> {
   const man = readManifest(plan);
   if (!man.exists || !man.services.length) return [];
   const out: string[] = [];
@@ -245,9 +257,14 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
       if (own && staleCopyServer(own.cwd)) out.push(`- ${s.name}(${s.id}): 직원 임시 복사본에서 띄운 이전 서버를 끄고 실제 저장소 코드로 다시 켭니다`);
       else if (own) out.push(`- ${s.name}(${s.id}): 다른 프로세스가 이미 포트 ${s.port}를 쓰고 있어 그대로 둡니다(최신 코드인지 확인하지 못함)`);
     }
-    if (!mgr.approved(projectId, s)) { out.push(`- ${s.name}(${s.id}): 실행 승인 필요 — 사용자가 시연 열기에서 처음 한 번 승인해야 앱이 켤 수 있음(켜지 않음)`); continue; }
-    try { await mgr.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services); up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상`); }
-    catch (e) { out.push(`- ${s.name}(${s.id}): 켜지 못함 — ${redact((e as Error).message).slice(0, 200)}`); }
+    if (!mgr.approved(projectId, s)) { out.push(`- ${s.name}(${s.id}): 실행 승인 필요 — 확인함에 '시연 실행 승인'으로 올림(승인 전에는 켜지 않음)`); asks.push(demoAsk(s, 'approve', '시연 목록의 실행 명령·폴더·환경값이 처음이거나 바뀌어 승인이 필요합니다.')); continue; }
+    try {
+      await mgr.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services);
+      const code = s.port ? await mgr.probe(s) : 200;
+      if (code !== null && code < 500 && code !== 404) { up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상(${code})`); }
+      else if (mgr.ours(projectId, s.id)) { out.push(`- ${s.name}(${s.id}): 앱이 켠 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답 없음'} — 예전 코드일 수 있어 확인함에 '다시 켜기'로 올림`); asks.push(demoAsk(s, 'restart', `앱이 켠 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답하지 않음'}(예전 빌드일 수 있음).`)); }
+      else out.push(`- ${s.name}(${s.id}): 포트 ${s.port}의 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답 없음'} — 앱이 켠 서버가 아니라 끄지 않음(사용자가 직접 다시 켜야 최신 코드)`);
+    } catch (e) { out.push(`- ${s.name}(${s.id}): 켜지 못함 — ${redact((e as Error).message).slice(0, 200)}`); }
   }
   for (const a of man.apis) {
     const s = man.services.find((x) => x.id === a.service);

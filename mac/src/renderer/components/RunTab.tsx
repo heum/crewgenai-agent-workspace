@@ -48,6 +48,7 @@ export default function RunTab({
   const graph = useLoad(() => ws().latestGraph(project.id), [project.id]);
   const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [selRun, setSelRun] = useState<string | null>(focusRunId);
+  const [runLimit, setRunLimit] = useState(10); // 실행이 많아도 최근 것부터 몇 개만
   useEffect(() => { if (focusRunId) setSelRun(focusRunId); }, [focusRunId, focusKey]); // '확인 필요'에서 넘어오면 그 실행을 연다
   const act = useAction();
 
@@ -91,7 +92,7 @@ export default function RunTab({
         {runs.loading && !runs.data && <Loading />}
         {runs.data && runs.data.length === 0 && <Empty title="실행 기록이 없습니다" />}
         <div className="run-list">
-          {runs.data?.map((r) => (
+          {(runs.data ?? []).filter((r, i) => i < runLimit || r.id === selRun).map((r) => (
             <button key={r.id} className={`run-item ${selRun === r.id ? 'active' : ''}`} onClick={() => setSelRun(r.id)}>
               <div className="row between">
                 <Badge tone={runTone(r.status)}>{RUN_STATUS_LABEL[r.status]}</Badge>
@@ -104,6 +105,7 @@ export default function RunTab({
               <div className="small muted">{fmtDate(r.createdAt)}</div>
             </button>
           ))}
+          {(runs.data?.length ?? 0) > runLimit && <button className="btn-link small" onClick={() => setRunLimit((n) => n + 20)}>이전 실행 {(runs.data?.length ?? 0) - runLimit}개 더 보기</button>}
         </div>
       </section>
       <section className="panel grow no-pad">

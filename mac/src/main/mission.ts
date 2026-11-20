@@ -12,7 +12,7 @@ import { fileSha, isolatedDir } from './engine/fsutil';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
-import type { MissionWorkPlan, QaMessage } from '../shared/types';
+import type { DemoAsk, MissionWorkPlan, QaMessage } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, MissionSecretSpec, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionPermAsk, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
@@ -224,7 +224,7 @@ export interface MissionDeps {
   pace?: () => PaceDecision | null;
   /** 'Skill' 도구를 켠 직원이 쓸 수 있는 스킬 이름(오퍼레이터가 작업 지시에 맞는 스킬을 적을 수 있게) */
   skillNames?: (folder: string) => string[];
-  /** 앱이 직접 하는 시연 확인(승인된 서비스만 켜고 상태·안전한 API 확인) */ demoVerify?: (projectId: string) => Promise<string[]>;
+  /** 앱이 직접 하는 시연 확인(승인된 서비스만 켜고 상태·안전한 API 확인). asks에 승인·다시 켜기가 필요한 서비스를 담는다 */ demoVerify?: (projectId: string, asks?: DemoAsk[]) => Promise<string[]>;
 }
 
 /** 오퍼레이터 호출이 사용 한도에 걸림 */
@@ -512,6 +512,25 @@ export class MissionRunner {
     }
     this.set(id, { docTidy: null, docTidyCycle: t.left ? m.cycle - TIDY_EVERY + 3 : m.cycle }); // 남은 문서가 있으면 3사이클 뒤 이어서
     this.event(this.get(id), 'system', [`문서 정리 끝: 원본 ${docs}개를 지웠습니다(git 기록으로 되살릴 수 있음)${bytes ? `, 문서 ${fmtBytes(bytes)}` : ''}${kept ? ` · 커밋 안 됨·요약 안 됨 등으로 ${kept}개는 남김` : ''}.`, ...lines.map((l) => `- ${l}`)].join('\n'));
+  }
+
+  // ───── 시연 실행 승인·다시 켜기(확인함) ─────
+  private demoKey = (a: DemoAsk) => `${a.serviceId}:${a.hash}:${a.kind}`;
+  /** 시연 확인 결과를 확인함 항목으로: 넘긴(거절한) 같은 내용은 다시 묻지 않고, 새로 생긴 항목은 알린다(텔레그램도 이 알림으로 보냄) */
+  private noteDemoAsks(id: string, asks: DemoAsk[]): void {
+    const m = this.get(id); const declined = new Set(m.demoDeclined ?? []);
+    const next = asks.filter((a) => !declined.has(this.demoKey(a))).slice(0, 10);
+    const before = new Set((m.demoAsks ?? []).map(this.demoKey));
+    const fresh = next.filter((a) => !before.has(this.demoKey(a)));
+    const saved = this.set(id, { demoAsks: next.length ? next : null });
+    if (fresh.length) this.event(saved, 'system', `시연 실행 승인 요청: ${fresh.map((a) => `${a.name}(${a.kind === 'approve' ? '실행 승인' : '다시 켜기'})`).join(', ')} — 확인함에서 명령·폴더를 보고 정하세요. 정하기 전에는 켜지 않습니다(개발은 계속).`, { demoAsk: fresh.map((a) => a.serviceId) });
+  }
+  /** 앱 본체가 진행 기록에 남기는 알림 한 줄 */
+  note(id: string, text: string): void { this.event(this.get(id), 'system', text); }
+  /** 확인함에서 처리한 시연 항목을 목록에서 뺀다(넘긴 것은 같은 내용이면 다시 묻지 않음) */
+  resolveDemoAsk(id: string, a: DemoAsk, accepted: boolean): void {
+    const m = this.get(id); const k = this.demoKey(a);
+    this.set(id, { demoAsks: (m.demoAsks ?? []).filter((x) => this.demoKey(x) !== k), ...(accepted ? {} : { demoDeclined: [...(m.demoDeclined ?? []), k].slice(-100) }) });
   }
 
   /** 진척 관리 직원: 판단 직후 작업 목록을 갱신한다. 실패해도 미션은 계속한다(다음 사이클에 다시) */
@@ -1484,7 +1503,7 @@ export class MissionRunner {
         // 3) 오퍼레이터 판단(그 전에 앱이 시연 환경을 직접 켜고 확인해 판단 근거로 준다)
         m = this.set(id, { status: 'evaluating', stage: 'judge' });
         if (this.d.demoVerify) {
-          try { const lines = await this.d.demoVerify(m.projectId); this.demoChecks.set(id, lines); if (lines.length) this.event(m, 'system', `앱이 시연 환경을 직접 확인했습니다(승인된 서비스만 켬):\n${lines.join('\n')}`); }
+          try { const asks: DemoAsk[] = []; const lines = await this.d.demoVerify(m.projectId, asks); this.demoChecks.set(id, lines); if (lines.length) this.event(m, 'system', `앱이 시연 환경을 직접 확인했습니다(승인된 서비스만 켬):\n${lines.join('\n')}`); this.noteDemoAsks(id, asks); }
           catch (e) { this.demoChecks.set(id, [`- 시연 확인 실패: ${redact((e as Error).message).slice(0, 200)}`]); }
           if (this.closed || this.get(id).status === 'stopped') return;
         }
@@ -1832,7 +1851,7 @@ export class MissionRunner {
       ok.push(...pr.ok, ...pr.warn.map((w) => `[주의] ${w}`)); fail.push(...pr.fail);
     }
     if (this.d.demoVerify) {
-      try { const lines = await this.d.demoVerify(m.projectId); this.demoChecks.set(m.id, lines);
+      try { const asks: DemoAsk[] = []; const lines = await this.d.demoVerify(m.projectId, asks); this.demoChecks.set(m.id, lines); this.noteDemoAsks(m.id, asks);
         ok.push(...(lines.length ? lines.map((l) => `시연 환경${l.startsWith('- ') ? ' ' + l.slice(2) : ' ' + l}`) : ['시연 환경: 시연 목록이 아직 없음(이번 미션에서 직원이 함께 만든다)']));
       } catch (e) { ok.push(`시연 환경: 확인 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
     }

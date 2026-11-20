@@ -4,13 +4,13 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha, isAppTempPath } from './engine/fsutil';
-import { DemoManager, demoInfo, readManifest, verifyDemo } from './demo';
+import { DemoManager, demoInfo, readManifest, serviceHash, verifyDemo } from './demo';
 import { isCharacterId } from '../shared/characterIds';
 import type { Attention, AttentionItem, CommitPreview, Learning, LearningFields, DocItem, MissionChoice, MissionCommitRequest, PendingDecision, ProjectDoc, RefSnippet, SkillSource } from '../shared/types';
 import { COMMAND_LEVELS, projectSkillDirs, workBranchName, type CommandLevel } from './autopilot';
 import { defaultSkillDirs, describeSkillSources } from './skills';
-import { redactKeepLines } from './cli/claudeCli';
-import type { MissionLimits } from '../shared/types';
+import { redact, redactKeepLines } from './cli/claudeCli';
+import type { DemoAsk, DemoService, MissionLimits } from '../shared/types';
 import type { Agent, AgentFields, AppSettings, UsagePaceView, DevSyncView, DevSyncRepoResult, CliStatus, CodexStatus, LiveEvent, MissionReadiness, PlanFields, ReadinessItem, ReviewRecord, WorkGraph } from '../shared/types';
 import { checkCodex } from './cli/codexCli';
 import { APPROVED_FLAG_LABEL, approvedDiff, commitApproved, findRequestCommit, gitRoot, gitShutdown, previewApprovedCommit, mergeDevToMain, ensureSecretIgnore, gitIgnored, syncRepoToDev, workspaceRepos } from './git';
@@ -121,7 +121,7 @@ export class Service {
       commandLevel: () => this.commandLevel(),
       testLocalSockets: () => this.settings().testLocalSockets === true,
       skillNames: (folder) => describeSkillSources([...new Set([...this.skillDirs(), ...(this.settings().autoAssist !== false ? projectSkillDirs(folder) : [])])]).flatMap((x) => x.skills),
-      demoVerify: (projectId) => verifyDemo(this.demo, projectId, this.store.getProject(projectId).plan),
+      demoVerify: (projectId, asks) => verifyDemo(this.demo, projectId, this.store.getProject(projectId).plan, asks),
     });
   }
 
@@ -426,6 +426,19 @@ export class Service {
             choices: [{ label: a.kind === 'command' ? `${a.agent}에게 '${a.suggestion}' 허용` : `참고 자료로 '${a.suggestion}' 추가`, effect: grant, recommended: false, why: '' }, { label: '허용하지 않음', effect: '오퍼레이터가 이 방법 없이 진행합니다. 같은 요청은 다시 묻지 않습니다.', recommended: false, why: '' }],
             waiting: false, denial: a, urgent: false, held: '미션은 멈추지 않고 계속 진행 중입니다. 허용하면 다음 계획부터 이 방법을 씁니다.', resumes: '허용하면 다음 계획부터 이 직원이 이 방법을 씁니다', grants: grant });
         }
+        // 시연 실행 승인·다시 켜기: 지금 시연 목록의 내용이 확인 때와 같을 때만(바뀌었으면 다음 확인에서 다시 묻는다)
+        for (const a of m.demoAsks ?? []) {
+          let s: DemoService | undefined; try { s = readManifest(this.store.getProject(m.projectId).plan).services.find((x) => x.id === a.serviceId); } catch { s = undefined; }
+          if (!s || serviceHash(s) !== a.hash) continue;
+          const env = Object.entries(s.env).map(([k, v]) => `${k}=${redact(String(v)).slice(0, 160)}`);
+          const approve = a.kind === 'approve';
+          const yes = approve ? '승인하고 켜기' : '다시 켜기'; const no = approve ? '지금은 켜지 않음' : '그대로 두기';
+          const grant = approve ? `앱이 '${s.repo || '.'}' 폴더에서 이 명령으로 시연 서버를 켭니다(격리 밖, 이 PC의 127.0.0.1${s.port ? `:${s.port}` : ''}). 이후 포트만 바뀌면 다시 묻지 않고, 명령·폴더·환경값이 바뀌면 다시 묻습니다.` : '앱이 켠 이 서버를 끄고 같은 명령으로 다시 켭니다(사용자가 직접 띄운 서버는 건드리지 않음).';
+          out.push({ ...base, key: `${m.id}|demo|${a.serviceId}|${a.kind}|${a.hash}`, kind: 'demo', task: `시연 · ${s.name}`, question: approve ? `시연 서버 '${s.name}'을(를) 켜도 될까요?` : `시연 서버 '${s.name}'을(를) 다시 켤까요?`,
+            explain: [a.why, `명령: ${s.start.join(' ')}`, `폴더: ${s.repo || '.'}`, s.port ? `포트: ${s.port}` : '', env.length ? `환경값: ${env.join(', ')}` : ''].filter(Boolean).join('\n').slice(0, 2000), doc: '', issue: '',
+            choices: [{ label: yes, effect: grant, recommended: false, why: '' }, { label: no, effect: approve ? '켜지 않습니다. 실서버 확인 없이 개발을 계속하고, 같은 내용은 다시 묻지 않습니다.' : '지금 서버를 그대로 둡니다. 같은 상태는 다시 묻지 않습니다.', recommended: false, why: '' }],
+            waiting: false, urgent: false, demo: a, held: '시연 서버가 꺼져 있거나 예전 코드일 수 있어 실서버 확인이 멈춰 있습니다(개발은 계속).', resumes: '정하면 앱이 바로 켜고 다음 판단부터 실서버로 확인합니다.', grants: grant });
+        }
         for (const g of m.pauseKind === 'restart' ? [] : m.gaps ?? []) {
           if (shown.has(`${g.doc}|${g.issue}`) && !g.secret) continue; // 검토 카드에 이미 있는 결정은 한 번만(비밀값 입력은 확인함에서 받으므로 따로 보인다)
           const folder = this.store.getProject(m.projectId)?.plan.folder ?? '';
@@ -448,9 +461,9 @@ export class Service {
     const live = new Map(this.pendingDecisions().map((x) => [x.key, x]));
     const ok = (p: { key: string; choice: string; version?: string }) => {
       const it = live.get(p.key); const c = String(p.choice ?? '').trim();
-      if (!it || !c || !['question', 'gap', 'permission', 'merge'].includes(it.kind)) return false;
+      if (!it || !c || !['question', 'gap', 'permission', 'merge', 'demo'].includes(it.kind)) return false;
       if (p.version && p.version !== decisionVersion(it)) return false; // 보여 준 뒤 질문·선택지가 바뀜
-      if ((it.kind === 'permission' || it.kind === 'merge') && !it.choices.some((x) => x.label === c)) return false; // 권한·main 병합은 보여 준 선택지만
+      if ((it.kind === 'permission' || it.kind === 'merge' || it.kind === 'demo') && !it.choices.some((x) => x.label === c)) return false; // 권한·main 병합·시연 실행은 보여 준 선택지만
       // 비밀값 항목에 키처럼 보이는 글(공백·한글 없는 한 덩어리)을 답으로 적으면 기록에 남지 않게 받지 않는다(값은 '파일에 저장'으로만)
       if (it.secret && !it.choices.some((x) => x.label === c) && !/[\s가-힣]/.test(c)) return false;
       return true;
@@ -464,7 +477,14 @@ export class Service {
         if (x.choice === 'main에 병합') { void this.mergeMain(missionId, via); lines.push(`· ${title}: main 병합을 시작합니다(${via}). 끝나면 결과를 알려 드립니다.`); }
         else { this.missions.setMergeRequest(missionId, { status: 'declined', via }); lines.push(`· ${title}: main 병합은 아직 하지 않습니다(${via}).`); }
       }
-      if (!mine.some((x) => x.it.kind !== 'merge')) continue;
+      for (const x of mine.filter((y) => y.it.kind === 'demo' && y.it.demo)) {
+        const a = x.it.demo!; const yes = x.choice === x.it.choices[0].label;
+        this.missions.resolveDemoAsk(missionId, a, yes);
+        if (!yes) { lines.push(`· ${title}: 시연 '${a.name}'은(는) 켜지 않고 그대로 둡니다(${via}).`); continue; }
+        void this.demoFromInbox(missionId, x.it.projectId, a, via);
+        lines.push(`· ${title}: 시연 '${a.name}'을(를) ${a.kind === 'approve' ? '승인하고 켭니다' : '다시 켭니다'}(${via}). 결과는 진행 기록에 남깁니다.`);
+      }
+      if (!mine.some((x) => x.it.kind !== 'merge' && x.it.kind !== 'demo')) continue;
       const perms = mine.filter((x) => x.it.kind === 'permission'); const allowed = perms.filter((x) => !x.choice.startsWith('허용하지 않'));
       for (const x of allowed) this.allowDenial(x.it);
       for (const x of perms) if (x.it.key.includes('|pa|') && x.it.denial) this.missions.resolvePermAsk(missionId, x.it.denial.sig, !x.choice.startsWith('허용하지 않'));
@@ -730,6 +750,19 @@ export class Service {
     const s = man.services.find((x) => x.id === serviceId);
     if (!s) throw new Error(`시연 목록에 없는 서비스입니다: ${serviceId}${man.errors.length ? ` (목록 오류: ${man.errors[0]})` : ''}`);
     return { plan, man, s };
+  }
+  /** 확인함에서 고른 시연 실행: 보여 준 내용(확인값)과 지금 목록이 같을 때만 승인·실행한다 */
+  private async demoFromInbox(missionId: string, projectId: string, a: DemoAsk, via: string): Promise<void> {
+    const note = (t: string) => { try { this.missions.note(missionId, t); } catch { /* 미션 없음 */ } };
+    try {
+      const { man, plan, s } = this.demoService(projectId, a.serviceId);
+      if (serviceHash(s) !== a.hash) { note(`시연 '${a.name}': 확인함에서 본 뒤 시연 목록이 바뀌어 켜지 않았습니다. 다음 확인에서 다시 묻습니다.`); return; }
+      if (a.kind === 'approve') this.demo.approve(projectId, s, a.hash);
+      else if (this.demo.ours(projectId, s.id)) { this.demo.stop(projectId, s.id); await new Promise((r) => setTimeout(r, 1500)); }
+      await this.demo.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services);
+      const code = s.port ? await this.demo.probe(s) : 200;
+      note(`시연 '${a.name}'을(를) ${a.kind === 'approve' ? '승인하고 켰습니다' : '다시 켰습니다'}(${via})${s.port ? ` — 상태 확인 ${s.health || '/'}: ${code ?? '응답 없음'}` : ''}.`);
+    } catch (e) { note(`시연 '${a.name}'을(를) 켜지 못했습니다: ${redact((e as Error).message).slice(0, 200)}`); }
   }
   demoInfo(projectId: string) { return demoInfo(this.demo, projectId, this.store.getProject(projectId).plan); }
   /** 사용자가 시연 명령 실행을 승인함(명령·폴더·환경값이 바뀌면 다시 승인) */

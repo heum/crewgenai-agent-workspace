@@ -537,10 +537,23 @@ export class Engine {
     } finally {
       if (!this.closed) {
         this.active.delete(runId);
+        try { this.partialDeliverable(runId, gv.graph, plan); } catch { /* 중간 결과 정리 실패는 실행 결과에 영향 없음 */ }
         this.wake();
         this.o.tracer?.runEnded(this.s.getRun(runId));
       }
     }
+  }
+
+  /** 실패·중단·재개 대기로 끝난 실행: 결과물 취합까지 못 갔어도 그 시점까지의 결과(단계별 상태·산출물·검사·리뷰)를 결과물로 남긴다(앱 기록에만) */
+  private partialDeliverable(runId: string, graph: WorkGraph, plan: PlanFields) {
+    const run = this.s.getRun(runId);
+    if (!['failed', 'cancelled', 'needs_resume'].includes(run.status) || this.s.latestDeliverable(runId)) return;
+    const snap = this.s.runSnapshot(runId);
+    const body = buildReport({ billing: (this.meta(runId, 'billing') ?? 'unknown') as Billing, run, plan, graph, agents: snap.agents, nodes: this.s.runNodes(runId), attempts: this.s.runAttempts(runId), artifacts: this.s.artifacts(runId), checks: this.s.checks(runId), reviews: this.s.reviews(runId) });
+    const label = run.status === 'failed' ? '실패' : run.status === 'cancelled' ? '중단' : '재개 대기';
+    const md = `> **${label}한 실행의 중간 결과** — 결과물 취합 단계까지 가지 못했습니다. 아래는 ${label} 시점까지 완료된 단계·산출물·검사·리뷰입니다.${run.reason ? `\n> 이유: ${run.reason}` : ''}\n\n${body}`;
+    this.s.saveDeliverable({ runId, hash: sha256(`partial|${runId}|${md}`), reportPath: '', goal: plan.goal, doneCriteria: plan.doneCriteria, markdown: md, createdAt: now() });
+    this.o.emit({ type: 'run', run });
   }
 
   private finalize(runId: string, graph: WorkGraph, values: S) {

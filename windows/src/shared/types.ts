@@ -596,6 +596,8 @@ export interface DemoService {
 }
 export interface DemoApi { service: string; id: string; group: string; title: string; method: string; path: string; headers: Record<string, string>; body: string; description: string; expect: string; capture: Record<string, string> }
 export interface DemoState { service: DemoService; hash: string; status: 'running' | 'starting' | 'stopped' | 'needs_approval'; approved: boolean; ours: boolean; url: string | null; exitCode: number | null; startedAt: string | null }
+/** 확인함에 올릴 시연 항목: 실행 승인이 필요하거나, 앱이 켠 서버가 응답하지 않아(예전 코드일 수 있음) 다시 켜야 함 */
+export interface DemoAsk { serviceId: string; name: string; kind: 'approve' | 'restart'; hash: string; why: string; command: string; folder: string; port: number | null; env: string[] }
 export interface DemoInfo { manifestPath: string; relPath: string; exists: boolean; services: DemoState[]; apis: DemoApi[]; errors: string[] }
 export interface DemoResponse { status: number; ms: number; headers: Record<string, string>; body: string; cookies: string[]; vars: string[] }
 
@@ -676,6 +678,10 @@ export interface Mission {
   docTidy?: { cycle: number; at: string; groups: { folder: string; files: string[] }[]; left?: number } | null;
   /** 마지막으로 문서 정리를 한(또는 살펴본) 사이클 */
   docTidyCycle?: number;
+  /** 시연 확인에서 사용자 승인·다시 켜기가 필요한 서비스(확인함 '시연' 항목) */
+  demoAsks?: DemoAsk[] | null;
+  /** 사용자가 '지금은 켜지 않음'·'그대로 두기'로 넘긴 시연 항목(서비스:확인값:종류) — 같은 내용이면 다시 묻지 않음 */
+  demoDeclined?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -878,7 +884,7 @@ export interface PendingDecision {
   key: string;
   projectId: ID; projectName: string;
   missionId: ID; missionTitle: string; cycle: number;
-  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint' | 'merge';
+  kind: 'question' | 'gap' | 'permission' | 'commit' | 'checkpoint' | 'merge' | 'demo';
   task: string; // 어떤 작업·문서의 결정인지
   question: string; // 무엇을 정해야 하는지
   explain: string; // 쉬운 설명(있을 때)
@@ -891,7 +897,8 @@ export interface PendingDecision {
   held?: string; // 무엇 때문에 보류됐는지
   resumes?: string; // 정하면 재개될 작업
   grants?: string; // 권한 항목: 허용하면 무엇을 허용하는지
-  secret?: MissionSecretSpec & { saved: boolean }; // 비밀값을 넣어야 하는 결정: 저장 위치와 이미 값이 들어 있는지(값 자체는 없음)
+  secret?: MissionSecretSpec & { saved: boolean };
+  demo?: DemoAsk; // 시연 실행 승인·다시 켜기 // 비밀값을 넣어야 하는 결정: 저장 위치와 이미 값이 들어 있는지(값 자체는 없음)
 }
 
 /** 텔레그램 연동 화면용 상태(토큰 값은 없음) */

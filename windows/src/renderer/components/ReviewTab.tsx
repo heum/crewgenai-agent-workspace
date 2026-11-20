@@ -11,6 +11,7 @@ export default function ReviewTab({ project, initialRunId, focusKey, onOpenRun }
   const runs = useRunList(project.id);
   const agents = useLoad(() => ws().listAgents(project.id, true), [project.id]);
   const [runId, setRunId] = useState<string | null>(initialRunId);
+  const [runLimit, setRunLimit] = useState(10); // 최근 실행부터 몇 개만
   useEffect(() => { if (initialRunId) setRunId(initialRunId); }, [initialRunId, focusKey]); // '확인 필요'에서 넘어오면 그 실행을 연다
 
   useEffect(() => {
@@ -24,14 +25,15 @@ export default function ReviewTab({ project, initialRunId, focusKey, onOpenRun }
     <div className="review-layout">
       <div className="row gap wrap review-pick">
         <Field label="검토할 실행">
-          <select className="input" value={runId ?? ''} onChange={(e) => setRunId(e.target.value || null)}>
+          <select className="input" value={runId ?? ''} onChange={(e) => { if (e.target.value === '__more__') { setRunLimit((n) => n + 30); return; } setRunId(e.target.value || null); }}>
             {!runs.data?.length && <option value="">실행 없음</option>}
-            {runs.data?.map((r) => (
+            {(runs.data ?? []).filter((r, i) => i < runLimit || r.id === runId).map((r) => (
               <option key={r.id} value={r.id}>
                 {fmtDate(r.createdAt)} · {RUN_STATUS_LABEL[r.status]} · 흐름 v{r.graphVersion}
                 {r.executor === 'mock' ? ' · 모의 실행' : ''}
               </option>
             ))}
+            {(runs.data?.length ?? 0) > runLimit && <option value="__more__">이전 실행 {(runs.data?.length ?? 0) - runLimit}개 더 보기…</option>}
           </select>
         </Field>
         {runId && (
@@ -95,14 +97,14 @@ function ReviewContent({ d, agents }: { d: RunDetail; agents: Agent[] }) {
         {d.deliverable ? (
           <>
             <div className="row between">
-              <h2>최종 결과물</h2>
+              <h2>{d.deliverable.reportPath ? '최종 결과물' : '중간 결과(실패·중단한 실행)'}</h2>
               <div className="row gap">
                 <span className="small muted mono" title={d.deliverable.hash}>
                   버전 {d.deliverable.hash.slice(0, 12)}
                 </span>
-                <button className="btn-link" onClick={() => void ws().revealInFinder(d.deliverable!.reportPath)}>
+                {d.deliverable.reportPath && <button className="btn-link" onClick={() => void ws().revealInFinder(d.deliverable!.reportPath)}>
                   탐색기에서 보기
-                </button>
+                </button>}
               </div>
             </div>
             <div className="paper">
