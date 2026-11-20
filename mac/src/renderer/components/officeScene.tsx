@@ -37,6 +37,7 @@ const K = KITS.A;
 export const WALL = 30;
 const COL = 54; const DESK_W = K.desk.w; const DESK_H = K.desk.h;
 const BAND_MIN = 92;
+const MAX_DESK_COLS = 10;
 export const MIN_W = 300;
 const TAG_PX = 22;
 export type Box = { x: number; y: number; w: number; h: number };
@@ -47,7 +48,8 @@ export function layoutFor(staff: number, Wavail: number, Havail: number, offCoun
   const W = Math.max(MIN_W, Math.floor(Wavail));
   const n = Math.max(1, staff);
   const row = Math.max(44, 24 + Math.ceil(TAG_PX / scale) + 4); // 이름표가 다음 줄 머리를 가리지 않게
-  const maxCols = Math.max(1, Math.min(n, Math.floor((W - 4) / COL)));
+  // 넓은 화면에서도 한 줄은 10자리까지: 직원이 많으면 여러 줄로 나눠 업무 공간이 납작하게 길어지고 라운지만 넓어지지 않게
+  const maxCols = Math.max(1, Math.min(n, MAX_DESK_COLS, Math.floor((W - 4) / COL)));
   const rows = Math.ceil(n / maxCols);
   const cols = Math.ceil(n / rows); // 줄마다 고르게(15+1처럼 한 줄에 몰리지 않게)
   const gridW = cols * COL - (COL - DESK_W);
