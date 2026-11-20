@@ -5,7 +5,8 @@
 //   문서 담당이 폴더별 HISTORY.md로 요약한 뒤에만 앱이 원본을 지운다.
 // - 지우는 것은 git에 커밋돼 있고 바뀐 것이 없는 경로뿐이다(git 기록으로 되살릴 수 있음). 커밋되지 않은 파일은 지우지 않는다.
 // - 기획의 자동 수정 허용 경로 안, 이름에 'docs' 폴더가 들어간 곳(또는 산출물 폴더)만 본다. 최근 사이클 문서는 남긴다.
-import { readdirSync, statSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 export const KEEP_RUN_FILES = 5; // 앱 기록 파일을 남길 최근 실행 수
@@ -88,3 +89,52 @@ export function groupByFolder(docs: CycleDoc[]): { folder: string; items: CycleD
   for (const d of docs) m.set(d.folder, [...(m.get(d.folder) ?? []), d]);
   return [...m.entries()].map(([folder, items]) => ({ folder, items, bytes: items.reduce((s, x) => s + x.bytes, 0) }));
 }
+
+// ───── 사이클별 시연 빌드(.next-demo-c98, .demo-data-c31 같은 숨김 폴더) ─────
+// 시연할 때마다 사이클 번호를 붙여 새로 만든 빌드·데이터 폴더. 다시 만들 수 있지만 크다(폴더마다 100~300MB).
+// 남기는 것: 같은 종류(저장소·이름 앞부분)에서 가장 최근 사이클, 시연 목록이 가리키는 것, 하루 안에 바뀐 것, 실행 중인 서버가 연 것.
+// 지우는 것은 git이 무시하는(추적하지 않는) 폴더뿐이다 — 이 검사는 부르는 쪽에서 한다.
+export const BUILD_DIR = /^(\.[A-Za-z][\w.-]*?)-c(\d{1,4})$/;
+export interface BuildDir { rel: string; abs: string; group: string; cycle: number; bytes: number }
+
+export function findStaleBuilds(folder: string, roots: string[], manifestText: string, now = Date.now()): BuildDir[] {
+  const all: (BuildDir & { newest: number })[] = [];
+  const look = (abs: string, rel: string) => {
+    let ents; try { ents = readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.isSymbolicLink()) continue;
+      const m = BUILD_DIR.exec(e.name); if (!m) continue;
+      const a = join(abs, e.name); const sz = sizeOf(a, 20000);
+      all.push({ rel: rel ? `${rel}/${e.name}` : e.name, abs: a, group: `${rel}|${m[1]}`, cycle: Number(m[2]), bytes: sz.bytes, newest: sz.newest });
+    }
+  };
+  const seen = new Set<string>();
+  for (const root of roots) {
+    const r = root.replace(/^\.\/+/, '').replace(/\/+$/, ''); const rr = r === '.' ? '' : r;
+    const abs = join(folder, ...rr.split('/').filter(Boolean));
+    // 허용 경로 자체와 바로 아래 폴더(여러 저장소를 담은 상위 폴더를 연결한 경우)까지 본다
+    for (const [a, rel] of [[abs, rr] as const, ...(() => { try { return readdirSync(abs, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.') && !SKIP.has(e.name)).map((e) => [join(abs, e.name), rr ? `${rr}/${e.name}` : e.name] as const); } catch { return []; } })()]) {
+      if (seen.has(a)) continue; seen.add(a); look(a, rel);
+    }
+  }
+  const newestCycle = new Map<string, number>();
+  for (const b of all) newestCycle.set(b.group, Math.max(newestCycle.get(b.group) ?? -1, b.cycle));
+  return all.filter((b) => b.cycle < (newestCycle.get(b.group) ?? 0) && !manifestText.includes(b.rel.split('/').pop()!) && now - b.newest >= MIN_AGE_MS)
+    .map(({ newest: _n, ...b }) => b).sort((a, b) => a.rel.localeCompare(b.rel));
+}
+
+/** 실행 중인 node·java 프로세스가 연 파일이 들어 있는 폴더(확인할 수 없으면 모두 쓰는 중으로 본다) */
+export function dirsInUse(dirs: string[]): Promise<Set<string>> {
+  if (!dirs.length) return Promise.resolve(new Set());
+  if (process.platform === 'win32') return Promise.resolve(new Set(dirs)); // Windows: 열린 파일을 확인할 수 없어 지우지 않는다(실행 중인 시연을 반쯤 지우지 않게)
+  return new Promise((resolve) => {
+    execFile('lsof', ['-n', '-P', '-F', 'n', '-c', 'node', '-c', 'java', '-c', 'next-server'], { timeout: 20000, maxBuffer: 64 * 1024 * 1024 }, (e, stdout) => {
+      const text = String(stdout ?? '');
+      if (e && !text) { resolve(new Set(dirs)); return; }
+      const paths = text.split('\n').filter((l) => l.startsWith('n/')).map((l) => l.slice(1));
+      resolve(new Set(dirs.filter((d) => paths.some((p) => p === d || p.startsWith(d + sep)))));
+    });
+  });
+}
+
+export function manifestText(path: string): string { try { return readFileSync(path, 'utf8').slice(0, 600_000); } catch { return ''; } }

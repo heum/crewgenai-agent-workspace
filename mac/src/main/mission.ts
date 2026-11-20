@@ -22,11 +22,11 @@ import { allowedRoots, escapes, normRel, validateGraph, within } from './engine/
 import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
-import { trackedClean } from './git';
-import { KEEP_RUN_FILES, TIDY_EVERY, TIDY_MAX_FILES, TIDY_MAX_FOLDERS, findCycleDocs, fmtBytes, groupByFolder, staleRunFiles } from './docclean';
+import { ignoredUntracked, trackedClean } from './git';
+import { KEEP_RUN_FILES, TIDY_EVERY, TIDY_MAX_FILES, TIDY_MAX_FOLDERS, dirsInUse, findStaleBuilds, manifestText, findCycleDocs, fmtBytes, groupByFolder, staleRunFiles } from './docclean';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
-import { DEMO_FILE, readManifest } from './demo';
+import { DEMO_FILE, demoManifestPath, readManifest } from './demo';
 import type { PaceDecision } from './pace';
 import { publicWebUrl } from './refs';
 
@@ -460,7 +460,18 @@ export class MissionRunner {
       }
       if (removed) this.event(m, 'system', `문서 정리: 앱이 만든 지난 실행 결과·리뷰 파일 ${removed}개(${fmtBytes(freed)})를 지웠습니다(최근 실행 ${KEEP_RUN_FILES}개만 파일로 남김, 내용은 앱 기록에 그대로).`);
     } catch (e) { this.event(m, 'system', `문서 정리: 실행 기록 파일 정리 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
-    const t = m.docTidy;
+    // 지난 사이클 시연 빌드(.next-demo-c94 같은 숨김 폴더): 종류별 최신·시연 목록이 가리키는 것·하루 안에 바뀐 것·실행 중인 서버가 연 것은 남긴다
+    try {
+      const cands = findStaleBuilds(plan.folder, allowedRoots(plan), manifestText(demoManifestPath(plan)));
+      const busy = await dirsInUse(cands.map((b) => b.abs));
+      const gone: string[] = []; let size = 0;
+      for (const b of cands) {
+        if (busy.has(b.abs) || !(await ignoredUntracked(b.abs))) continue;
+        try { rmSync(b.abs, { recursive: true, force: true }); gone.push(b.rel); size += b.bytes; } catch { /* 쓰는 중이면 다음에 */ }
+      }
+      if (gone.length) this.event(this.get(id), 'system', `문서 정리: 지난 사이클 시연 빌드 ${gone.length}개(${fmtBytes(size)})를 지웠습니다 — ${gone.join(', ')}. 종류별 최신 빌드, 시연 목록이 쓰는 폴더, 실행 중인 서버가 연 폴더는 남깁니다(빌드는 다시 만들 수 있음).`);
+    } catch (e) { this.event(this.get(id), 'system', `문서 정리: 시연 빌드 정리 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
+    const t = this.get(id).docTidy;
     if (!t || t.cycle > m.cycle) return;
     const lines: string[] = []; let docs = 0; let bytes = 0; let kept = 0;
     for (const g of t.groups) {

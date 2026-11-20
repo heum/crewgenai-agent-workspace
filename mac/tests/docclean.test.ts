@@ -2,7 +2,7 @@
 import { mkdirSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { cycleOf, findCycleDocs, staleRunFiles } from '../src/main/docclean';
+import { cycleOf, findCycleDocs, findStaleBuilds, staleRunFiles } from '../src/main/docclean';
 import { gitInit, mkService, plan, tmpProject } from './helpers';
 
 const OLD = (Date.now() - 3 * 24 * 3600 * 1000) / 1000;
@@ -56,6 +56,31 @@ describe('문서 정리 적용', () => {
     const m = svc.missions.get(m0.id);
     expect(m.docTidy).toBeNull(); expect(m.docTidyCycle).toBe(20);
     expect(svc.missions.detail(m0.id).events.some((e) => e.text.includes('문서 정리 끝: 원본 5개'))).toBe(true);
+    svc.close();
+  });
+});
+
+describe('지난 사이클 시연 빌드 정리', () => {
+  it('종류별 최신, 시연 목록이 가리키는 것, 하루 안에 바뀐 것은 후보에서 뺀다', () => {
+    const dir = tmpProject();
+    for (const c of [31, 48, 51, 98]) put(dir, `web/.next-demo-c${c}/BUILD_ID`);
+    put(dir, 'web/.demo-data-c31/db.txt'); put(dir, 'api/.next-demo-c10/x');
+    writeFileSync(join(dir, 'web/.next-demo-c51/BUILD_ID'), 'new'); // 방금 바뀜
+    const c = findStaleBuilds(dir, ['.'], '"DEMO_DIST_DIR": ".next-demo-c98", "x": "../web/.next-demo-c48/a"').map((b) => b.rel);
+    expect(c).toEqual(['web/.next-demo-c31']);
+  });
+  it.skipIf(process.platform === 'win32')('git이 무시하고 추적하지 않는 빌드만, 실제 정리 단계에서 지운다(Windows는 열린 파일을 확인할 수 없어 지우지 않음)', async () => {
+    const dir = tmpProject(); const g = gitInit(dir); const svc = mkService(dir);
+    writeFileSync(join(dir, '.gitignore'), '.next-demo-*\n');
+    for (const c of [1, 2, 3]) put(dir, `.next-demo-c${c}/BUILD_ID`);
+    for (const c of [1, 2]) put(dir, `.cache-c${c}/kept.txt`);
+    g('add', '-A'); g('commit', '-q', '-m', '빌드');
+    const p = svc.createProject(plan(dir, { writablePaths: ['.'] }));
+    svc.loadAgentTemplates(p.id);
+    const m0 = await svc.startMission(p.id, '문서를 정리하라'); await svc.missions.stop(m0.id);
+    await svc.missions.tidyDocs(m0.id, svc.store.getProject(p.id).plan);
+    expect(['.next-demo-c1', '.next-demo-c2', '.next-demo-c3', '.cache-c1', '.cache-c2'].map((f) => existsSync(join(dir, f)))).toEqual([false, false, true, true, true]);
+    expect(svc.missions.detail(m0.id).events.some((e) => e.text.includes('시연 빌드 2개'))).toBe(true);
     svc.close();
   });
 });

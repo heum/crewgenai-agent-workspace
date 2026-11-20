@@ -782,3 +782,12 @@ export async function trackedClean(abs: string): Promise<boolean> {
   const st = await git(root, ['status', '--porcelain', '--untracked-files=all', '--', rel]);
   return st.ok && st.out === '';
 }
+
+/** git이 무시하고 추적하는 파일이 하나도 없는 폴더인가(지워도 저장소 기록과 상관없는 빌드 결과) */
+export async function ignoredUntracked(abs: string): Promise<boolean> {
+  const root = await gitRoot(dirname(abs)); if (!root) return false;
+  let real = abs; try { real = realpathSync(abs); } catch { return false; }
+  const rel = relative(root, real).split(sep).join('/'); if (!rel || rel.startsWith('..')) return false;
+  const ls = await git(root, ['ls-files', '--', rel]); if (!ls.ok || ls.out) return false;
+  return (await git(root, ['check-ignore', '-q', '--no-index', '--', rel], { GIT_LITERAL_PATHSPECS: '0' })).ok;
+}
