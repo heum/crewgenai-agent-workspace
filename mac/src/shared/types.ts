@@ -363,7 +363,8 @@ export type LiveEvent =
   | { type: 'missionEvent'; event: MissionEvent }
   | { type: 'learning' }
   | { type: 'telegram' }
-  | { type: 'devSync' };
+  | { type: 'devSync' }
+  | { type: 'qa'; projectId: string };
 
 // ───────── preload가 노출하는 API ─────────
 export interface WorkspaceApi {
@@ -444,6 +445,12 @@ export interface WorkspaceApi {
   pauseMission(missionId: ID): Promise<Mission>;
   /** 진척 메뉴: 작업 목록·변경을 사용자가 확인함 */
   reviewWorkPlan(missionId: ID): Promise<Mission>;
+  cancelDirective(missionId: ID, seq: number): Promise<Mission>;
+  /** 문의 응대 직원과의 대화 */
+  qaList(projectId: ID): Promise<QaMessage[]>;
+  qaAsk(projectId: ID, text: string): Promise<QaMessage[]>;
+  qaClear(projectId: ID): Promise<void>;
+  qaSendDirective(projectId: ID, seq: number): Promise<QaMessage[]>;
   resumeMission(missionId: ID): Promise<Mission>;
   /** 승인 커밋: 화면에 보여 줄 내용, 승인(보여 준 hash가 지금과 같을 때만), 거절 */
   commitPreview(missionId: ID, requestId: string): Promise<CommitPreview>;
@@ -658,9 +665,16 @@ export interface Mission {
   limitWait?: MissionLimitWait | null;
   /** 작업 목록(단원·완료 기준·상태): 오퍼레이터가 판단 때마다 갱신, 진척 메뉴에서 본다 */
   workPlan?: MissionWorkPlan | null;
+  /** 오퍼레이터 계획에 들어간 마지막 기록 번호(이후의 추가 지시는 대기 중) */
+  directiveSeenSeq?: number;
+  /** 사용자가 대기 중에 취소한 추가 지시(기록 번호) */
+  canceledDirectives?: number[];
   createdAt: string;
   updatedAt: string;
 }
+
+/** 문의 대화(프로젝트별, 이 PC에만 저장) */
+export interface QaMessage { seq: number; at: string; role: 'user' | 'staff'; text: string; who?: string; missionId?: string | null; directive?: string; directiveSent?: boolean; error?: boolean }
 
 /** 작업 목록 단원 상태: 시작 전 / 진행 / 검증 중 / 완료(확인 근거 필수) / 막힘 */
 export type WorkStatus = 'todo' | 'doing' | 'verifying' | 'done' | 'blocked';
@@ -760,6 +774,8 @@ export interface MissionDetail {
   events: MissionEvent[];
   /** 전체 기록 수 */
   eventsTotal?: number;
+  /** 아직 계획에 들어가지 않은 추가 지시(취소 가능) */
+  pendingDirectives?: { seq: number; at: string; text: string }[];
   cycles: MissionCycle[];
   currentRun: RunDetail | null; // 현재(또는 마지막) 사이클 실행 — 실시간 다이어그램용
   /** 이 미션이 만든 결과물·기록에 나온 프로젝트 안 파일(바로 열기용). 최신 사이클 먼저 */

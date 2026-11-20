@@ -11,6 +11,7 @@ import ReviewTab from './components/ReviewTab';
 import MissionTab from './components/MissionTab';
 import OfficeTab from './components/OfficeTab';
 import ProgressTab from './components/ProgressTab';
+import QaChat from './components/QaChat';
 import DecisionCenter from './components/DecisionCenter';
 
 type Tab = 'mission' | 'progress' | 'plan' | 'agents' | 'office' | 'flow' | 'run' | 'review';
@@ -209,6 +210,7 @@ export default function App() {
           </div>
         )}
       </main>
+      {project && <QaChat project={project} />}
       <DecisionCenter onOpenMission={(projectId, missionId) => { setSelectedId(projectId); setTab('mission'); setFocusMission({ id: missionId, n: Date.now() }); }} />
     </div>
   );

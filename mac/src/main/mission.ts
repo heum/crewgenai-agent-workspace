@@ -3,7 +3,7 @@
 //   (담당 Agent 수행 → Codex 리뷰 → Claude 재검토 → [검사] → 취합)
 // → 오퍼레이터 판단(계속 / 사용자 확인 / 완료) → 사용자가 멈출 때까지 반복
 // 오퍼레이터는 작업 완료·검토 필요·추가 정보 필요·사이클 상한 도달 때만 사용자에게 묻는다.
-import { PM_AGENT, PM_CODE } from './engine/templates';
+import { HD_AGENT, HD_CODE, PM_AGENT, PM_CODE } from './engine/templates';
 import { defaultCharacter } from '../shared/characterIds';
 import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, progressLine, workPlanSection, WORK_STATUS_LABEL, type RawWorkPlan } from './workplan';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,7 @@ import { isolatedDir } from './engine/fsutil';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
+import type { QaMessage } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, MissionSecretSpec, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionPermAsk, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
 import { touchesSecretEnv } from './cli/claudeCli';
 import { buildClaudeArgs, claudeLimit, cleanEnv, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactDeep, startProcess, type ProcessHandle, type ResultInfo } from './cli/claudeCli';
@@ -122,6 +123,7 @@ const PLAN_SCHEMA = {
         needs: { type: 'object', properties: { commands: { type: 'array', items: { type: 'string' } }, readPaths: { type: 'array', items: { type: 'string' } } } } } } },
   },
 };
+const QA_SCHEMA = { type: 'object', required: ['answer', 'directive'], properties: { answer: { type: 'string' }, directive: { type: 'string' } } };
 const JUDGE_SCHEMA = {
   type: 'object', required: ['decision', 'summary', 'question', 'nextFocus'],
   properties: { decision: { type: 'string', enum: ['continue', 'review', 'ask_user', 'done'] }, checkpoint: CHECKPOINT_SCHEMA, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
@@ -276,7 +278,8 @@ export class MissionRunner {
       CREATE TABLE IF NOT EXISTS mission_cycles (mission_id TEXT, cycle INTEGER, run_id TEXT, PRIMARY KEY(mission_id, cycle));
       CREATE TABLE IF NOT EXISTS mission_procs (mission_id TEXT PRIMARY KEY, pid INTEGER, proc_start TEXT, marker TEXT);
       CREATE TABLE IF NOT EXISTS mission_snapshots (mission_id TEXT, tag TEXT, name TEXT, sha TEXT, cycle INTEGER, created_at TEXT, PRIMARY KEY(mission_id, tag));
-      CREATE TABLE IF NOT EXISTS mission_snapshot_repos (mission_id TEXT, tag TEXT, repo TEXT, sha TEXT, PRIMARY KEY(mission_id, tag, repo));`);
+      CREATE TABLE IF NOT EXISTS mission_snapshot_repos (mission_id TEXT, tag TEXT, repo TEXT, sha TEXT, PRIMARY KEY(mission_id, tag, repo));
+      CREATE TABLE IF NOT EXISTS qa_messages (project_id TEXT, seq INTEGER, data TEXT, PRIMARY KEY(project_id, seq));`);
   }
 
   // ───── 저장 ─────
@@ -321,10 +324,100 @@ export class MissionRunner {
     const key = `${events.length}:${cycles.length}`; const c = this.filesCache.get(id);
     const files = c && c.key === key && Date.now() - c.at < 30000 ? c.files : this.files(mission, cycles, events);
     if (files !== c?.files) this.filesCache.set(id, { key, at: Date.now(), files });
-    return { mission: redactDeep(mission), events: eventLimit > 0 ? events.slice(-eventLimit) : events, eventsTotal: events.length, cycles, currentRun, files, working: this.working(mission.projectId) };
+    return { mission: redactDeep(mission), events: eventLimit > 0 ? events.slice(-eventLimit) : events, eventsTotal: events.length, pendingDirectives: redactDeep(this.pendingDirectives(id)), cycles, currentRun, files, working: this.working(mission.projectId) };
   }
 
   /** 프로젝트에서 지금 일하는 직원: 실행 중인 시도(작성·검토·Codex·검사)와 진행 중인 오퍼레이터 호출 */
+  // ───── 문의 응대: 옆 대화창에서 사용자가 궁금한 것을 묻는다(미션을 멈추거나 바꾸지 않음) ─────
+  qaList(projectId: string): QaMessage[] {
+    return (this.d.store.db.prepare('SELECT data FROM qa_messages WHERE project_id=? ORDER BY seq').all(projectId) as Row[]).map((r) => JSON.parse(String(r.data)) as QaMessage).slice(-200);
+  }
+  private qaAdd(projectId: string, msg: Omit<QaMessage, 'seq' | 'at'>): QaMessage {
+    const r = this.d.store.db.prepare('SELECT COALESCE(MAX(seq),0) s FROM qa_messages WHERE project_id=?').get(projectId) as Row;
+    const m: QaMessage = { ...msg, text: redact(msg.text), ...(msg.directive ? { directive: redact(msg.directive) } : {}), seq: Number(r.s) + 1, at: now() };
+    this.d.store.db.prepare('INSERT INTO qa_messages VALUES(?,?,?)').run(projectId, m.seq, JSON.stringify(m));
+    this.d.emit({ type: 'qa', projectId });
+    return m;
+  }
+  qaClear(projectId: string): void {
+    if (this.qaBusy.has(projectId)) throw new Error('답하는 중에는 대화를 지울 수 없습니다.');
+    this.d.store.db.prepare('DELETE FROM qa_messages WHERE project_id=?').run(projectId);
+    this.d.emit({ type: 'qa', projectId });
+  }
+  private qaBusy = new Set<string>();
+  /** 문의 응대 직원(없으면 한 번 채용, 휴가·해고 중이면 null) */
+  private helpAgent(projectId: string): Agent | null {
+    const all = this.d.store.listAgents(projectId, true);
+    const hd = all.find((a) => a.code === HD_CODE);
+    if (hd) return hd.active && !(hd as Agent & { fired?: boolean }).fired ? hd : null;
+    return this.d.store.saveAgent(projectId, null, { ...HD_AGENT(), character: defaultCharacter(HD_AGENT()) });
+  }
+  async qaAsk(projectId: string, text: string): Promise<QaMessage[]> {
+    const q = String(text ?? '').trim();
+    if (!q) throw new Error('질문을 입력하세요.');
+    if (q.length > 4000) throw new Error('질문이 너무 깁니다(4,000자까지).');
+    if (this.qaBusy.has(projectId)) throw new Error('이전 질문에 답하는 중입니다. 답이 오면 이어서 물어보세요.');
+    const project = this.d.store.getProject(projectId);
+    const hd = this.helpAgent(projectId);
+    if (!hd) throw new Error('문의 응대 직원이 휴가 중이거나 해고된 상태입니다. 직원 메뉴에서 복귀시키면 답할 수 있습니다.');
+    const ms = this.list(projectId);
+    const m = ms.find((x) => ['planning', 'running', 'evaluating', 'waiting_user'].includes(x.status)) ?? ms[0] ?? null;
+    const before = this.qaList(projectId).slice(-12);
+    this.qaAdd(projectId, { role: 'user', text: q, missionId: m?.id ?? null });
+    this.qaBusy.add(projectId);
+    try {
+      const raw = await this.callCli<{ answer?: string; directive?: string }>(projectId, project.plan, m ? this.operatorReadDirs(m) : [], this.qaPrompt(project.plan, m, before, q), QA_SCHEMA, `qa:${projectId}`, hd,
+        (items) => { if (m) { try { this.addUsage(m.id, items); } catch { /* 미션이 지워짐 */ } } });
+      const answer = String(raw?.answer ?? '').trim().slice(0, 8000) || '답을 만들지 못했습니다. 질문을 조금 바꿔 다시 물어봐 주세요.';
+      const directive = String(raw?.directive ?? '').trim().slice(0, 2000);
+      this.qaAdd(projectId, { role: 'staff', who: `${hd.code} ${hd.name}`, text: answer, missionId: m?.id ?? null, ...(directive ? { directive } : {}) });
+    } catch (e) {
+      if (this.closed) throw e;
+      const lim = e instanceof OperatorLimit;
+      this.qaAdd(projectId, { role: 'staff', who: `${hd.code} ${hd.name}`, text: lim ? 'Claude 사용 한도에 걸려 지금은 답할 수 없습니다. 한도가 풀린 뒤 다시 물어봐 주세요.' : `답하지 못했습니다: ${redact((e as Error).message).slice(0, 300)}`, error: true, missionId: m?.id ?? null });
+    } finally { this.qaBusy.delete(projectId); }
+    return this.qaList(projectId);
+  }
+  /** 문의 응대 직원이 제안한 추가 지시를 사용자가 눌러 보냄(누르기 전에는 전달하지 않는다) */
+  async qaSendDirective(projectId: string, seq: number): Promise<QaMessage[]> {
+    const row = this.d.store.db.prepare('SELECT data FROM qa_messages WHERE project_id=? AND seq=?').get(projectId, seq) as Row | undefined;
+    if (!row) throw new Error('대화를 찾을 수 없습니다.');
+    const msg = JSON.parse(String(row.data)) as QaMessage;
+    if (!msg.directive) throw new Error('보낼 추가 지시 제안이 없습니다.');
+    if (msg.directiveSent) throw new Error('이미 보낸 제안입니다.');
+    const m = this.list(projectId).find((x) => ['planning', 'running', 'evaluating'].includes(x.status));
+    if (!m) throw new Error('작동 중인 미션이 없습니다. 운영 메뉴에서 새로 지시하거나 확인 대기 중인 미션에 답하세요.');
+    await this.addDirective(m.id, `[문의 대화에서] ${msg.directive}`, 'next');
+    this.d.store.db.prepare('UPDATE qa_messages SET data=? WHERE project_id=? AND seq=?').run(JSON.stringify({ ...msg, directiveSent: true }), projectId, seq);
+    this.qaAdd(projectId, { role: 'staff', who: msg.who, text: '추가 지시로 보냈습니다. 다음 오퍼레이터 계획 때 반영되며, 그 전까지는 운영 메뉴의 \'대기 중인 추가 지시\'에서 취소할 수 있습니다.', missionId: m.id });
+    return this.qaList(projectId);
+  }
+  private qaPrompt(plan: PlanFields, m: Mission | null, before: QaMessage[], q: string): string {
+    const evs = m ? this.events(m.id).filter((e) => e.kind !== 'operator_plan').slice(-20).map((e) => `- [사이클 ${e.cycle} · ${e.kind}] ${e.text.replace(/\s+/g, ' ').slice(0, 300)}`) : [];
+    const staff = this.d.store.listAgents(m?.projectId ?? '').filter((a) => a.active).map((a) => `- ${a.code} ${a.name}: ${a.role}`);
+    return [
+      '# 문의 답변', '',
+      '당신은 이 프로젝트의 문의 응대 담당이다. 팀장이 개발 진행 중에 궁금한 것을 옆 대화창으로 묻는다. 짧고 쉬운 말로 바로 답한다. 파일은 읽기만 한다.', '',
+      '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 완료 조건: ${plan.doneCriteria || '(미입력)'}`, `- 작업 범위: ${plan.scope}`, `- 연결 폴더(지금 작업 폴더): ${plan.folder}`, '',
+      ...(m ? [
+        `## 지금 미션 — 상태 ${m.status}, 단계 ${m.stage}, 사이클 ${m.cycle}`, '### 지시', m.prompt.slice(0, 3000), '',
+        '### 최근 진행 보고(오퍼레이터)', (m.summary || '(없음)').slice(0, 4000), '',
+        ...workPlanSection(m.workPlan),
+        ...(this.pendingDirectives(m.id).length ? ['### 대기 중인 추가 지시', ...this.pendingDirectives(m.id).map((x) => `- ${x.text.slice(0, 300)}`), ''] : []),
+        '### 최근 기록', ...(evs.length ? evs : ['- (없음)']), '',
+      ] : ['## 지금 미션', '- 없음(아직 지시하지 않음)', '']),
+      '## 직원', ...(staff.length ? staff : ['- (없음)']), '',
+      '## 최근 대화', ...(before.length ? before.map((x) => `- ${x.role === 'user' ? '팀장' : '응대'}: ${x.text.replace(/\s+/g, ' ').slice(0, 600)}`) : ['- (없음)']), '',
+      '## 질문', q, '',
+      '## 규칙',
+      '- answer: 마크다운으로 보통 10줄 이내. 결론부터 쓴다.',
+      '- 확인한 사실과 추측을 나눠 쓴다. 모르면 모른다고 하고 어디를 보면 되는지 알려 준다. 필요하면 연결 폴더의 파일을 Read/Grep으로 확인하고 근거 경로를 쓴다.',
+      '- 실행하지 않은 시험이나 확인하지 않은 진행을 사실처럼 쓰지 않는다. 위 기록·보고에 있는 내용인지, 파일에서 확인한 내용인지 밝힌다.',
+      '- 당신은 작업을 바꾸거나 지시를 내리지 않는다. 팀장의 말이 개발 방향·범위·우선순위를 바꾸려는 요청이면, answer에 그렇게 설명하고 directive에 오퍼레이터에게 보낼 추가 지시 문장을 한두 문장으로 제안한다(팀장이 버튼을 눌러야 전달된다). 단순 질문이면 directive는 빈 문자열.',
+      '- 비밀값·키·인증 정보는 답에 쓰지 않는다.',
+    ].join('\n');
+  }
+
   /** 진척 관리 직원: 판단 직후 작업 목록을 갱신한다. 실패해도 미션은 계속한다(다음 사이클에 다시) */
   private async updateWorkPlan(id: string, plan: PlanFields, judge: Judge, runId: string): Promise<void> {
     const m = this.get(id);
@@ -396,6 +489,8 @@ export class MissionRunner {
       out.push({ agentId: op?.id ?? null, who: `${op ? `${op.code} ${op.name}` : '00 총괄'}(오퍼레이터)`, kind: 'operator', task: m.status === 'planning' ? `사이클 ${m.cycle} 계획` : `사이클 ${m.cycle} 판단`, runId: null, missionId: m.id, since: m.updatedAt });
     }
     const pm = [...agents.values()].find((a) => a.code === PM_CODE);
+    const hd = [...agents.values()].find((a) => a.code === HD_CODE);
+    if (this.procs.has(`qa:${projectId}`)) out.push({ agentId: hd?.id ?? null, who: hd ? `${hd.code} ${hd.name}` : '문의 응대', kind: 'operator', task: '사용자 문의에 답하는 중', runId: null, missionId: null, since: new Date().toISOString() });
     for (const m of this.list(projectId)) if (this.procs.has(`${m.id}:progress`)) out.push({ agentId: pm?.id ?? null, who: pm ? `${pm.code} ${pm.name}` : '진척 관리', kind: 'operator', task: `사이클 ${m.cycle} 작업 목록 갱신`, runId: null, missionId: m.id, since: m.updatedAt });
     for (const r of this.d.store.listRuns(projectId)) {
       if (!this.d.engine.isActive(r.id)) continue;
@@ -691,7 +786,8 @@ export class MissionRunner {
     // 정리 중이면 끝난 뒤 한 번 더 정리한다(그사이 들어온 답변을 놓치지 않게)
     if (this.learningNow.has(id)) { this.learnAgain.add(id); return; }
     const m = this.get(id);
-    const evs = this.events(id).filter((e) => e.seq > (m.learnedSeq ?? 0));
+    const gone = new Set(m.canceledDirectives ?? []);
+    const evs = this.events(id).filter((e) => e.seq > (m.learnedSeq ?? 0) && !gone.has(e.seq));
     if (!evs.some((e) => ['user', 'directive', 'answer'].includes(e.kind))) return;
     this.learningNow.add(id);
     try {
@@ -857,6 +953,21 @@ export class MissionRunner {
       this.procs.get(id)?.cancel();
       if (m.currentRunId && (this.d.engine.isActive(m.currentRunId) || this.d.engine.limitOf(m.currentRunId))) await this.d.engine.cancel(m.currentRunId);
     }
+    return this.get(id);
+  }
+
+  /** 아직 오퍼레이터 계획에 들어가지 않은 추가 지시(취소 가능) */
+  pendingDirectives(id: string): { seq: number; at: string; text: string }[] {
+    const m = this.get(id); const seen = m.directiveSeenSeq ?? 0; const gone = new Set(m.canceledDirectives ?? []);
+    if (['stopped', 'failed'].includes(m.status)) return [];
+    return this.events(id).filter((e) => e.kind === 'directive' && e.seq > seen && !gone.has(e.seq)).map((e) => ({ seq: e.seq, at: e.at, text: e.text }));
+  }
+  /** 대기 중인 추가 지시 취소: 오퍼레이터가 아직 읽지 않은 것만. 기록에는 남기되 계획·학습에서 뺀다 */
+  cancelDirective(id: string, seq: number): Mission {
+    const p = this.pendingDirectives(id).find((x) => x.seq === seq);
+    if (!p) throw new Error('이미 오퍼레이터 계획에 반영됐거나 없는 추가 지시입니다. 반영된 지시를 되돌리려면 새 추가 지시로 알려 주세요.');
+    const m = this.set(id, { canceledDirectives: [...(this.get(id).canceledDirectives ?? []), seq].slice(-200) });
+    this.event(m, 'system', `사용자가 대기 중인 추가 지시를 취소했습니다: ${p.text.slice(0, 200)}`);
     return this.get(id);
   }
 
@@ -1474,7 +1585,8 @@ export class MissionRunner {
   private attachmentPaths(m: Mission): string[] {
     const root = this.d.referenceRoot; if (!root) return [];
     const base = join(root, 'attachments') + sep;
-    const texts = [m.prompt, ...this.events(m.id).filter((e) => e.kind === 'directive' || e.kind === 'answer' || e.kind === 'user').map((e) => e.text)];
+    const gone = new Set(m.canceledDirectives ?? []);
+    const texts = [m.prompt, ...this.events(m.id).filter((e) => (e.kind === 'directive' || e.kind === 'answer' || e.kind === 'user') && !gone.has(e.seq)).map((e) => e.text)];
     const out: string[] = [];
     for (const t of texts) for (const line of t.split('\n')) { const i = line.indexOf(base); if (i < 0) continue; const p = line.slice(i).trim(); if (!out.includes(p) && existsSync(p) && !p.includes('..')) out.push(p); }
     return out.slice(-20);
@@ -1548,7 +1660,7 @@ export class MissionRunner {
       `- 지금까지 사용량: ${this.usageLine(m)}`, ''];
   }
   private staffFor(m: Mission): Agent[] {
-    const all = this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== PM_CODE); // 진척 관리는 작업 배정·검토 대상이 아니다
+    const all = this.d.ensureAgents(m.projectId).filter((a) => a.active && a.code !== PM_CODE && a.code !== HD_CODE); // 진척 관리·문의 응대는 작업 배정·검토 대상이 아니다
     const ids = m.limits?.staff;
     return ids?.length ? all.filter((a) => a.code === '00' || ids.includes(a.id)) : all;
   }
@@ -1751,11 +1863,14 @@ export class MissionRunner {
 
   // ───── 오퍼레이터 프롬프트 ─────
   private history(m: Mission): string {
-    return this.events(m.id).filter((e) => ['operator_judge', 'answer', 'question', 'directive'].includes(e.kind)).slice(-16)
+    const gone = new Set(this.get(m.id).canceledDirectives ?? []);
+    return this.events(m.id).filter((e) => ['operator_judge', 'answer', 'question', 'directive'].includes(e.kind) && !gone.has(e.seq)).slice(-16)
       .map((e) => `- [사이클 ${e.cycle}] ${e.kind === 'answer' ? '사용자 답변' : e.kind === 'directive' ? '사용자 추가 지시(최우선 반영)' : e.kind === 'question' ? '질문' : '판단'}: ${e.text}`).join('\n') || '- (없음)';
   }
 
   private planPrompt(m: Mission, plan: PlanFields, agents: Agent[]): string {
+    // 이 계획에 들어간 추가 지시까지는 더 이상 '대기 중'이 아니다(취소할 수 없음)
+    { const last = this.events(m.id).at(-1)?.seq ?? 0; if ((this.get(m.id).directiveSeenSeq ?? 0) < last) this.set(m.id, { directiveSeenSeq: last }); }
     return [
       '# 오퍼레이터 계획', '',
       '당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. 사용자 지시를 이번 사이클의 작업으로 나누고, 기능에 맞는 담당 직원을 배정한다. 파일은 수정하지 않는다(읽기만).', '',
@@ -1948,11 +2063,15 @@ export class MissionRunner {
   /** 오퍼레이터 호출: Claude CLI(읽기 전용 도구, 구조화 출력). 모의 실행이면 모의 CLI를 쓴다. */
   /** key: 프로세스 관리 칸(기본은 미션 ID). 배운 것 정리는 계획 호출과 칸을 나눠 서로의 정리 과정이 겹치지 않게 한다. */
   private async callOperator<T>(m: Mission, plan: PlanFields, prompt: string, schema: object, key: string = m.id, as?: Agent): Promise<T> {
+    return this.callCli<T>(m.projectId, plan, this.operatorReadDirs(m), prompt, schema, key, as, (items) => this.addUsage(m.id, items));
+  }
+  /** 읽기 전용 Claude CLI 호출(구조화 출력). as가 없으면 00 총괄로 */
+  private async callCli<T>(projectId: string, plan: PlanFields, readDirs: string[], prompt: string, schema: object, key: string, as: Agent | undefined, onUsage: (items: { costUsd: number | null; usage: Record<string, number> | null }[]) => void): Promise<T> {
     const ex = this.d.executor();
-    const op = as ?? this.d.store.listAgents(m.projectId).find((a) => a.code === '00');
+    const op = as ?? this.d.store.listAgents(projectId).find((a) => a.code === '00');
     const args = buildClaudeArgs({
       prompt, appendSystemPrompt: (as ? `당신은 CREWGENAI 개발팀의 ${as.code} ${as.name} 담당이다. ${as.instructions}` : `당신은 CREWGENAI 개발팀의 00 총괄 오퍼레이터다. ${op?.instructions ?? ''}`).slice(0, 4000), cwd: plan.folder,
-      tools: ['Read', 'Grep', 'Glob'], editScopes: [], allowedCommands: [], readDirs: this.operatorReadDirs(m), sessionId: randomUUID(), resumeSessionId: null,
+      tools: ['Read', 'Grep', 'Glob'], editScopes: [], allowedCommands: [], readDirs, sessionId: randomUUID(), resumeSessionId: null,
       jsonSchema: schema, model: op?.model ?? '', effort: op?.effort, maxBudgetUsd: op?.maxBudgetUsd ?? null,
     });
     const file = ex.executor === 'mock' ? process.execPath : ex.cliPath;
@@ -1973,7 +2092,7 @@ export class MissionRunner {
     if (done.cancelled) throw new Error('오퍼레이터 호출이 취소됐습니다.');
     const lim = claudeLimit(sink, done.code);
     if (lim) throw new OperatorLimit(lim);
-    if (!this.closed) this.addUsage(m.id, r ? [{ costUsd: r.costUsd, usage: r.usage }] : [{ costUsd: null, usage: null }]);
+    if (!this.closed) onUsage(r ? [{ costUsd: r.costUsd, usage: r.usage }] : [{ costUsd: null, usage: null }]);
     if (done.code !== 0 || !r || r.isError) throw new Error(`오퍼레이터 호출 실패(종료 코드 ${done.code ?? '없음'}${r?.subtype ? `, ${r.subtype}` : ''})${r?.text ? `: ${redact(r.text).slice(0, 240)}` : ''}`);
     let v = r.structured as T | null;
     if (!v) { const mm = r.text.match(/\{[\s\S]*\}/); try { v = mm ? JSON.parse(mm[0]) as T : null; } catch { v = null; } }

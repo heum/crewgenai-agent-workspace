@@ -422,6 +422,7 @@ const MissionView = memo(function MissionView({ missionId, agents, onOpenRun, on
           <div className="row gap"><button className="btn btn-primary" disabled={act.busy} onClick={() => void act.run(async () => { await ws().answerMission(m.id, '', 'continue', true); await detail.reload(); })}>이어서 진행</button></div>
         </div>
       )}
+      {(d.pendingDirectives?.length ?? 0) > 0 && <PendingDirectives missionId={m.id} items={d.pendingDirectives!} onChanged={async () => { await detail.reload(); }} />}
       {!m.checkpoint && (m.results || m.resultsHistory?.length) && <ResultsCard mission={m} />}
       {m.summary && (
         <div className="card report-card">
@@ -472,6 +473,26 @@ const MissionView = memo(function MissionView({ missionId, agents, onOpenRun, on
     </div>
   );
 });
+
+/** 대기 중인 추가 지시: 오퍼레이터가 다음 계획에서 읽기 전까지는 취소할 수 있다 */
+function PendingDirectives({ missionId, items, onChanged }: { missionId: string; items: { seq: number; at: string; text: string }[]; onChanged: () => Promise<void> }) {
+  const act = useAction();
+  return (
+    <div className="card pending-dir" aria-label="대기 중인 추가 지시">
+      <div className="report-head"><strong>대기 중인 추가 지시 {items.length}건</strong><span className="muted small">다음 오퍼레이터 계획 때 반영됩니다. 그 전까지 취소할 수 있습니다.</span></div>
+      {act.error && <Banner>{act.error}</Banner>}
+      <ul className="pending-dir-list">
+        {items.map((x) => (
+          <li key={x.seq}>
+            <div className="pending-dir-text">{x.text}</div>
+            <div className="row gap small"><span className="muted">{fmtDate(x.at)}</span>
+              <button className="btn btn-sm" disabled={act.busy} onClick={() => { if (window.confirm('이 추가 지시를 취소할까요? 오퍼레이터에게 전달되지 않습니다.')) void act.run(async () => { await ws().cancelDirective(missionId, x.seq); await onChanged(); }); }}>취소</button></div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 /**
  * 접었다 펼 수 있는 운영 화면 구역. 제목 줄을 누르면 접히고, 접힌 상태는 다음에 열 때도 유지된다(이 컴퓨터에만 저장).

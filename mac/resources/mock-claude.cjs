@@ -70,6 +70,13 @@ async function main() {
   if (prompt.includes('[[mock:leak]]')) out({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: 'env: ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKE1234 token: ghp_FAKEFAKEFAKEFAKEFAKEFAKE12' }] } });
   const isOperator = prompt.includes('# 오퍼레이터 ');
   // 실행 환경 점검: [[mock:probe-fail]]이 프로젝트 경로에 있으면 쓰기 실패로, 아니면 모두 됨으로 보고
+  // 문의 응대: 질문에 짧게 답한다. 질문에 [[mock:qa-directive]]가 있으면 추가 지시 제안을 함께 낸다
+  if (schema && prompt.includes('# 문의 답변')) {
+    const q = (prompt.split('## 질문\n')[1] || '').split('\n## 규칙')[0].trim();
+    const ans = { answer: `모의 답변: "${q.slice(0, 40)}"에 대해 진행 기록을 보고 답합니다.`, directive: q.includes('[[mock:qa-directive]]') ? '저장 기능을 목록보다 먼저 하라' : '' };
+    out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(ans), structured_output: ans, permission_denials: [] });
+    process.exit(0);
+  }
   // 진척 관리 직원: 작업 목록 갱신
   if (schema && prompt.includes('# 작업 목록 갱신')) {
     const dec = (prompt.match(/오퍼레이터 판단\((\w+)\)/) || [])[1];

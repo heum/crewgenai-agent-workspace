@@ -260,6 +260,11 @@ function register() {
   h('codexStatus', (refresh) => s().codexStatus(!!refresh));
   h('listMissions', (pid) => s().missions.list(pid));
   h('reviewWorkPlan', (id) => s().missions.reviewWorkPlan(id));
+  h('cancelDirective', (id, seq) => s().missions.cancelDirective(id, Number(seq)));
+  h('qaList', (pid) => s().missions.qaList(pid));
+  h('qaAsk', (pid, text) => s().missions.qaAsk(pid, String(text ?? '')));
+  h('qaClear', (pid) => s().missions.qaClear(pid));
+  h('qaSendDirective', (pid, seq) => s().missions.qaSendDirective(pid, Number(seq)));
   h('attention', () => s().attention());
   h('pendingDecisions', (all) => s().pendingDecisions(all === true));
   h('commitPreview', (id: string, rid: string) => s().commitPreview(id, rid));
