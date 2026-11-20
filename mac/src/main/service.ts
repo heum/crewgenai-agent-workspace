@@ -1,6 +1,6 @@
 // 앱 기능 계층 — Electron과 분리돼 있어 시험에서 직접 구동할 수 있다.
 import { closeSync, constants as fsc, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { computeDocs, defaultDocSet, loadTemplates, safeRel } from './docset';
 import { fileSha, isAppTempPath } from './engine/fsutil';
@@ -483,10 +483,9 @@ export class Service {
     const r = resolveEnvPath(folder, file); if ('error' in r) return { ok: false, error: `${file}: ${r.error}` };
     const repo = await gitRoot(dirname(r.abs));
     if (repo) {
-      let real = repo; try { real = realpathSync(repo); } catch { /* 그대로 */ }
-      const rel = relative(real, r.abs).split(sep).join('/');
-      ensureSecretIgnore(real);
-      if (!(await gitIgnored(real, rel))) return { ok: false, error: `${file}이(가) .gitignore로 무시되지 않아 커밋될 수 있어 저장하지 않았습니다. 저장소의 .gitignore를 확인하세요.` };
+      // 저장소 기준 경로를 직접 계산하지 않고 파일이 있는 폴더에서 이름으로 묻는다(Windows 짧은 경로 이름·구분자 차이로 어긋나지 않게)
+      ensureSecretIgnore(repo);
+      if (!(await gitIgnored(dirname(r.abs), basename(r.abs)))) return { ok: false, error: `${file}이(가) .gitignore로 무시되지 않아 커밋될 수 있어 저장하지 않았습니다. 저장소의 .gitignore를 확인하세요.` };
     }
     try { writeEnvVar(r.abs, name, inp.value); } catch (e) { return { ok: false, error: `파일에 쓰지 못했습니다: ${(e as NodeJS.ErrnoException).code ?? '알 수 없는 오류'}` }; }
     const choice = `넣었음 — ${file}의 ${name}에 저장(앱에서 입력, 값은 기록하지 않음)`;

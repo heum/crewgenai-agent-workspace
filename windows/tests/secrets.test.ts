@@ -52,7 +52,7 @@ describe('확인함 비밀값 저장', () => {
     expect(await svc.saveSecret({ key: it.key, file: '.env', name: 'DEMO_API_KEY', value: 'a\nb' })).toMatchObject({ ok: false });
     writeFileSync(join(dir, '.env'), 'OTHER=1\n');
     const r = await svc.saveSecret({ key: it.key, file: '.env', name: 'DEMO_API_KEY', value: VALUE });
-    expect(r).toMatchObject({ ok: true });
+    expect(r.ok ? '' : r.error).toBe(''); // 실패하면 이유가 보이게
     expect(JSON.stringify(r)).not.toContain(VALUE);
     expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(`OTHER=1\nDEMO_API_KEY=${VALUE}\n`);
     if (process.platform !== 'win32') expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o600);
