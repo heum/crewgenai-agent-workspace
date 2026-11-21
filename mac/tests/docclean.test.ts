@@ -30,50 +30,23 @@ describe('사이클별 문서 찾기', () => {
 });
 
 describe('문서 정리 적용', () => {
-  it('HISTORY.md가 써진 폴더만, git에 커밋되고 바뀌지 않은 원본만 지운다', async () => {
+  it('md 문서는 지우지 않고 요약 작업도 넣지 않는다(사용자 결정: 빌드 폴더만 정리)', async () => {
     const dir = tmpProject(); const g = gitInit(dir); const svc = mkService(dir);
     const p = svc.createProject(plan(dir, { writablePaths: ['docs', 'web'] }));
     svc.loadAgentTemplates(p.id);
     for (const c of [1, 2, 3, 4, 5]) put(dir, `docs/C${c}_FRONT.md`);
-    put(dir, 'docs/c2-screens/a.png'); put(dir, 'web/docs/C1_WEB.md');
+    put(dir, 'docs/c2-screens/a.png'); put(dir, 'crewgenai-output/RESULT-old-0123abcd.md');
     g('add', '-A'); g('commit', '-q', '-m', '문서');
-    put(dir, 'docs/C6_FRONT.md'); // 커밋 안 됨
-    writeFileSync(join(dir, 'docs/C5_FRONT.md'), '고침'); // 커밋 뒤 바뀜
     const m0 = await svc.startMission(p.id, '문서를 정리하라'); await svc.missions.stop(m0.id);
     const mm = svc.missions as unknown as { set(id: string, patch: object): void };
-    mm.set(m0.id, { cycle: 20, docTidyCycle: 0 });
-    const section = (svc.missions as unknown as { docTidySection(m: object, plan: object): string[] }).docTidySection(svc.missions.get(m0.id), svc.store.getProject(p.id).plan).join('\n');
-    expect(section).toContain('## 문서 정리');
-    expect(section).toContain('docs/HISTORY.md');
-    const t = svc.missions.get(m0.id).docTidy!;
-    expect(t.groups.flatMap((x) => x.files)).toEqual(expect.arrayContaining(['docs/C1_FRONT.md', 'docs/c2-screens', 'docs/C6_FRONT.md', 'web/docs/C1_WEB.md']));
-    // 요약 작업이 성공하지 않았으면 HISTORY.md가 있어도 지우지 않는다
-    writeFileSync(join(dir, 'docs/HISTORY.md'), '# 기록 요약\n원본: C1_FRONT.md, C2_FRONT.md, C3_FRONT.md, C4_FRONT.md, C5_FRONT.md, C6_FRONT.md, c2-screens\n'); // web/docs에는 쓰지 않음, C1은 아래에서 뺌
-    const eng = (svc.missions as unknown as { d: { engine: { detail: (id: string) => unknown } } }).d.engine; const real = eng.detail.bind(eng);
-    mm.set(m0.id, { currentRunId: 'run-x' });
-    eng.detail = (rid: string) => rid === 'run-x' ? { run: { status: 'succeeded' }, nodes: [{ nodeId: 'n1', status: 'failed' }], graph: { nodes: [{ id: 'n1', outputs: [{ path: 'docs/HISTORY.md' }] }] } } : real(rid);
+    // 예전 버전이 걸어 둔 요약·삭제 예약이 있어도 지우지 않고 예약만 버린다
+    mm.set(m0.id, { cycle: 20, docTidyCycle: 0, docTidy: { cycle: 20, at: new Date(0).toISOString(), groups: [{ folder: 'docs', files: ['docs/C1_FRONT.md', 'docs/c2-screens'] }], left: 0 } });
+    writeFileSync(join(dir, 'docs/HISTORY.md'), '원본: C1_FRONT.md, c2-screens\n');
+    expect((svc.missions as unknown as Record<string, unknown>).docTidySection).toBeUndefined();
     await svc.missions.tidyDocs(m0.id, svc.store.getProject(p.id).plan);
-    expect(existsSync(join(dir, 'docs/C1_FRONT.md'))).toBe(true);
-    expect(svc.missions.detail(m0.id).events.some((e) => e.text.includes('요약 작업이 완료(검토 통과)되지 않아'))).toBe(true);
-    // 성공했으면: HISTORY.md에 이름이 적힌 원본만
-    mm.set(m0.id, { docTidy: t, docTidyCycle: 0 });
-    writeFileSync(join(dir, 'docs/HISTORY.md'), '# 기록 요약\n원본: C1_FRONT.md, C2_FRONT.md, C3_FRONT.md, C5_FRONT.md, C6_FRONT.md, c2-screens\n'); // C4는 요약에 없음
-    // 작성은 성공했지만 뒤따른 Codex 리뷰가 실패했으면 지우지 않는다
-    const g2 = (cx: string) => ({ run: { status: 'succeeded' }, nodes: [{ nodeId: 'n1', status: 'succeeded' }, { nodeId: 'n2', status: cx }], graph: { nodes: [{ id: 'n1', kind: 'agent', outputs: [{ path: 'docs/HISTORY.md' }] }, { id: 'n2', kind: 'codexReview', outputs: [] }], edges: [{ source: 'n1', target: 'n2', kind: 'next' }] } });
-    eng.detail = (rid: string) => rid === 'run-x' ? g2('failed') : real(rid);
-    await svc.missions.tidyDocs(m0.id, svc.store.getProject(p.id).plan);
-    expect(existsSync(join(dir, 'docs/C1_FRONT.md'))).toBe(true);
-    mm.set(m0.id, { docTidy: t, docTidyCycle: 0 });
-    eng.detail = (rid: string) => rid === 'run-x' ? g2('succeeded') : real(rid);
-    await svc.missions.tidyDocs(m0.id, svc.store.getProject(p.id).plan);
-    expect(['C1_FRONT.md', 'C2_FRONT.md', 'C3_FRONT.md', 'C4_FRONT.md', 'c2-screens'].map((f) => existsSync(join(dir, 'docs', f)))).toEqual([false, false, false, true, false]);
-    expect(existsSync(join(dir, 'docs/C5_FRONT.md'))).toBe(true); // 바뀐 것
-    expect(existsSync(join(dir, 'docs/C6_FRONT.md'))).toBe(true); // 커밋 안 됨
-    expect(existsSync(join(dir, 'web/docs/C1_WEB.md'))).toBe(true); // 요약 안 됨
-    const m = svc.missions.get(m0.id);
-    expect(m.docTidy).toBeNull(); expect(m.docTidyCycle).toBe(20);
-    expect(svc.missions.detail(m0.id).events.some((e) => e.text.includes('문서 정리 끝: 원본 4개'))).toBe(true);
-    eng.detail = real;
+    expect(['C1_FRONT.md', 'C5_FRONT.md', 'c2-screens/a.png'].map((f) => existsSync(join(dir, 'docs', f)))).toEqual([true, true, true]);
+    expect(existsSync(join(dir, 'crewgenai-output/RESULT-old-0123abcd.md'))).toBe(true);
+    expect(svc.missions.get(m0.id).docTidy).toBeNull();
     svc.close();
   });
 });

@@ -7,8 +7,7 @@ import { HD_AGENT, HD_CODE, PM_AGENT, PM_CODE } from './engine/templates';
 import { defaultCharacter } from '../shared/characterIds';
 import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, progressLine, workPlanSection, WORK_STATUS_LABEL, type RawWorkPlan } from './workplan';
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants as fsc, existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
-import { fileSha } from './engine/fsutil';
+import { accessSync, constants as fsc, existsSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
@@ -22,8 +21,8 @@ import { allowedRoots, escapes, normRel, validateGraph, within } from './engine/
 import { autoLayout } from '../shared/layout';
 import { checkArgv } from './checks';
 import { LEARN_SCHEMA, type LearningStore } from './learning';
-import { ignoredUntracked, trackedClean } from './git';
-import { KEEP_RUN_FILES, TIDY_EVERY, TIDY_MAX_FILES, TIDY_MAX_FOLDERS, dirsInUse, findStaleBuilds, manifestText, registeredBuilds, realInside, samePlace, findCycleDocs, fmtBytes, groupByFolder, staleRunFiles } from './docclean';
+import { ignoredUntracked } from './git';
+import { dirsInUse, findStaleBuilds, manifestText, registeredBuilds, samePlace, fmtBytes } from './docclean';
 import { missionCommitsSince, revertCommits, syncRepoFastForward, tagSnapshot, workspaceHeads, workspaceRepos } from './git';
 import { docReposFor, levelAllows, repoTestCommands, workBranchName, type CommandLevel } from './autopilot';
 import { DEMO_FILE, demoManifestPath, readManifest } from './demo';
@@ -440,49 +439,10 @@ export class MissionRunner {
 
   // ───── 문서 정리 ─────
   private docTidyOn(): boolean { try { return this.d.docTidy?.() ?? true; } catch { return true; } }
-  /** 계획 프롬프트: 정리할 때가 된 사이클별 문서가 있으면 이번 사이클에 요약 작업을 하나 넣게 한다 */
-  private docTidySection(m: Mission, plan: PlanFields): string[] {
-    if (!this.docTidyOn()) return [];
-    let t = this.get(m.id).docTidy ?? null;
-    if (!t) {
-      if (m.cycle - (this.get(m.id).docTidyCycle ?? 0) < TIDY_EVERY) return [];
-      const docs = findCycleDocs(plan.folder, allowedRoots(plan), plan.outputDir || 'crewgenai-output', m.cycle);
-      if (docs.length < 5) { this.set(m.id, { docTidyCycle: m.cycle }); return []; }
-      const all = groupByFolder(docs).sort((a, b) => b.bytes - a.bytes);
-      const groups = all.slice(0, TIDY_MAX_FOLDERS).map((g) => ({ folder: g.folder, files: g.items.slice(0, TIDY_MAX_FILES).map((x) => x.rel) }));
-      const left = docs.length - groups.reduce((n, g) => n + g.files.length, 0);
-      t = { cycle: m.cycle, at: now(), groups, left };
-      this.set(m.id, { docTidy: t });
-      this.event(this.get(m.id), 'system', `문서 정리: 사이클별 문서 ${docs.length}개(${fmtBytes(docs.reduce((n, x) => n + x.bytes, 0))}) 중 ${docs.length - left}개를 이번 사이클에 폴더별 HISTORY.md로 요약하게 합니다${left ? `(나머지 ${left}개는 3사이클 뒤 이어서)` : ''}. 요약이 끝나면 git에 커밋된 원본만 지웁니다.`);
-    }
-    if (t.cycle !== m.cycle) return [];
-    return ['## 문서 정리(이번 사이클에 함께 할 일)',
-      '- 아래 사이클별 문서는 이번 사이클이 끝나면 앱이 지운다(git 기록에는 남음). 그 전에 내용을 요약해 둔다.',
-      '- tasks에 문서 정리 작업을 하나 넣는다: 문서 담당(없으면 쓰기 가능한 다른 직원)에게, 폴더마다 HISTORY.md를 만들거나 이어 쓰게 한다. writeScope·outputs는 각 폴더의 HISTORY.md(markdown)만이다. 원본 파일은 고치지 않는다.',
-      '- HISTORY.md에는 요약한 원본 파일 이름을 그대로 적는다(예: "원본: C6_DEMO_UPDATE.md"). 앱은 이름이 적힌 원본만 지운다.',
-      '- HISTORY.md 형식: 사이클 순서로 사이클마다 2~5줄(무엇을 했는지, 어떻게 확인했는지(시험·결과), 정한 것, 남은 일). 지금도 쓰이는 결정·경로는 남기고 긴 로그·표·사진 설명은 옮기지 않는다. 화면 사진 폴더는 무엇을 찍었는지 한 줄만.',
-      ...t.groups.flatMap((g) => [`### ${g.folder}/HISTORY.md ← ${g.files.length}개`, ...g.files.map((f) => `- ${f}`)]), ''];
-  }
-  /** 사이클 판단 뒤: 앱 기록 파일은 최근 실행만 남기고, 요약이 끝난 사이클별 문서는 커밋된 원본만 지운다 */
+  /** 사이클 판단 뒤: 지난 사이클 시연 빌드만 정리한다. md 문서(실행 결과·리뷰·사이클별 문서)는 용량이 작아 지우지 않는다(2026-11-21 사용자 결정) */
   async tidyDocs(id: string, plan: PlanFields): Promise<void> {
     if (!this.docTidyOn() || this.closed) return;
-    const m = this.get(id);
-    const out = (plan.outputDir || 'crewgenai-output').replace(/\/+$/, '');
-    let freed = 0; let removed = 0;
-    try {
-      const runs = this.d.store.listRuns(m.projectId);
-      const keep = new Set(runs.slice(0, KEEP_RUN_FILES).map((r) => r.id.slice(0, 8)));
-      const byRun = new Map(runs.map((r) => [r.id.slice(0, 8), r.id]));
-      for (const rel of staleRunFiles(plan.folder, out, new Set(byRun.keys()), keep)) {
-        const abs = join(plan.folder, ...rel.split('/'));
-        // 앱이 만들 때의 내용 그대로일 때만 지운다(사용자가 메모를 더했으면 남김)
-        const run8 = (/-([0-9a-f]{8})(?:-v\d+)?\.md$/.exec(rel) ?? [])[1]; const runId = run8 ? byRun.get(run8) : undefined;
-        const art = runId ? this.d.store.artifacts(runId).filter((a) => a.relPath === rel).at(-1) : undefined;
-        if (!art || !realInside(plan.folder, abs) || !samePlace(plan.folder, rel)) continue;
-        try { if (fileSha(abs) !== art.sha256) continue; const n = statSync(abs).size; rmSync(abs, { force: true }); freed += n; removed++; } catch { /* 이미 없음 */ }
-      }
-      if (removed) this.event(m, 'system', `문서 정리: 앱이 만든 지난 실행 결과·리뷰 파일 ${removed}개(${fmtBytes(freed)})를 지웠습니다(최근 실행 ${KEEP_RUN_FILES}개만 파일로 남김, 내용은 앱 기록에 그대로).`);
-    } catch (e) { this.event(m, 'system', `문서 정리: 실행 기록 파일 정리 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
+    if (this.get(id).docTidy) this.set(id, { docTidy: null }); // 예전 버전이 걸어 둔 요약·삭제 예약은 버린다
     // 지난 사이클 시연 빌드(.next-demo-c94 같은 숨김 폴더): 종류별 최신·시연 목록이 가리키는 것·하루 안에 바뀐 것·실행 중인 서버가 연 것은 남긴다
     try {
       const cands = findStaleBuilds(plan.folder, allowedRoots(plan), manifestText(demoManifestPath(plan)), Date.now(), registeredBuilds(demoManifestPath(plan)));
@@ -494,40 +454,6 @@ export class MissionRunner {
       }
       if (gone.length) this.event(this.get(id), 'system', `문서 정리: 지난 사이클 시연 빌드 ${gone.length}개(${fmtBytes(size)})를 지웠습니다 — ${gone.join(', ')}. 종류별 최신 빌드, 시연 목록이 쓰는 폴더, 실행 중인 서버가 연 폴더는 남깁니다(빌드는 다시 만들 수 있음).`);
     } catch (e) { this.event(this.get(id), 'system', `문서 정리: 시연 빌드 정리 실패 — ${redact((e as Error).message).slice(0, 200)}`); }
-    const t = this.get(id).docTidy;
-    if (!t || t.cycle > m.cycle) return;
-    const lines: string[] = []; let docs = 0; let bytes = 0; let kept = 0;
-    // 요약 작업이 이번 사이클 실행에서 성공(검토 통과)했는지: HISTORY.md를 산출물로 가진 작업 단계가 완료여야 한다
-    const runId = this.get(id).currentRunId ?? (this.d.store.db.prepare('SELECT run_id FROM mission_cycles WHERE mission_id=? AND cycle=?').get(id, t.cycle) as Row | undefined)?.run_id as string | undefined;
-    let doneOutputs = new Set<string>();
-    if (runId) {
-      try {
-        const rd = this.d.engine.detail(runId); const ok = new Set(rd.nodes.filter((n) => n.status === 'succeeded').map((n) => n.nodeId));
-        // 작성 단계와, 그 뒤에 이어진 리뷰·검사 단계가 모두 완료여야 요약이 통과한 것으로 본다
-        const after = (from: string): string[] => { const seen = new Set<string>(); let cur = [from]; while (cur.length) { const nx: string[] = []; for (const c of cur) for (const e of rd.graph.edges ?? []) if (e.source === c && e.kind !== 'fail' && !seen.has(e.target)) { seen.add(e.target); nx.push(e.target); } cur = nx; } return [...seen]; };
-        const kindOf = new Map(rd.graph.nodes.map((n) => [n.id, n.kind]));
-        const passed = (id: string) => ok.has(id) && after(id).filter((x) => ['review', 'codexReview', 'check'].includes(String(kindOf.get(x)))).every((x) => ok.has(x));
-        doneOutputs = new Set(rd.graph.nodes.filter((n) => passed(n.id)).flatMap((n) => (n.outputs ?? []).map((o) => normRel(o.path))));
-      } catch { /* 실행 기록 없음 */ }
-    }
-    for (const g of t.groups) {
-      const histRel = normRel(g.folder === '.' ? 'HISTORY.md' : `${g.folder}/HISTORY.md`);
-      const hist = join(plan.folder, ...histRel.split('/'));
-      let text = ''; try { if (statSync(hist).mtimeMs >= Date.parse(t.at)) text = readFileSync(hist, 'utf8'); } catch { text = ''; }
-      if (!text.trim() || !doneOutputs.has(histRel)) { lines.push(`${g.folder}: 요약 작업이 완료(검토 통과)되지 않아 원본을 그대로 둠`); kept += g.files.length; continue; }
-      let n = 0;
-      for (const rel of g.files) {
-        if (!text.includes(rel.split('/').pop()!)) { kept++; continue; } // HISTORY.md에 원본 이름이 적힌(요약된) 것만
-        const abs = join(plan.folder, ...rel.split('/'));
-        if (!allowedRoots(plan).some((r) => within(rel, r))) { kept++; continue; }
-        if (!samePlace(plan.folder, rel) || !(await trackedClean(abs)) || !samePlace(plan.folder, rel)) { kept++; continue; }
-        let size = 0; try { const st = statSync(abs); size = st.isDirectory() ? 0 : st.size; } catch { continue; }
-        try { rmSync(abs, { recursive: true, force: true }); n++; bytes += size; } catch { kept++; }
-      }
-      docs += n; lines.push(`${g.folder}: ${n}개 정리 → HISTORY.md`);
-    }
-    this.set(id, { docTidy: null, docTidyCycle: t.left ? m.cycle - TIDY_EVERY + 3 : m.cycle }); // 남은 문서가 있으면 3사이클 뒤 이어서
-    this.event(this.get(id), 'system', [`문서 정리 끝: 원본 ${docs}개를 지웠습니다(git 기록으로 되살릴 수 있음)${bytes ? `, 문서 ${fmtBytes(bytes)}` : ''}${kept ? ` · 커밋 안 됨·요약 안 됨 등으로 ${kept}개는 남김` : ''}.`, ...lines.map((l) => `- ${l}`)].join('\n'));
   }
 
   // ───── 시연 실행 승인·다시 켜기(확인함) ─────
@@ -2055,7 +1981,6 @@ export class MissionRunner {
       ...this.planFixSection(m),
       ...this.techSection(m),
       ...workPlanSection(this.progress(m.projectId)),
-      ...this.docTidySection(m, plan),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
       '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}`), '',
@@ -2070,7 +1995,7 @@ export class MissionRunner {
       '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',
       '- 화면 모양(버튼·간격·목록·배지·문구 배치)을 바꾸는 작업은 한 작업에 화면 하나로 나눈다. doneCriteria는 화면 기준 문서(프런트 저장소의 docs/UI_STANDARD.md)의 항목처럼 눈으로 셀 수 있게 쓴다(예: "이 영역의 주 버튼은 하나", "모바일 375px에서 가로로 넘치지 않음"). "예쁘게·깔끔하게" 같은 말을 완료 조건으로 쓰지 않는다. 작업 지시에 기준 문서를 먼저 읽으라고 적고, 재검토 기준에 기준 문서의 [확정]·[현재] 항목과 대조하라고 적는다.',
       '- 시연 서버에 새 코드를 띄워야 하면 포트·빌드 폴더를 바꾸지 않는다: 시연 목록의 상태 확인 주소(health, 예: /api/demo/build-info/<새 표시>)만 새 코드의 표시로 바꾼다. 앱이 판단 직전 확인에서 자기가 켠 서버가 예전 코드(그 주소에 404)면 끄고 다시 켠다. 직원은 서버를 끄거나 새 포트로 옮기는 우회를 하지 않는다(사용자가 직접 띄운 서버만 예외로 사용자에게 알린다).',
-      '- 문서는 쌓지 말고 갱신한다: 진행·시연·검증 보고는 사이클마다 새 파일(C101_FRONT.md, cycle-3.md 같은)을 만들지 말고 주제별 문서 하나(예: docs/front/STATUS.md)를 고쳐 최신 상태로 둔다. 화면 사진은 폴더 하나(예: docs/front/screens-latest)에 덮어쓴다. 지난 기록은 git·앱 기록과 폴더의 HISTORY.md에 남는다. 작업 지시에 지난 사이클 문서를 통째로 읽으라고 쓰지 말고, 필요한 것만 HISTORY.md·최신 문서에서 찾게 한다.',
+      '- 문서는 쌓지 말고 갱신한다: 진행·시연·검증 보고는 사이클마다 새 파일(C101_FRONT.md, cycle-3.md 같은)을 만들지 말고 주제별 문서 하나(예: docs/front/STATUS.md)를 고쳐 최신 상태로 둔다. 화면 사진은 폴더 하나(예: docs/front/screens-latest)에 덮어쓴다. 지난 기록은 git·앱 기록과 이미 있는 지난 문서에 남는다. 작업 지시에 지난 사이클 문서를 통째로 읽으라고 쓰지 말고, 필요한 것만 최신 문서(있으면 HISTORY.md)에서 찾게 한다.',
       '- outputs의 path는 만들 파일 경로다. 여러 파일을 담는 폴더를 산출물로 하려면 폴더 경로를 쓰고, 그 안 파일의 형식을 format에 쓴다(폴더 안에 그 형식 파일이 하나 이상 있어야 통과). 형식을 가리지 않으면 any.',
       '- checkCommand는 셸 없이 실행할 argv 배열이다(필요 없으면 빈 배열). 셸·인터프리터 코드 실행은 거부되며, 담당의 허용 명령이나 grep/test만 쓸 수 있다.',
       '- 검사는 바뀐 코드가 실제로 동작하는지를 본다: 코드를 바꾸는 작업이면 그 저장소의 시험 명령(npm test·npm run check·scripts/check.sh·./gradlew test 등 허용된 것)을 쓴다. 작성자가 쓴 보고·결과 파일을 grep하는 검사는 문서만 만드는 작업에만 쓴다. 리뷰는 앱이 이번 작업에서 실제로 바뀐 파일을 함께 넘기므로, outputs에 보고 파일만 적고 끝내지 않는다.',

@@ -781,8 +781,10 @@ export class Service {
       const { man, plan, s } = this.demoService(projectId, a.serviceId);
       if (serviceHash(s) !== a.hash) { note(`시연 '${a.name}': 확인함에서 본 뒤 시연 목록이 바뀌어 켜지 않았습니다. 다음 확인에서 다시 묻습니다.`); return; }
       if (a.kind === 'approve') this.demo.approve(projectId, s, a.hash);
-      else if (this.demo.ours(projectId, s.id)) { this.demo.stop(projectId, s.id); await new Promise((r) => setTimeout(r, 1500)); }
-      await this.demo.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services);
+      if (a.kind !== 'approve' && this.demo.ours(projectId, s.id)) {
+        const r = await this.demo.restart(projectId, man.services, s.id, () => readManifest(plan).services);
+        if (r.error) throw new Error(r.error);
+      } else await this.demo.start(projectId, man.services, s.id, new Set(), () => readManifest(plan).services);
       const code = s.port ? await this.demo.probe(s) : 200;
       note(`시연 '${a.name}'을(를) ${a.kind === 'approve' ? '승인하고 켰습니다' : '다시 켰습니다'}(${via})${s.port ? ` — 상태 확인 ${s.health || '/'}: ${code ?? '응답 없음'}` : ''}.`);
     } catch (e) { note(`시연 '${a.name}'을(를) 켜지 못했습니다: ${redact((e as Error).message).slice(0, 200)}`); }

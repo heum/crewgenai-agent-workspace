@@ -238,6 +238,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           devSyncHour: s.devSyncHour ?? 22,
           paceEnabled: s.paceEnabled !== false,
           paceReservePct: s.paceReservePct ?? 10,
+          paceStartPct: s.paceStartPct ?? 80,
           commandLevel: s.commandLevel ?? 'medium',
           ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
@@ -328,11 +329,11 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <input type="checkbox" checked={s.techAuto !== false} onChange={(e) => setS({ ...s, techAuto: e.target.checked })} /> 명령 허용·경로 읽기 같은 기술 권한은 묻지 않고 앱이 처리 (권장)
       </label>
       <p className="muted small">직원이 허용되지 않은 명령·경로를 쓰려다 막히면 확인함에 올리지 않고, 오퍼레이터가 허용된 방법(파일 도구·허용 명령·저장소 시험 명령)으로 다시 계획합니다. 보호 규칙(비밀값 파일 읽기 금지, 외부 네트워크 차단, 수정 범위 밖 쓰기 금지)은 그대로입니다. 끄면 예전처럼 권한 허용을 확인함에서 묻습니다.</p>
-      <h3>문서 정리</h3>
+      <h3>빌드 폴더 정리</h3>
       <label className="check">
-        <input type="checkbox" checked={s.docTidy !== false} onChange={(e) => setS({ ...s, docTidy: e.target.checked })} /> 쌓이는 보고 문서·기록 파일을 정리 (권장)
+        <input type="checkbox" checked={s.docTidy !== false} onChange={(e) => setS({ ...s, docTidy: e.target.checked })} /> 지난 사이클 시연 빌드 폴더 정리 (권장)
       </label>
-      <p className="muted small">앱이 만든 실행 결과(RESULT-…md)·Codex 리뷰 파일은 최근 실행 5개만 파일로 남깁니다(내용은 앱 기록에 그대로). 직원이 사이클마다 만든 문서(C100_FRONT.md, c98-screens/ 같은 docs 폴더 안 사이클 번호 문서)는 10사이클마다 문서 담당이 폴더별 HISTORY.md로 요약하고, 그 뒤 git에 커밋된 원본만 지웁니다(git 기록으로 되살릴 수 있음). 커밋되지 않은 파일과 최근 3사이클 문서는 지우지 않습니다.</p>
+      <p className="muted small">시연할 때마다 새로 만든 빌드 폴더(.next-demo-c94 같은 숨김 폴더)가 쌓여 용량을 크게 차지하므로, 종류별 최신 빌드·시연 목록이 쓰는 폴더·실행 중인 서버가 연 폴더·하루 안에 바뀐 폴더를 빼고 지웁니다(빌드는 다시 만들 수 있음). md 문서(실행 결과·리뷰·직원이 사이클마다 만든 문서)는 용량이 작아 지우지 않고 그대로 둡니다.</p>
       <h3>사용량 속도 조절 (Max 요금제)</h3>
       <label className="check">
         <input type="checkbox" checked={s.paceEnabled !== false} onChange={(e) => setS({ ...s, paceEnabled: e.target.checked })} /> 주간 사용률이 높아지면 초기화 시각까지 나눠 쓰기 (권장)

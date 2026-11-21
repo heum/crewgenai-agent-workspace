@@ -6,6 +6,7 @@ import { safeFetch } from './http';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -106,6 +107,8 @@ export class DemoManager {
   private procs = new Map<string, Proc>();
   private jars = new Map<string, Map<string, string>>(); // 서비스별 쿠키(시연 로그인 유지)
   private vars = new Map<string, Record<string, string>>(); // 응답에서 잡아 둔 값(예: 시연 토큰)
+  private gen = new Map<string, number>(); // 서비스별 중지 횟수(다시 켜는 중 사용자가 중지했는지 확인)
+  private restartFailed = new Map<string, string>(); // 자동 다시 켜기가 실패한 서비스 → 그때 확인값
   constructor(private db: DatabaseSync, private logDir: string) {
     db.exec('CREATE TABLE IF NOT EXISTS demo_approvals (project_id TEXT, service_id TEXT, hash TEXT, approved_at TEXT, PRIMARY KEY(project_id, service_id))');
   }
@@ -126,14 +129,25 @@ export class DemoManager {
     if (!s.port) return null;
     try { const r = await safeFetch(`http://127.0.0.1:${s.port}${s.health}`, { signal: AbortSignal.timeout(1500), redirect: 'manual' }); return r.status; } catch { return null; }
   }
-  /** 앱이 켠 서비스를 끄고(포트가 풀릴 때까지 기다림) 같은 명령으로 다시 켠다. 사용자가 띄운 서버는 다루지 않는다 */
-  async restart(projectId: string, all: DemoService[], id: string, recheck?: () => DemoService[]): Promise<{ ok: boolean; code: number | null; error?: string }> {
-    const s = all.find((x) => x.id === id); if (!s || !this.ours(projectId, id)) return { ok: false, code: null, error: '앱이 켠 서버가 아님' };
+  /** 앱이 켠 서비스를 끄고(프로세스가 끝나고 포트가 풀릴 때까지 기다림) 같은 명령으로 다시 켠다. 사용자가 띄운 서버는 다루지 않는다.
+   *  auto: 시연 확인이 스스로 다시 켜는 것. 한 번 실패한 같은 내용(확인값)은 사용자가 확인함에서 고르거나 목록이 바뀔 때까지 다시 하지 않는다 */
+  async restart(projectId: string, all: DemoService[], id: string, recheck?: () => DemoService[], auto = false): Promise<{ ok: boolean; code: number | null; error?: string }> {
+    const s = all.find((x) => x.id === id); const k = this.key(projectId, id);
+    if (!s || !this.ours(projectId, id)) return { ok: false, code: null, error: '앱이 켠 서버가 아님' };
+    if (auto && this.restartFailed.get(k) === serviceHash(s)) return { ok: false, code: null, error: '같은 내용으로 이미 다시 켜 봤지만 실패함' };
+    const old = this.procs.get(k)!;
     this.stop(projectId, id);
-    for (let i = 0; i < 24 && s.port && (await this.probe(s)) !== null; i++) await new Promise((r) => setTimeout(r, 500));
-    try { await this.start(projectId, all, id, new Set(), recheck); } catch (e) { return { ok: false, code: null, error: redact((e as Error).message).slice(0, 160) }; }
+    const gen = this.gen.get(k) ?? 0; // 이 뒤에 사용자가 중지하면 세대가 바뀌어 다시 켜지 않는다
+    const fail = (error: string, code: number | null = null) => { if (auto) this.restartFailed.set(k, serviceHash(s)); return { ok: false, code, error }; };
+    // 프로세스가 끝나고 포트가 풀릴 때까지(HTTP 무응답만으로는 풀렸다고 보지 않음) 최대 15초
+    for (let i = 0; i < 30 && (old.exited === null || (s.port && (await portOpen(s.port)))); i++) await new Promise((r) => setTimeout(r, 500));
+    if (s.port && (await portOpen(s.port))) return fail(`이전 서버가 포트 ${s.port}를 놓지 않아 다시 켜지 않음`);
+    if ((this.gen.get(k) ?? 0) !== gen || this.procs.has(k)) return { ok: false, code: null, error: '다시 켜는 사이 중지·실행되어 그만둠' };
+    try { await this.start(projectId, all, id, new Set(), recheck); } catch (e) { return fail(redact((e as Error).message).slice(0, 160)); }
     const code = s.port ? await this.probe(s) : 200;
-    return { ok: code !== null && code < 500 && code !== 404, code };
+    const ok = code !== null && code < 500 && code !== 404;
+    if (ok) this.restartFailed.delete(k); else if (auto) this.restartFailed.set(k, serviceHash(s));
+    return { ok, code };
   }
   /** 앱이 켠 서비스인가(살아 있는 것) */
   ours(projectId: string, id: string): boolean { const p = this.procs.get(this.key(projectId, id)); return !!p && p.exited === null; }
@@ -197,6 +211,7 @@ export class DemoManager {
 
   /** 앱이 켠 서비스만 끈다(사용자가 따로 띄운 서비스는 건드리지 않는다) */
   stop(projectId: string, id: string): boolean {
+    this.gen.set(this.key(projectId, id), (this.gen.get(this.key(projectId, id)) ?? 0) + 1);
     const p = this.procs.get(this.key(projectId, id));
     if (!p || !p.child.pid) return false;
     // 앞 프로세스가 끝났어도 그 아래 프로세스(묶음)는 남아 있을 수 있으므로 묶음 전체에 보낸다
@@ -278,7 +293,7 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
       if (code !== null && code < 500 && code !== 404) { up.add(s.id); out.push(`- ${s.name}(${s.id}): 실행 중 · 상태 확인 ${s.health || '/'} 응답 정상(${code})`); }
       else if (mgr.ours(projectId, s.id)) {
         // 앱이 켠 서버가 예전 코드로 보이면(사용자 결정: 묻지 않고) 앱이 끄고 같은 명령으로 다시 켠다. 다시 켜도 그대로면 그때 확인함에 올린다
-        const r = await mgr.restart(projectId, man.services, s.id, () => readManifest(plan).services);
+        const r = await mgr.restart(projectId, man.services, s.id, () => readManifest(plan).services, true);
         if (r.ok) { up.add(s.id); out.push(`- ${s.name}(${s.id}): 앱이 켠 서버가 상태 확인 ${s.health || '/'}에 ${code ?? '응답 없음'}이라 예전 코드로 보고 다시 켰습니다 — 응답 정상(${r.code})`); }
         else { out.push(`- ${s.name}(${s.id}): 예전 코드로 보여 다시 켰지만 상태 확인 ${s.health || '/'}이 ${r.code ?? '응답 없음'}${r.error ? `(${r.error})` : ''} — 확인함에 올림`); asks.push(demoAsk(s, 'restart', `앱이 다시 켰지만 상태 확인 ${s.health || '/'}이 ${r.code ?? '응답하지 않음'}입니다. 시연 목록의 명령·버전 확인 주소를 확인하세요.`)); }
       }
@@ -299,6 +314,14 @@ export async function verifyDemo(mgr: DemoManager, projectId: string, plan: Plan
 }
 
 /** 포트를 듣는 프로세스와 그 작업 폴더(맥·리눅스). 못 찾으면 null */
+/** 로컬 포트에 무엇이든 연결을 받고 있는가(HTTP 응답 여부와 무관) */
+export function portOpen(port: number, ms = 800): Promise<boolean> {
+  return new Promise((res) => {
+    const c = createConnection({ host: '127.0.0.1', port });
+    const done = (v: boolean) => { c.destroy(); res(v); };
+    c.setTimeout(ms, () => done(false)); c.once('connect', () => done(true)); c.once('error', () => done(false));
+  });
+}
 export function portOwner(port: number): { pid: number; cwd: string } | null {
   if (process.platform === 'win32') return null;
   try {

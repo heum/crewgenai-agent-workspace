@@ -76,6 +76,55 @@ describe('예전 코드로 떠 있는 앱 서버', () => {
     expect(await mgr.probe(s)).toBe(200);
     mgr.stopAll();
   }, 60000);
+
+  it('자동으로 다시 켜도 그대로면 확인함에 올리고, 같은 내용으로는 다음 확인에서 다시 켜지 않는다', async () => {
+    const d = tmpProject(); const plan = mkPlan(d); const port = await freePort();
+    mkdirSync(join(d, 'svc'), { recursive: true });
+    writeFileSync(join(d, 'svc', 'server.js'), `require('http').createServer((q,s)=>{ s.statusCode=404; s.end('x'); }).listen(Number(process.env.PORT), '127.0.0.1');`);
+    write(plan, { services: [{ id: 'web', name: '웹', kind: 'web', repo: 'svc', start: ['node', 'server.js'], port, health: '/v', startupSec: 20 }] });
+    const mgr = new DemoManager(new DatabaseSync(':memory:'), join(tmpdir(), `demo-logs-${Date.now()}`));
+    mgr.approve('p', readManifest(plan).services[0]); await mgr.start('p', readManifest(plan).services, 'web');
+    const a1: DemoAsk[] = []; await verifyDemo(mgr, 'p', plan, a1);
+    expect(a1.map((a) => a.kind)).toEqual(['restart']);
+    const pid1 = (mgr as unknown as { procs: Map<string, { child: { pid: number } }> }).procs.get('p:web')!.child.pid;
+    const a2: DemoAsk[] = []; const l2 = await verifyDemo(mgr, 'p', plan, a2);
+    expect(l2.join('\n')).toContain('이미 다시 켜 봤지만');
+    expect((mgr as unknown as { procs: Map<string, { child: { pid: number } }> }).procs.get('p:web')!.child.pid).toBe(pid1); // 다시 켜지 않음
+    // 사용자가 확인함에서 고르면(자동 아님) 다시 켠다
+    const r = await mgr.restart('p', readManifest(plan).services, 'web');
+    expect(r.error).toBeUndefined();
+    mgr.stopAll();
+  }, 60000);
+
+  it('다시 켜는 사이 사용자가 중지하면 다시 켜지 않는다', async () => {
+    const d = tmpProject(); const plan = mkPlan(d); const port = await freePort(); server(d, port);
+    write(plan, { services: [{ id: 'web', name: '웹', kind: 'web', repo: 'svc', start: ['node', 'server.js'], env: { PORT: String(port) }, port, health: '/', startupSec: 20 }] });
+    const mgr = new DemoManager(new DatabaseSync(':memory:'), join(tmpdir(), `demo-logs-${Date.now()}`));
+    mgr.approve('p', readManifest(plan).services[0]); await mgr.start('p', readManifest(plan).services, 'web');
+    const pr = mgr.restart('p', readManifest(plan).services, 'web');
+    mgr.stop('p', 'web'); // 사용자가 화면에서 중지
+    const r = await pr;
+    expect(r.ok).toBe(false);
+    expect(mgr.ours('p', 'web')).toBe(false);
+    mgr.stopAll();
+  }, 60000);
+
+  it('이전 서버가 포트를 놓지 않으면(HTTP 무응답이어도) 다시 켜지 않고 실패로 돌려준다', async () => {
+    const d = tmpProject(); const plan = mkPlan(d); const port = await freePort();
+    mkdirSync(join(d, 'svc'), { recursive: true });
+    // 종료 신호를 무시하고 포트를 계속 잡은 채 HTTP에 답하지 않는 서버
+    writeFileSync(join(d, 'svc', 'server.js'), `process.on('SIGTERM',()=>{}); const n=require('net').createServer(()=>{}).listen(Number(process.env.PORT), '127.0.0.1');`);
+    write(plan, { services: [{ id: 'web', name: '웹', kind: 'web', repo: 'svc', start: ['node', 'server.js'], port, health: '/', startupSec: 1 }] });
+    const mgr = new DemoManager(new DatabaseSync(':memory:'), join(tmpdir(), `demo-logs-${Date.now()}`));
+    mgr.approve('p', readManifest(plan).services[0]);
+    await mgr.start('p', readManifest(plan).services, 'web').catch(() => undefined); // 응답이 없어 시작 확인은 실패하지만 프로세스는 떠 있음
+    if (!mgr.ours('p', 'web')) return; // 실행기가 이미 정리했으면 확인할 것이 없음
+    const t0 = Date.now();
+    const r = await mgr.restart('p', readManifest(plan).services, 'web', undefined, true);
+    expect(r.ok).toBe(false);
+    expect(Date.now() - t0).toBeGreaterThan(4000); // 바로 켜지 않고 포트가 풀리기를 기다렸다
+    mgr.stopAll();
+  }, 60000);
 });
 
 describe('확인함의 시연 실행 승인', () => {
