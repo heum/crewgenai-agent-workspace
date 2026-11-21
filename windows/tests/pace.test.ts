@@ -52,9 +52,16 @@ describe('속도 판단', () => {
     const d = paceDecision(snap(0.92, 30, 0.1, now), now);
     expect(d.wait && d.until).toBe(now + 30 * H + 60 * 1000);
   });
-  it('주 초반에는 남길 몫을 지키며 조금 먼저 쓸 수 있다(5%)', () => {
-    expect(paceDecision(snap(0.03, 167, 0.1, now), now).wait).toBe(false);
-    expect(paceDecision(snap(0.08, 167, 0.1, now), now).wait).toBe(true);
+  it('주간 80% 전에는 시간 비율보다 앞서도 조절하지 않는다', () => {
+    expect(paceDecision(snap(0.08, 167, 0.1, now), now).wait).toBe(false);
+    expect(paceDecision(snap(0.79, 150, 0.1, now), now).wait).toBe(false);
+    const d = paceDecision(snap(0.81, 150, 0.1, now), now);
+    expect(d.wait).toBe(true);
+  });
+  it('조절 시작을 0으로 두면 주 초반부터 나눠 쓴다(5%는 바로 허용)', () => {
+    const o = { ...DEFAULT_PACE, startAt: 0 };
+    expect(paceDecision(snap(0.03, 167, 0.1, now), now, o).wait).toBe(false);
+    expect(paceDecision(snap(0.08, 167, 0.1, now), now, o).wait).toBe(true);
   });
   it('남길 몫을 크게 잡으면 더 일찍 멈춘다', () => {
     expect(paceDecision(snap(0.6, 24, 0.1, now), now).wait).toBe(false);

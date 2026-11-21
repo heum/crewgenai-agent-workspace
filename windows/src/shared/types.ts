@@ -345,6 +345,7 @@ export interface AppSettings {
   techAuto?: boolean; // 기술 권한 요청(명령 허용·경로 읽기)을 사용자에게 묻지 않고 앱·오퍼레이터가 처리(기본 켬). 보호 규칙은 그대로
   paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
   paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유
+  paceStartPct?: number; // 주간 사용률이 이 값(%, 기본 80)이 되기 전에는 나눠 쓰지 않고 그대로 진행
   testLocalSockets?: boolean; // 자동 처리 시험 명령에 로컬 소켓 허용(기본 끔). 켜면 격리 실행에서도 이 PC의 로컬 서비스에 접속할 수 있다
   skillDirs?: string[]; // 'Skill' 도구를 켠 직원이 쓸 스킬 폴더(이 PC의 절대 경로). 없으면 ~/.claude/skills·~/.agents/skills 중 있는 것
 }
@@ -920,7 +921,7 @@ export interface TgStatusView {
 
 /** 사용량 속도 조절 화면용 */
 export interface UsagePaceView {
-  enabled: boolean; reservePct: number;
+  enabled: boolean; reservePct: number; startPct: number;
   sevenDay: { utilization: number; resetsAt: string } | null; fiveHour: { utilization: number; resetsAt: string } | null; reportedAt: string | null;
   waiting: boolean; until: string | null; text: string;
 }

@@ -201,6 +201,7 @@ export class Service {
     const cur = this.settings();
     const next = { ...cur, ...p, missionMaxCycles: Math.min(50, Math.max(1, Math.floor(Number(p.missionMaxCycles ?? cur.missionMaxCycles)) || 5)), maxConcurrent: Math.min(16, Math.max(1, Math.floor(Number(p.maxConcurrent ?? cur.maxConcurrent)) || 1)) };
     if (p.devSyncHour !== undefined) next.devSyncHour = Math.min(23, Math.max(0, Math.floor(Number(p.devSyncHour)) || 0));
+    if (p.paceStartPct !== undefined) next.paceStartPct = Math.min(100, Math.max(0, Math.round(Number(p.paceStartPct)) || 0));
     if (p.paceReservePct !== undefined) next.paceReservePct = Math.min(50, Math.max(0, Math.round(Number(p.paceReservePct)) || 0));
     if (p.skillDirs !== undefined) next.skillDirs = Array.isArray(p.skillDirs) ? [...new Set(p.skillDirs.filter((x) => typeof x === 'string' && isAbsolute(x)))].slice(0, 20) : undefined;
     const { langsmithKeySet: _k, ...persist } = next;
@@ -863,14 +864,15 @@ export class Service {
   paceNow() {
     const s = this.settings();
     if (s.paceEnabled === false) return null;
-    return paceDecision(usageSnapshot(), Date.now(), { ...DEFAULT_PACE, reserve: (s.paceReservePct ?? 10) / 100 });
+    return paceDecision(usageSnapshot(), Date.now(), this.paceOptions());
   }
+  private paceOptions() { const s = this.settings(); return { ...DEFAULT_PACE, reserve: (s.paceReservePct ?? 10) / 100, startAt: (s.paceStartPct ?? 80) / 100 }; }
   usagePace(): UsagePaceView {
     const s = this.settings(); const snap = usageSnapshot(); const d = this.paceNow();
     const iso = (ms: number) => new Date(ms).toISOString();
     const w = (x: { utilization: number; resetsAt: number } | null) => (x ? { utilization: x.utilization, resetsAt: iso(x.resetsAt) } : null);
-    const all = paceDecision(snap, Date.now(), { ...DEFAULT_PACE, reserve: (s.paceReservePct ?? 10) / 100 });
-    return { enabled: s.paceEnabled !== false, reservePct: s.paceReservePct ?? 10, sevenDay: w(snap?.sevenDay ?? null), fiveHour: w(snap?.fiveHour ?? null), reportedAt: snap ? iso(snap.at) : null,
+    const all = paceDecision(snap, Date.now(), this.paceOptions());
+    return { enabled: s.paceEnabled !== false, reservePct: s.paceReservePct ?? 10, startPct: s.paceStartPct ?? 80, sevenDay: w(snap?.sevenDay ?? null), fiveHour: w(snap?.fiveHour ?? null), reportedAt: snap ? iso(snap.at) : null,
       waiting: !!d?.wait, until: d?.wait ? iso(d.until) : null, text: all.wait ? all.reason : all.note };
   }
   close() { if (this.devSyncTimer) clearInterval(this.devSyncTimer); this.offUsage(); this.demo.stopAll(); void this.missions.shutdown(0); this.engine.shutdown(); this.store.close(); }

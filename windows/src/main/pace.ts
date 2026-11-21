@@ -8,11 +8,12 @@ export interface PaceOptions {
   /** 주간 한도 중 앱이 쓰지 않고 남겨 둘 몫(0~0.5). 사람이 직접 쓰는 Claude 사용량과 여유분 */ reserve: number;
   /** 주 초반에 바로 일을 시작할 수 있게 미리 허용하는 몫 */ headStart: number;
   /** 5시간 창 사용률이 이 값 이상이면 그 창이 풀릴 때까지 새 사이클을 시작하지 않는다 */ fiveHourMax: number;
+  /** 주간 사용률이 이 값 전이면 나눠 쓰지 않고 그대로 진행한다(기본 0.8). 이 값부터 초기화까지 시간 비율로 나눠 쓴다 */ startAt: number;
 }
 export type PaceDecision = { wait: false; note: string } | { wait: true; until: number; reason: string };
 
 export const WEEK_MS = 7 * 24 * 3600 * 1000;
-export const DEFAULT_PACE: PaceOptions = { reserve: 0.1, headStart: 0.05, fiveHourMax: 0.9 };
+export const DEFAULT_PACE: PaceOptions = { reserve: 0.1, headStart: 0.05, fiveHourMax: 0.9, startAt: 0.8 };
 const SLACK_MS = 60 * 1000; // 초기화 시각 직후 1분 여유를 두고 다시 시작
 
 let latest: UsageSnapshot | null = null;
@@ -53,7 +54,7 @@ export function onUsage(f: (s: UsageSnapshot) => void): () => void { listeners.a
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const at = (ms: number) => new Date(ms).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' });
 
-/** 지금 새 사이클을 시작해도 되는지: 주간 창에서 지난 시간 비율만큼만 쓰게 한다 */
+/** 지금 새 사이클을 시작해도 되는지: 주간 사용률이 조절 시작값(기본 80%)을 넘으면 지난 시간 비율만큼만 쓰게 한다 */
 export function paceDecision(s: UsageSnapshot | null, now: number, o: PaceOptions = DEFAULT_PACE): PaceDecision {
   if (!s) return { wait: false, note: '아직 사용률을 받지 못했습니다(첫 Claude 호출 뒤 표시)' };
   const f = s.fiveHour;
@@ -66,6 +67,9 @@ export function paceDecision(s: UsageSnapshot | null, now: number, o: PaceOption
   const start = w.resetsAt - WEEK_MS;
   const frac = Math.min(1, Math.max(0, (now - start) / WEEK_MS));
   const allowed = Math.min(cap, cap * frac + o.headStart);
+  // 조절 시작 사용률 전에는 나눠 쓰지 않는다(남길 몫이 더 크면 그 몫까지만)
+  const free = Math.min(cap, Math.min(1, Math.max(0, o.startAt ?? 0)));
+  if (w.utilization < free) return { wait: false, note: `주간 ${pct(w.utilization)} 사용 · ${pct(free)}부터 나눠 씀 · 초기화 ${at(w.resetsAt)} — 조절 전` };
   const tail = `주간 ${pct(w.utilization)} 사용 · 지금까지 쓸 몫 ${pct(allowed)} · 초기화 ${at(w.resetsAt)}`;
   if (w.utilization < allowed) return { wait: false, note: `${tail} — 정상 속도` };
   // 쓸 몫이 지금 사용률을 따라잡는 시각까지 기다린다(앱 몫을 다 썼으면 초기화까지)

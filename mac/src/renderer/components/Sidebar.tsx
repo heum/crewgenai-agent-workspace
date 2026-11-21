@@ -335,13 +335,16 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
       <p className="muted small">앱이 만든 실행 결과(RESULT-…md)·Codex 리뷰 파일은 최근 실행 5개만 파일로 남깁니다(내용은 앱 기록에 그대로). 직원이 사이클마다 만든 문서(C100_FRONT.md, c98-screens/ 같은 docs 폴더 안 사이클 번호 문서)는 10사이클마다 문서 담당이 폴더별 HISTORY.md로 요약하고, 그 뒤 git에 커밋된 원본만 지웁니다(git 기록으로 되살릴 수 있음). 커밋되지 않은 파일과 최근 3사이클 문서는 지우지 않습니다.</p>
       <h3>사용량 속도 조절 (Max 요금제)</h3>
       <label className="check">
-        <input type="checkbox" checked={s.paceEnabled !== false} onChange={(e) => setS({ ...s, paceEnabled: e.target.checked })} /> 주간 한도를 초기화 시각까지 나눠 쓰기 (권장)
+        <input type="checkbox" checked={s.paceEnabled !== false} onChange={(e) => setS({ ...s, paceEnabled: e.target.checked })} /> 주간 사용률이 높아지면 초기화 시각까지 나눠 쓰기 (권장)
       </label>
       <ul className="muted small auto-list">
         <li>Claude CLI가 호출마다 알려 주는 실제 사용률(주간·5시간)로 판단합니다. 추정하지 않습니다.</li>
-        <li>주간 창에서 지난 시간 비율만큼만 씁니다(주 초반 5%는 바로 허용). 앞서 있으면 따라잡을 때까지 새 사이클을 시작하지 않고, 5시간 사용률이 90% 이상이면 그 창이 풀릴 때까지 쉽니다. 진행 중인 단계는 끊지 않습니다.</li>
+        <li>주간 사용률이 아래 '조절 시작'(기본 80%) 전이면 조절하지 않고 그대로 진행합니다. 그 뒤로는 주간 창에서 지난 시간 비율만큼만 씁니다. 앞서 있으면 따라잡을 때까지 새 사이클을 시작하지 않고, 5시간 사용률이 90% 이상이면 그 창이 풀릴 때까지 쉽니다. 진행 중인 단계는 끊지 않습니다.</li>
         <li>사용률은 계정 전체 값이라, 직접 쓰는 Claude 사용량도 포함됩니다. 그래서 아래 몫은 앱이 쓰지 않고 남깁니다.</li>
       </ul>
+      <Field label="조절 시작 (주간 사용률 %)" hint="이 사용률이 되기 전에는 나눠 쓰지 않음. 0이면 주 초반부터 나눠 씀">
+        <input className="input" type="number" min={0} max={100} value={s.paceStartPct ?? 80} onChange={(e) => setS({ ...s, paceStartPct: Number(e.target.value) })} />
+      </Field>
       <Field label="직접 쓸 몫·여유 (%)" hint="주간 한도 중 앱이 쓰지 않고 남길 몫. 0~50">
         <input className="input" type="number" min={0} max={50} value={s.paceReservePct ?? 10} onChange={(e) => setS({ ...s, paceReservePct: Number(e.target.value) })} />
       </Field>
