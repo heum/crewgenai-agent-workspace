@@ -1920,8 +1920,8 @@ export class MissionRunner {
       for (const o of outs) if (!scope.some((sc) => within(o.path, sc)) && roots.some((w) => within(o.path, w))) scope.push(o.path);
       const x = 120 + i * 360;
       const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn });
-      const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800 });
-      const rv = mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria,
+      const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, lightSkip: true });
+      const rv = mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true,
         instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 재작업(changes_requested)은 완료 조건을 충족하지 못했거나, 근거 문서와 다르게 만들었거나, P0·P1(정확성·보안·요구 위반) 지적이 타당할 때만 요청한다. P2 같은 경미한 지적·표현·완성도 지적은 재작업 사유가 아니다. 승인하되 summary에 "남은 경미 지적"으로 적는다. 근거 없는 지적은 이유를 들어 기각한다.' });
       nodes.push(a, cx, rv);
       e(a, cx); e(cx, rv); e(rv, a, 'fail');
@@ -1997,6 +1997,10 @@ export class MissionRunner {
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
       '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',
+      '- 작업은 기능 단위로 크게 나눈다: 작업 하나가 기능 하나(또는 함께 닫히는 기능 묶음)를 코드·시험·확인까지 끝낸다. 같은 기능을 단계별(고치기 → 측정 → 보고)로 여러 작업·여러 사이클에 나누지 않는다. 지난 사이클에 끝나지 않은 기능은 남은 것 전부를 이번 한 작업에 넣는다.',
+      '- writeScope는 그 기능을 끝내는 데 건드릴 수 있는 폴더(공통 스타일·시험·그 기능의 문서 포함)까지 허용 경로 안에서 넉넉히 잡는다. 좁게 잡아 허용 경로 밖 변경으로 되돌리고 다음 사이클에 다시 하는 일을 만들지 않는다.',
+      '- 증빙·문서만 다루는 작업을 따로 만들지 않는다: 시연 안내·상태 문서·버전 표식 갱신, 측정·판독 보고는 그 기능을 끝내는 작업의 지시 안에 넣어 한 번에 한다. 사용자 지시가 직접 요구한 문서(보고·설계)만 예외다. 문서·화면 사진만 바꾼 작업은 앱이 Codex 리뷰·재검토를 건너뛴다.',
+      '- 지난 사이클 리뷰의 경미한 지적(P2)을 모아 고치는 작업을 만들지 않는다. P0·P1 지적은 그 기능의 작업에 넣어 함께 고친다.',
       '- 화면 모양(버튼·간격·목록·배지·문구 배치)을 바꾸는 작업은 한 작업에 화면 하나로 나눈다. doneCriteria는 화면 기준 문서(프런트 저장소의 docs/UI_STANDARD.md)의 항목처럼 눈으로 셀 수 있게 쓴다(예: "이 영역의 주 버튼은 하나", "모바일 375px에서 가로로 넘치지 않음"). "예쁘게·깔끔하게" 같은 말을 완료 조건으로 쓰지 않는다. 작업 지시에 기준 문서를 먼저 읽으라고 적고, 재검토 기준에 기준 문서의 [확정]·[현재] 항목과 대조하라고 적는다.',
       '- 시연 서버에 새 코드를 띄워야 하면 포트·빌드 폴더를 바꾸지 않는다: 시연 목록의 상태 확인 주소(health, 예: /api/demo/build-info/<새 표시>)만 새 코드의 표시로 바꾼다. 앱이 판단 직전 확인에서 자기가 켠 서버가 예전 코드(그 주소에 404)면 끄고 다시 켠다. 직원은 서버를 끄거나 새 포트로 옮기는 우회를 하지 않는다(사용자가 직접 띄운 서버만 예외로 사용자에게 알린다).',
       '- 문서는 쌓지 말고 갱신한다: 진행·시연·검증 보고는 사이클마다 새 파일(C101_FRONT.md, cycle-3.md 같은)을 만들지 말고 주제별 문서 하나(예: docs/front/STATUS.md)를 고쳐 최신 상태로 둔다. 화면 사진은 폴더 하나(예: docs/front/screens-latest)에 덮어쓴다. 지난 기록은 git·앱 기록과 이미 있는 지난 문서에 남는다. 작업 지시에 지난 사이클 문서를 통째로 읽으라고 쓰지 말고, 필요한 것만 최신 문서(있으면 HISTORY.md)에서 찾게 한다.',

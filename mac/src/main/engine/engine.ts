@@ -21,7 +21,7 @@ import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, f
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { buildReport } from './report';
-import { allowedRoots, effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
+import { allowedRoots, docsOnly, effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
 import { looksSecretName } from '../git';
 import { laneBlocks } from './lanes';
 import { prepareSkillBundle, unpinSkillBundle } from '../skills';
@@ -626,8 +626,8 @@ export class Engine {
       case 'input': out = { status: 'ok', summary: `기획 전달(목표·완료 조건·참고 자료 ${plan.referenceDocs.length + plan.priorOutputs.length}건)`, outputs: [...plan.referenceDocs, ...plan.priorOutputs] }; break;
       case 'agent': out = await this.runAgentNode(runId, graph, node, visit, plan, upstream, feedback); break;
       case 'check': out = await this.runCheckNode(runId, node, visit, plan); break;
-      case 'codexReview': out = await this.runCodexNode(runId, node, visit, plan, upstream); break;
-      case 'review': out = await this.runReviewNode(runId, node, visit, plan, upstream, preds.map((p) => graph.nodes.find((n) => n.id === p)!).filter(Boolean), graph); break;
+      case 'codexReview': out = this.lightSkip(runId, graph, node, upstream) ?? await this.runCodexNode(runId, node, visit, plan, upstream); break;
+      case 'review': out = this.lightSkip(runId, graph, node, upstream) ?? await this.runReviewNode(runId, node, visit, plan, upstream, preds.map((p) => graph.nodes.find((n) => n.id === p)!).filter(Boolean), graph); break;
       case 'branch': out = this.evalBranch(node, state, plan); break;
       case 'merge': out = this.runMerge(runId, graph, node, plan); await this.commitFor(runId, node, plan, out.outputs, { name: 'CREWGENAI 00 총괄(결과물 취합)', email: 'agent-00@crewgenai.local' }, '00 총괄(결과물 취합)'); break;
       case 'userReview': out = await this.runUserReview(runId, node, visit); break;
@@ -827,6 +827,26 @@ export class Engine {
     // 막는 결함 없이 수정 요청만 낸 경우(경미한 지적뿐)는 재작업하지 않고 후속으로 넘긴다
     if (v.verdict === 'changes_requested' && !issues.length && followUps.length) return { verdict: 'approve', summary: String(v.summary ?? ''), issues: [], followUps };
     return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps };
+  }
+
+  /**
+   * 미션이 만든 리뷰 단계(lightSkip)는 앞 작업이 문서·화면 사진만 바꿨으면 건너뛴다(코드·시험·설정을 하나라도 바꿨으면 리뷰한다).
+   * 문서·증빙을 고칠 때마다 Codex 리뷰와 재검토가 붙어 지적이 다음 사이클의 일이 되는 것을 막는다.
+   */
+  private lightSkip(runId: string, graph: WorkGraph, node: GraphNode, upstream: string[]) {
+    if (!node.lightSkip) return null;
+    const rev = new Map<string, string[]>();
+    for (const e of graph.edges) if (e.kind === 'next') rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]);
+    const authors = new Set<string>(); const seen = new Set<string>(); const st = [...(rev.get(node.id) ?? [])];
+    while (st.length) {
+      const x = st.pop()!; if (seen.has(x)) continue; seen.add(x);
+      const n = graph.nodes.find((g) => g.id === x);
+      if (n?.kind === 'agent') authors.add(x); else if (n?.kind === 'codexReview' || n?.kind === 'review') st.push(...(rev.get(x) ?? []));
+    }
+    if (!authors.size) return null;
+    const changed = this.s.runAttempts(runId).filter((a) => authors.has(a.nodeId) && a.role === 'author').flatMap((a) => a.changedFiles);
+    if (!docsOnly(changed)) return null;
+    return { status: 'ok' as const, summary: `건너뜀: 문서·화면 사진만 바뀜(${new Set(changed).size}개) — 코드·시험 변경이 없어 리뷰하지 않음`, outputs: upstream };
   }
 
   /** Codex 리뷰: 읽기 전용 샌드박스·구조화 출력. 결과 보고서를 산출물 위치에 남겨 다음 Claude 재검토의 입력으로 넘긴다. */

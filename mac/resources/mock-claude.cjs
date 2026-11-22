@@ -10,6 +10,7 @@
 //   [[mock:gaps-once:이름]]   오퍼레이터 계획이 처음 한 번만 '근거 문서 보완 요청(gaps)'을 돌려줌
 //   [[mock:limit-once:이름]]  처음 한 번만 사용 한도 도달(rate_limit_event rejected + is_error)로 끝남. 오퍼레이터가 먼저 맞고, 작업 지시에는 '이름-agent'로 넘긴다
 //   [[mock:todo-first]]      첫 작성에는 TODO를 남기고 재작업 요청을 받으면 제거
+//   [[mock:code]]            작성 직원이 산출물 옆에 코드 파일(.mjs)도 하나 만든다(코드 변경이 있어야 붙는 리뷰 시험)
 //   [[mock:deny:bash:명령]] / [[mock:deny:read:경로]] 작성 직원이 권한 거부로 실패(오퍼레이터가 작업 지시에 넘김)
 //   [[mock:learn:global|project:preference|environment|rule|fact:문장]] 학습 정리 때 배운 것으로 돌려줌
 //   [[mock:dir:NAME]]        오퍼레이터가 NAME/docs/mission 아래에 쓰도록 계획(여러 저장소 시험)
@@ -193,7 +194,7 @@ async function main() {
     const needCmd = (user.match(/\[\[mock:needs:([^\]]+)\]\]/) || [])[1];
     const plan = ask ? { summary: '정보 부족', question: '어느 문서를 기준으로 할까요?', tasks: [] } : {
       summary: `사이클 ${cyc} 작업 1개`, question: '',
-      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
+      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
         writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [],
         ...(needCmd ? { needs: { commands: [needCmd], readPaths: [] } } : {}) }] };
     if (!ask && user.includes('[[mock:two-tasks]]')) plan.tasks.push({ title: `보조 문서 ${cyc}`, agentCode: code, instructions: `${mdir}-b/cycle-${cyc}.md를 작성한다.`, writeScope: [`${mdir}-b`], outputs: [{ path: `${mdir}-b/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: '작성', checkCommand: [] });
@@ -276,6 +277,7 @@ async function main() {
     else body = `# 모의 산출물\n\n${rework ? 'FIXED: 재작업 요청을 반영했습니다.\n' : ''}${todo ? 'TODO: 남은 작업\n' : '내용 작성 완료\n'}`;
     fs.mkdirSync(path.dirname(path.resolve(cwd, o.rel)), { recursive: true });
     fs.writeFileSync(path.resolve(cwd, o.rel), body);
+    if (prompt.includes('[[mock:code]]') && editAllowed(`${o.rel}.mjs`)) fs.writeFileSync(path.resolve(cwd, `${o.rel}.mjs`), `export const done = ${!todo};\n`);
     out({ type: 'user', session_id: sessionId, message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'File written' }] } });
   }
   for (const m of prompt.matchAll(/\[\[mock:try-edit:(.+?)\]\]/g)) {

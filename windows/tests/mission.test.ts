@@ -67,7 +67,7 @@ describe('오퍼레이터 루프', () => {
 
   it('지시 → 계획 → 수행 → Codex 리뷰 → Claude 재검토(재작업) → 판단(계속) → 다음 사이클 → 완료 보고', async () => {
     const { dir, svc, p } = setup();
-    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] 사이클마다 문서를 정리하라');
+    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 사이클마다 문서를 정리하라');
     const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
     expect(m.status).toBe('done');
     expect(m.cycle).toBe(2);
@@ -85,6 +85,27 @@ describe('오퍼레이터 루프', () => {
     expect(existsSync(join(dir, 'docs/mission/cycle-2.md'))).toBe(true);
     // Codex 리뷰 보고서가 산출물로 남는다
     expect(r1.artifacts.some((a) => a.relPath.includes('reviews/codex-'))).toBe(true);
+    svc.close();
+  });
+
+  it('문서만 바꾼 작업은 Codex 리뷰와 재검토를 건너뛴다(코드·시험을 바꾸면 리뷰한다)', async () => {
+    const { validate } = { validate: await import('../src/main/engine/validate') };
+    expect(validate.docsOnly(['docs/STATUS.md', 'docs/screens/a.png'])).toBe(true);
+    expect(validate.docsOnly(['docs/STATUS.md', 'src/app/page.tsx'])).toBe(false);
+    expect(validate.docsOnly(['docs/a.md', 'tests/a.test.ts'])).toBe(false);
+    expect(validate.docsOnly(['docs/result.json'])).toBe(false);
+    expect(validate.docsOnly([])).toBe(false); // 바뀐 파일을 모르면 리뷰한다
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    expect(m.status).toBe('done');
+    const r1 = svc.engine.detail(svc.missions.detail(m.id).cycles[0].runId);
+    expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(1);
+    expect(r1.attempts.filter((a) => a.role === 'codex' || a.role === 'reviewer').length).toBe(0);
+    expect(r1.reviews.length).toBe(0);
+    const skipped = r1.graph.nodes.filter((n) => n.kind === 'codexReview' || n.kind === 'review').map((n) => r1.nodes.find((x) => x.nodeId === n.id));
+    expect(skipped.length).toBe(2);
+    for (const n of skipped) { expect(n?.status).toBe('succeeded'); expect(n?.summary).toContain('건너뜀'); }
     svc.close();
   });
 
@@ -360,7 +381,7 @@ describe('git: 직원별 커밋·스냅샷·되돌리기', () => {
     const { dir, svc, p } = setup();
     const g = (...a: string[]) => require('node:child_process').execFileSync('git', ['-C', dir, ...a]).toString();
     require('node:fs').writeFileSync(join(dir, 'user-wip.txt'), '사용자가 작업 중인 파일');
-    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] 문서를 정리하라');
+    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 문서를 정리하라');
     await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
     const log = g('log', '--format=%an|%s');
     expect(log).toMatch(/CREWGENAI 00 총괄\|\[CREWGENAI\] 00 총괄 · 문서 작성 1/);

@@ -102,6 +102,7 @@ export interface GraphNode {
   timeoutSec: number;
   condition: BranchCondition | null;
   entryCondition: 'all' | 'any'; // 여러 선행 단계가 있을 때 진입 조건
+  lightSkip?: boolean; // true면(미션이 만든 Codex 리뷰·재검토 단계) 앞 작업이 문서·화면 사진만 바꿨을 때 이 단계를 건너뛴다
   skipInlineReview?: boolean; // true면 노드 안 독립 검토를 건너뛴다(다음 단계에 Codex 리뷰·Claude 재검토가 있을 때)
 }
 

@@ -186,3 +186,10 @@ export function validateGraph(g: WorkGraph, agents: Agent[], plan: PlanFields): 
 export function edgesFrom(g: WorkGraph, id: string, kind?: GraphEdge['kind']) {
   return g.edges.filter((e) => e.source === id && (!kind || e.kind === kind));
 }
+
+/** 리뷰를 건너뛰어도 되는 파일: 문서·화면 사진·기록(코드·시험·설정·데이터는 아님) */
+const LIGHT_EXT = /\.(md|txt|png|jpe?g|gif|webp|pdf|log|csv)$/i;
+/** 바뀐 파일이 문서·증빙뿐인가. 바뀐 파일을 알 수 없으면(빈 목록) 아니라고 본다(리뷰한다). */
+export function docsOnly(files: string[]): boolean {
+  return files.length > 0 && files.every((f) => LIGHT_EXT.test(f) || normRel(f).split('/').includes('.tmp'));
+}
