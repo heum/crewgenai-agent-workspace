@@ -214,6 +214,8 @@ export interface MissionDeps {
   testLocalSockets?: () => boolean; // 시험·시연용 로컬 포트 열기 허용
   /** 기술 권한 막힘(명령 허용·경로 읽기)을 사용자에게 묻지 않고 오퍼레이터가 다른 방법을 찾게 한다 */
   techAuto?: () => boolean;
+  /** 검증 방식: close(기본)는 작업을 닫을 때 다른 직원의 검증 한 번, full은 작업마다 Codex 리뷰 + Claude 재검토 */
+  reviewMode?: () => 'close' | 'full';
   docTidy?: () => boolean;
   /** 매일 dev 반영이 켜져 있으면 앱이 하루 한 번 알아서 커밋·push한다: 오퍼레이터는 커밋 승인 요청을 내지 않는다 */
   devSync?: () => boolean;
@@ -1937,6 +1939,7 @@ export class MissionRunner {
     const refIn = [...snaps.map((r) => r.dir), ...atts];
     const attNote = atts.length ? `\n\n[사용자가 지시에 첨부한 파일(읽기 전용)]\n${atts.map((f) => `- ${f}`).join('\n')}\n작업에 관련 있으면 먼저 읽고 반영한다.` : '';
     const refNote = attNote + (snaps.length ? `\n\n[참고 사이트 스냅샷(읽기 전용, 로그인 없이 본 공개 화면)]\n${snaps.map((r) => `- ${r.title || r.url} (${r.url}): ${r.dir}/page.png(화면 사진), ${r.dir}/page.md(본문·링크)`).join('\n')}\n화면 구성·정보 배치·용어를 참고하되 그대로 베끼지 않는다(문구·디자인은 우리 서비스에 맞게 다시 쓴다).` : '');
+    const full = this.d.reviewMode?.() === 'full';
     p.tasks.forEach((t, i) => {
       const author = by(t.agentCode) ?? by('00');
       if (!author) throw new Error(`담당 직원 ${t.agentCode}를 찾을 수 없습니다.`);
@@ -1948,12 +1951,15 @@ export class MissionRunner {
       // 예) 수정 경로 web/src에 시험 파일 web/tests/x.test.mjs를 산출물로 낸 경우. 허용 경로 밖이면 그대로 두어 검사에서 걸린다.
       for (const o of outs) if (!scope.some((sc) => within(o.path, sc)) && roots.some((w) => within(o.path, w))) scope.push(o.path);
       const x = 120 + i * 360;
-      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn });
+      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn, timeoutSec: full ? 1800 : 3600 });
       const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, lightSkip: true });
-      const rv = mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true,
-        instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 재작업(changes_requested)은 완료 조건을 충족하지 못했거나, 근거 문서와 다르게 만들었거나, P0·P1(정확성·보안·요구 위반) 지적이 타당할 때만 요청한다. P2 같은 경미한 지적·표현·완성도 지적은 재작업 사유가 아니다. 승인하되 summary에 "남은 경미 지적"으로 적는다. 근거 없는 지적은 이유를 들어 기각한다.' });
-      nodes.push(a, cx, rv);
-      e(a, cx); e(cx, rv); e(rv, a, 'fail');
+      // 검증 방식 close(기본): 작업(기능) 하나에 다른 직원의 검증 한 번. 작업마다 붙던 Codex 리뷰는 넣지 않는다(지적이 다음 사이클의 일이 되는 것을 막음).
+      const rv = full ? mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true,
+        instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 재작업(changes_requested)은 완료 조건을 충족하지 못했거나, 근거 문서와 다르게 만들었거나, P0·P1(정확성·보안·요구 위반) 지적이 타당할 때만 요청한다. P2 같은 경미한 지적·표현·완성도 지적은 재작업 사유가 아니다. 승인하되 summary에 "남은 경미 지적"으로 적는다. 근거 없는 지적은 이유를 들어 기각한다.' })
+        : mk('review', `검증: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 260, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true, inputs: outs.map((o) => o.path),
+          instructions: '이 작업(기능)을 닫는 검증이다. 시작 전에 정한 완료 조건을 하나씩 근거와 직접 대조해 통과·실패를 낸다. 근거는 직접 연 것만 쓴다: 시험 결과 파일, 화면 사진 파일(Read로 열어 본다), 바뀐 코드. 작성자의 보고 문장은 근거가 아니다. 통과하지 못한 완료 조건이 있거나 P0·P1(정확성·보안·요구 위반) 결함이 있을 때만 changes_requested를 내고, issues에 어느 조건이 왜 실패인지와 고칠 것을 쓴다. 다듬기·표현·있으면 좋은 추가 검증은 followUps에 적고 승인한다. summary 첫 줄에 "완료 조건 N개 중 M개 통과"를 쓴다.' });
+      if (full) { nodes.push(a, cx, rv); e(a, cx); e(cx, rv); } else { nodes.push(a, rv); e(a, rv); }
+      e(rv, a, 'fail');
       let last = rv;
       const ck0 = this.safeCheck(t.checkCommand, author, plan.folder);
       if (t.checkCommand.length && !ck0) refused.push(`${t.title}: ${t.checkCommand.join(' ')}`);
@@ -1965,7 +1971,7 @@ export class MissionRunner {
     });
     nodes.push(merge);
     const wire = (sequential: boolean) => {
-      const es = [...edges]; // 작업 내부 연결(작성 → Codex → Claude 재검토 → 검사, 실패 시 작성으로)
+      const es = [...edges]; // 작업 내부 연결(작성 → 검증(full이면 Codex → Claude 재검토) → 검사, 실패 시 작성으로)
       chains.forEach((c, i) => {
         if (sequential && i > 0) es.push({ id: randomUUID(), source: chains[i - 1].last.id, target: c.first.id, kind: 'next' });
         else es.push({ id: randomUUID(), source: inp.id, target: c.first.id, kind: 'next' });
@@ -2025,7 +2031,10 @@ export class MissionRunner {
       ...this.refSection(m),
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
-      '- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 Codex 리뷰와 다른 직원의 Claude 재검토를 거친다.',
+      `- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 ${this.d.reviewMode?.() === 'full' ? 'Codex 리뷰와 다른 직원의 Claude 재검토를 거친다' : '작업을 닫을 때 다른 직원의 검증을 한 번 거친다(완료 조건별 통과·실패)'}.`,
+      '- 한 기능은 한 직원이 끝까지 맡는다: 지난 사이클에 그 기능을 맡았던 직원에게 이어서 맡긴다(맥락이 이어지게). 한 기능을 여러 직원에게 나누지 않는다.',
+      '- 동시에 진행하는 작업은 서로 독립인 것만 둔다: 저장소나 폴더가 겹치지 않고, 한 작업이 다른 작업의 결과를 기다리지 않는다. 순서 의존이 있으면(예: 측정 → 그 결과로 문서) 한 작업으로 합쳐 한 직원에게 맡긴다.',
+      '- doneCriteria는 검증 직원이 통과·실패를 낼 수 있게 번호를 붙여 3~7개로 쓴다. 화면 기능은 "어느 화면에서 무엇을 누르면 무엇이 보인다"로 쓰고, 그 화면 사진 파일을 outputs에 넣는다(작성 직원이 떠 있는 서버에서 직접 눌러 찍는다).',
       '- 작업은 기능 단위로 크게 나눈다: 작업 하나가 기능 하나(또는 함께 닫히는 기능 묶음)를 코드·시험·확인까지 끝낸다. 같은 기능을 단계별(고치기 → 측정 → 보고)로 여러 작업·여러 사이클에 나누지 않는다. 지난 사이클에 끝나지 않은 기능은 남은 것 전부를 이번 한 작업에 넣는다.',
       '- writeScope는 그 기능을 끝내는 데 건드릴 수 있는 폴더(공통 스타일·시험·그 기능의 문서 포함)까지 허용 경로 안에서 넉넉히 잡는다. 좁게 잡아 허용 경로 밖 변경으로 되돌리고 다음 사이클에 다시 하는 일을 만들지 않는다.',
       '- 증빙·문서만 다루는 작업을 따로 만들지 않는다: 시연 안내·상태 문서·버전 표식 갱신, 측정·판독 보고는 그 기능을 끝내는 작업의 지시 안에 넣어 한 번에 한다. 사용자 지시가 직접 요구한 문서(보고·설계)만 예외다. 문서·화면 사진만 바꾼 작업은 앱이 Codex 리뷰·재검토를 건너뛴다.',

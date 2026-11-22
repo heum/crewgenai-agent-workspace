@@ -81,6 +81,7 @@ describe('오퍼레이터 루프', () => {
 
   it('지시 → 계획 → 수행 → Codex 리뷰 → Claude 재검토(재작업) → 판단(계속) → 다음 사이클 → 완료 보고', async () => {
     const { dir, svc, p } = setup();
+    svc.saveSettings({ reviewMode: 'full' }); // 작업마다 Codex 리뷰 + 재검토(예전 방식)
     const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 사이클마다 문서를 정리하라');
     const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
     expect(m.status).toBe('done');
@@ -102,6 +103,21 @@ describe('오퍼레이터 루프', () => {
     svc.close();
   });
 
+  it('기본 검증 방식: 작업마다 Codex 리뷰를 붙이지 않고, 닫을 때 다른 직원의 검증 한 번(실패하면 재작업)', async () => {
+    const { dir, svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    expect(m.status).toBe('done');
+    const r1 = svc.engine.detail(svc.missions.detail(m.id).cycles[0].runId);
+    expect(r1.graph.nodes.some((n) => n.kind === 'codexReview')).toBe(false);
+    expect(r1.graph.nodes.filter((n) => n.kind === 'review').map((n) => n.label.startsWith('검증: '))).toEqual([true]);
+    expect(r1.attempts.filter((a) => a.role === 'codex').length).toBe(0);
+    expect(r1.reviews.filter((r) => r.kind === 'agent').map((r) => r.verdict)).toEqual(['changes_requested', 'approve']);
+    expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(2);
+    expect(readFileSync(join(dir, 'docs/mission/cycle-1.md'), 'utf8')).toContain('FIXED');
+    svc.close();
+  });
+
   it('문서만 바꾼 작업은 Codex 리뷰와 재검토를 건너뛴다(코드·시험을 바꾸면 리뷰한다)', async () => {
     const { validate } = { validate: await import('../src/main/engine/validate') };
     expect(validate.docsOnly(['docs/STATUS.md', 'docs/screens/a.png'])).toBe(true);
@@ -118,7 +134,7 @@ describe('오퍼레이터 루프', () => {
     expect(r1.attempts.filter((a) => a.role === 'codex' || a.role === 'reviewer').length).toBe(0);
     expect(r1.reviews.length).toBe(0);
     const skipped = r1.graph.nodes.filter((n) => n.kind === 'codexReview' || n.kind === 'review').map((n) => r1.nodes.find((x) => x.nodeId === n.id));
-    expect(skipped.length).toBe(2);
+    expect(skipped.length).toBe(1); // 기본 검증 방식에는 검증 단계 하나만 있다
     for (const n of skipped) { expect(n?.status).toBe('succeeded'); expect(n?.summary).toContain('건너뜀'); }
     svc.close();
   });
@@ -395,6 +411,7 @@ describe('git: 직원별 커밋·스냅샷·되돌리기', () => {
     const { dir, svc, p } = setup();
     const g = (...a: string[]) => require('node:child_process').execFileSync('git', ['-C', dir, ...a]).toString();
     require('node:fs').writeFileSync(join(dir, 'user-wip.txt'), '사용자가 작업 중인 파일');
+    svc.saveSettings({ reviewMode: 'full' });
     const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 문서를 정리하라');
     await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
     const log = g('log', '--format=%an|%s');

@@ -240,6 +240,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           paceReservePct: s.paceReservePct ?? 10,
           paceStartPct: s.paceStartPct ?? 80,
           commandLevel: s.commandLevel ?? 'medium',
+          reviewMode: s.reviewMode === 'full' ? 'full' : 'close',
           ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
         keyArg,
@@ -343,6 +344,12 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <li>주간 사용률이 아래 '조절 시작'(기본 80%) 전이면 조절하지 않고 그대로 진행합니다. 그 뒤로는 주간 창에서 지난 시간 비율만큼만 씁니다. 앞서 있으면 따라잡을 때까지 새 사이클을 시작하지 않고, 5시간 사용률이 90% 이상이면 그 창이 풀릴 때까지 쉽니다. 진행 중인 단계는 끊지 않습니다.</li>
         <li>사용률은 계정 전체 값이라, 직접 쓰는 Claude 사용량도 포함됩니다. 그래서 아래 몫은 앱이 쓰지 않고 남깁니다.</li>
       </ul>
+      <Field label="검증 방식" hint="미션이 작업 결과를 확인하는 방법">
+        <select className="input" value={s.reviewMode === 'full' ? 'full' : 'close'} onChange={(e) => setS({ ...s, reviewMode: e.target.value as 'close' | 'full' })}>
+          <option value="close">기능을 닫을 때 한 번 (권장 · 빠름)</option>
+          <option value="full">작업마다 Codex 리뷰 + 재검토 (느림 · 사용량 많음)</option>
+        </select>
+      </Field>
       <Field label="조절 시작 (주간 사용률 %)" hint="이 사용률이 되기 전에는 나눠 쓰지 않음. 0이면 주 초반부터 나눠 씀">
         <input className="input" type="number" min={0} max={100} value={s.paceStartPct ?? 80} onChange={(e) => setS({ ...s, paceStartPct: Number(e.target.value) })} />
       </Field>
