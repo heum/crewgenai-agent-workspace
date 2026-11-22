@@ -139,15 +139,34 @@ export function phaseLines(p: MissionWorkPlan | null | undefined): string[] {
   return (p?.phases ?? []).map((ph) => { const g = countItems((p?.items ?? []).filter((i) => i.phase === ph.id)); return `${ph.id} ${ph.title}: ${g.done}/${g.total} 완료(${g.pct}%)${g.blocked ? ` · 막힘 ${g.blocked}` : ''}`; });
 }
 
-/** 오퍼레이터 계획·판단 프롬프트에 넣는 진척: 단계별 비율과, 완료되지 않은 기능(최대 30개) */
-export function workPlanSection(p: MissionWorkPlan | null | undefined): string[] {
+/** 사람이 직접 봐야만 알 수 있는 것만 남은 기능: 진척 관리 직원이 메모를 이 말로 시작한다(진척 메뉴에 한 번에 모아 보여 준다) */
+export const USER_CHECK = '사용자 확인:';
+export const needsUser = (i: Pick<WorkItem, 'note'>) => (i.note ?? '').trimStart().startsWith(USER_CHECK);
+/** '검증 중'이 이만큼 쌓이면 새 기능을 시작하지 않고 닫는 일만 한다 */
+export const CLOSE_FIRST = 5;
+
+/** 오퍼레이터 계획·판단 프롬프트에 넣는 진척: 단계별 비율과, 완료되지 않은 기능(최대 30개). 닫을 수 있는 기능(막힘·검증 중, 오래 머문 것)부터 보여 준다. */
+export function workPlanSection(p: MissionWorkPlan | null | undefined, cycle?: number): string[] {
   if (!p?.items.length) return ['## 프로젝트 진척(진척 관리)', '- 아직 없음(진척 관리 직원이 이번 판단 뒤에 만든다).', ''];
   const open = p.items.filter((i) => i.status !== 'done');
-  const order: WorkStatus[] = ['blocked', 'doing', 'verifying', 'todo'];
-  open.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  const waiting = open.filter(needsUser); const work = open.filter((i) => !needsUser(i));
+  const order: WorkStatus[] = ['blocked', 'verifying', 'doing', 'todo'];
+  work.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status) || a.updatedCycle - b.updatedCycle);
+  const toClose = work.filter((i) => i.status === 'verifying' || i.status === 'blocked').length;
+  const age = (i: WorkItem) => (cycle && cycle > i.updatedCycle ? ` · ${cycle - i.updatedCycle}사이클째 그대로` : '');
+  const line = (i: WorkItem) => `- ${i.id} [${WORK_STATUS_LABEL[i.status]}${age(i)}] ${i.phase ?? ''} ${i.title}${i.refs?.length ? ` (${i.refs.join(', ')})` : ''} — 완료 기준: ${i.criteria || '(없음)'}${i.note ? ` · 메모: ${i.note}` : ''}`;
   return ['## 프로젝트 진척(전체 완성도 — 진척 관리 직원이 갱신)', `- ${progressLine(p)}`, ...phaseLines(p).map((l) => `- ${l}`),
-    '### 남은 기능(막힘·진행·검증 중 먼저, 최대 30개)',
-    ...open.slice(0, 30).map((i) => `- ${i.id} [${WORK_STATUS_LABEL[i.status]}] ${i.phase ?? ''} ${i.title}${i.refs?.length ? ` (${i.refs.join(', ')})` : ''} — 완료 기준: ${i.criteria || '(없음)'}${i.note ? ` · 메모: ${i.note}` : ''}`),
-    ...(open.length > 30 ? [`- … 그 밖에 ${open.length - 30}개`] : []),
-    '- 계획은 지금 단계의 남은 기능부터, 막힘·검증 중 기능을 먼저 풀도록 짠다. 진척 목록은 진척 관리 직원이 갱신한다.', ''];
+    '### 남은 기능(닫을 것 먼저: 막힘·검증 중은 오래 머문 순, 최대 30개)',
+    ...work.slice(0, 30).map(line),
+    ...(work.length > 30 ? [`- … 그 밖에 ${work.length - 30}개`] : []),
+    ...(waiting.length ? [`### 사용자 확인을 기다리는 기능 ${waiting.length}개(작업으로 다시 넣지 않는다)`, ...waiting.slice(0, 10).map((i) => `- ${i.id} ${i.title} — ${i.note}`)] : []),
+    '### 닫기 우선 규칙',
+    toClose >= CLOSE_FIRST
+      ? `- 닫지 못한 기능(검증 중·막힘)이 ${toClose}개다. 이번 사이클의 작업은 모두 이 기능들을 '완료'로 닫는 일로 짠다. '시작 전' 기능은 시작하지 않는다(사용자 추가 지시가 직접 요구한 것만 예외).`
+      : `- 닫지 못한 기능(검증 중·막힘) ${toClose}개를 닫는 작업을 먼저 넣고, 남는 자리에 지금 단계의 다음 기능을 넣는다.`,
+    '- 닫는 작업 하나는 기능 하나(또는 같은 화면·같은 시험으로 함께 닫히는 기능 묶음)를 맡아, 그 기능의 완료 기준과 메모에 남은 것을 이번에 끝내고 완료 기준을 직접 확인한 근거(시험 명령과 결과 수, 화면 기록 파일)를 보고에 남기게 한다. 오래 머문 기능부터 고른다.',
+    '- 코드를 더 고칠 것이 없고 확인만 남은 기능은 확인만 하는 작업으로 여러 개를 한 작업에 묶는다(기능마다 근거를 따로 적게 한다).',
+    '- 판정 스크립트·검증 도구 자체를 고치는 작업은 기능을 닫는 데 바로 필요할 때만, 한 사이클에 하나까지 넣는다.',
+    '- 화면은 숨은 창(headless) 브라우저 측정과 화면 사진도 확인 근거로 인정한다. "사용자 브라우저 확인 필요"를 이유로 같은 기능을 다시 작업하지 않는다.',
+    '- 리뷰의 경미한 지적(P2·표현·완성도)은 기능을 닫는 것을 막지 않는다. 그것만 고치는 작업을 따로 만들지 않는다. 진척 목록은 진척 관리 직원이 갱신한다.', ''];
 }

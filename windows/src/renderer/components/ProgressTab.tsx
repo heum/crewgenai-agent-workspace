@@ -74,6 +74,7 @@ function PlanView({ projectId, wp, onChanged }: { projectId: string; wp: Mission
   const current = phases.find((p) => (byPhase.get(p.id) ?? []).some((i) => i.status !== 'done'))?.id ?? null;
   const shownPhase = open ?? current;
   const fresh = wp.changes.slice(wp.reviewedChanges ?? 0);
+  const askUser = wp.items.filter((i) => (i.note ?? '').trimStart().startsWith('사용자 확인:'));
   return (
     <>
       <div className="card progress-summary">
@@ -94,6 +95,15 @@ function PlanView({ projectId, wp, onChanged }: { projectId: string; wp: Mission
             <div className="muted small">개발은 이 목록으로 계속 진행 중입니다. 단계·기능·완료 기준이 다르면 운영 메뉴에서 추가 지시하면 진척 관리 직원이 반영합니다.</div>
           </div>
           <button className="btn btn-primary" disabled={act.busy} onClick={() => void act.run(async () => { await ws().reviewProjectProgress(projectId); onChanged(); })}>확인함</button>
+        </div>
+      )}
+      {askUser.length > 0 && (
+        <div className="banner banner-info progress-review">
+          <div>
+            <strong>직접 봐 주시면 되는 것 {askUser.length}개</strong>
+            <ul className="small">{askUser.map((i) => <li key={i.id}><span className="mono">{i.id}</span> {i.title} <Badge tone={TONE[i.status]}>{LABEL[i.status]}</Badge> — {(i.note ?? '').replace(/^\s*사용자 확인:\s*/, '')}</li>)}</ul>
+            <div className="muted small">자동으로 확인할 수 없는 것만 모았습니다. 보시고 다르면 운영 메뉴에서 추가 지시하면 됩니다. 답이 없다고 승인으로 치지 않으며, 개발은 멈추지 않습니다.</div>
+          </div>
         </div>
       )}
       {act.error && <Banner>{act.error}</Banner>}

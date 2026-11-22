@@ -1,6 +1,7 @@
 // 진척 관리: 진척 관리 직원이 작업 목록(단원·완료 기준·상태)을 사이클마다 갱신하고, 모든 단원이 완료일 때만 미션이 끝난다
 import { describe, expect, it } from 'vitest';
-import { mergeWorkPlan, workProgress } from '../src/main/workplan';
+import { CLOSE_FIRST, mergeWorkPlan, needsUser, workPlanSection, workProgress } from '../src/main/workplan';
+import type { MissionWorkPlan, WorkItem } from '../src/shared/types';
 import { gitInit, mkService, plan, sleep, tmpProject } from './helpers';
 
 async function until<T>(f: () => T | null | undefined | false, ms = 60000): Promise<T> {
@@ -101,5 +102,30 @@ describe('진척 관리 직원', () => {
     expect(done.status).toBe('done');
     expect(svc.missions.progress(p.id)).toBeNull();
     svc.close();
+  });
+});
+
+describe('닫기 우선', () => {
+  const item = (id: string, status: WorkItem['status'], updatedCycle: number, note = ''): WorkItem => ({ id, phase: 'P1', refs: [], title: `기능 ${id}`, criteria: '시험 통과', status, evidence: '', note, addedCycle: 1, updatedCycle });
+  const plan = (items: WorkItem[]): MissionWorkPlan => ({ phases: [{ id: 'P1', title: '기반', goal: '' }], items, removed: [], changes: [], reviewedChanges: 0, createdCycle: 1, reviewedAt: null });
+  it('검증 중이 쌓이면 새 기능을 시작하지 않게 하고, 오래 머문 것부터 보여 준다', () => {
+    const text = workPlanSection(plan([item('W1', 'todo', 1), ...[2, 3, 4, 5, 6].map((n) => item(`W${n}`, 'verifying', 20 - n))]), 30).join('\n');
+    expect(text).toContain(`닫지 못한 기능(검증 중·막힘)이 ${CLOSE_FIRST}개다`);
+    expect(text).toContain("'시작 전' 기능은 시작하지 않는다");
+    expect(text.indexOf('W6 [')).toBeLessThan(text.indexOf('W2 ['));
+    expect(text.indexOf('W2 [')).toBeLessThan(text.indexOf('W1 ['));
+    expect(text).toContain('16사이클째 그대로');
+  });
+  it('적게 남았으면 닫는 일을 먼저 넣고 다음 기능도 허용한다', () => {
+    const text = workPlanSection(plan([item('W1', 'todo', 1), item('W2', 'verifying', 3)]), 5).join('\n');
+    expect(text).toContain('닫는 작업을 먼저 넣고');
+    expect(text).not.toContain('시작하지 않는다(');
+  });
+  it('사용자 확인만 남은 기능은 작업 목록에서 빼고 따로 모은다', () => {
+    const items = [item('W1', 'blocked', 3, '사용자 확인: 업로드 화면에서 파일이 올라가는지'), item('W2', 'verifying', 3)];
+    expect(needsUser(items[0])).toBe(true); expect(needsUser(items[1])).toBe(false);
+    const text = workPlanSection(plan(items), 5).join('\n');
+    expect(text).toContain('사용자 확인을 기다리는 기능 1개');
+    expect(text).not.toContain('W1 [');
   });
 });
