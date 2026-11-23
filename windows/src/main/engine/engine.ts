@@ -21,7 +21,7 @@ import { applyIsolated, checkOutput, classify, cleanupIsolated, diffSnapshots, f
 import { copyFileSync as _copy } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { buildReport } from './report';
-import { docsOnly, effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
+import { docsOnly, isDocFile, effectiveScope, entryNodes, forwardAdj, normRel, reach, within } from './validate';
 import { laneBlocks } from './lanes';
 import { prepareSkillBundle, unpinSkillBundle } from '../skills';
 
@@ -627,7 +627,7 @@ export class Engine {
       case 'input': out = { status: 'ok', summary: `기획 전달(목표·완료 조건·참고 자료 ${plan.referenceDocs.length + plan.priorOutputs.length}건)`, outputs: [...plan.referenceDocs, ...plan.priorOutputs] }; break;
       case 'agent': out = await this.runAgentNode(runId, graph, node, visit, plan, upstream, feedback); break;
       case 'check': out = await this.runCheckNode(runId, node, visit, plan); break;
-      case 'codexReview': out = this.lightSkip(runId, graph, node, upstream) ?? await this.runCodexNode(runId, node, visit, plan, upstream); break;
+      case 'codexReview': out = node.cycleReview ? await this.runCycleCodex(runId, node, visit, plan, upstream) : this.lightSkip(runId, graph, node, upstream) ?? await this.runCodexNode(runId, node, visit, plan, upstream); break;
       case 'review': out = this.lightSkip(runId, graph, node, upstream) ?? await this.runReviewNode(runId, node, visit, plan, upstream, preds.map((p) => graph.nodes.find((n) => n.id === p)!).filter(Boolean), graph); break;
       case 'branch': out = this.evalBranch(node, state, plan); break;
       case 'merge': out = this.runMerge(runId, graph, node, plan); await this.commitFor(runId, node, plan, out.outputs, { name: 'CREWGENAI 00 총괄(결과물 취합)', email: 'agent-00@crewgenai.local' }, '00 총괄(결과물 취합)'); break;
@@ -838,17 +838,13 @@ export class Engine {
     if (!node.lightSkip) return null;
     const rev = new Map<string, string[]>();
     for (const e of graph.edges) rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]); // 실패 연결로 들어오는 길도 본다
-    // 이 단계로 들어오는 모든 길을 거슬러 올라가 작성 단계를 모은다(검사·분기·취합은 지나가고, 작성 단계를 만나도 더 올라간다).
-    // 이미 작성 단계를 만난 길에서 다른 리뷰 단계에 닿으면 멈춘다: 그 앞의 작성은 그 리뷰가 맡았다.
-    const authors = new Set<string>(); const seen = new Set<string>(); const st: { id: string; found: boolean }[] = (rev.get(node.id) ?? []).map((id) => ({ id, found: false }));
+    // 이 단계로 들어오는 모든 길을 끝까지 거슬러 올라가, 앞에 있는 작성 단계를 전부 모은다.
+    // 중간에 다른 리뷰 단계가 있어도 멈추지 않는다: 리뷰 단계가 있다는 것만으로 그 앞의 작성이 승인됐다고 볼 수 없다.
+    const authors = new Set<string>(); const seen = new Set<string>([node.id]); const st = [...(rev.get(node.id) ?? [])];
     while (st.length) {
-      const x = st.pop()!; const key = `${x.id}:${x.found ? 1 : 0}`;
-      if (x.id === node.id || seen.has(key)) continue; seen.add(key);
-      const n = graph.nodes.find((g) => g.id === x.id);
-      const isReview = n?.kind === 'review' || n?.kind === 'codexReview';
-      if (isReview && x.found) continue;
-      if (n?.kind === 'agent') authors.add(x.id);
-      for (const p of rev.get(x.id) ?? []) st.push({ id: p, found: x.found || n?.kind === 'agent' });
+      const x = st.pop()!; if (seen.has(x)) continue; seen.add(x);
+      if (graph.nodes.find((g) => g.id === x)?.kind === 'agent') authors.add(x);
+      st.push(...(rev.get(x) ?? []));
     }
     if (!authors.size) return null;
     const atts = this.s.runAttempts(runId).filter((a) => a.role === 'author');
@@ -857,6 +853,20 @@ export class Engine {
     if (!per.every((files) => docsOnly(files))) return null;
     const changed = per.flat();
     return { status: 'ok' as const, summary: `건너뜀: 문서·화면 사진만 바뀜(${new Set(changed).size}개) — 코드·시험 변경이 없어 리뷰하지 않음`, outputs: upstream };
+  }
+
+  /**
+   * 사이클 Codex 리뷰: 작업마다가 아니라, 이번 실행에서 바뀐 코드 전체를 한 번 본다(문서·화면 사진은 빼고).
+   * 다른 모델의 눈을 한 번은 거치되, 지적이 작업마다 재작업으로 이어지지 않게 한다: 결과는 보고서로 남고 판단 단계가 P0·P1만 다음 일로 넘긴다.
+   * Codex가 없거나 실행에 실패해도 사이클을 막지 않는다(사용 한도는 예외 — 한도 처리대로 멈춘다).
+   */
+  private async runCycleCodex(runId: string, node: GraphNode, visit: number, plan: PlanFields, upstream: string[]) {
+    const code = [...new Set(this.s.runAttempts(runId).filter((a) => a.role === 'author').flatMap((a) => a.changedFiles))].filter((f) => !isDocFile(f) && existsSync(join(plan.folder, f)));
+    if (!code.length) return { status: 'ok' as const, summary: '건너뜀: 이번 사이클에 바뀐 코드가 없습니다(문서·화면 사진만 바뀜).', outputs: upstream };
+    const r = await this.runCodexNode(runId, { ...node, inputs: code.slice(0, 150) }, visit, plan, []);
+    if (r.status === 'ok') return { status: 'ok' as const, summary: r.summary, outputs: [...new Set([...r.outputs.slice(0, 1), ...upstream])] };
+    if (/한도/.test(r.reason ?? '')) return r;
+    return { status: 'ok' as const, summary: `사이클 Codex 리뷰를 끝내지 못해 리뷰 없이 진행합니다: ${r.reason ?? '원인 미상'}`, outputs: upstream };
   }
 
   /** Codex 리뷰: 읽기 전용 샌드박스·구조화 출력. 결과 보고서를 산출물 위치에 남겨 다음 Claude 재검토의 입력으로 넘긴다. */
@@ -1094,7 +1104,7 @@ export class Engine {
         if (ign.size) { changed = changed.filter((f) => !ign.has(f)); addEv('system', `git이 무시하는 빌드·시험 산출물 ${ign.size}개는 반영하지 않았습니다.`, ''); }
       }
       if (snapshotTruncated(after)) addEv('system', `변경 감지 대상 파일이 너무 많아 일부만 비교했습니다(최대 ${SNAPSHOT_LIMIT}개). 연결 폴더를 좁히거나 큰 폴더를 정리하세요.`, '');
-      let conflicts: string[] = []; let left: string[] = [];
+      let conflicts: string[] = []; let left: string[] = []; let notOurs = new Set<string>();
       // 다른 작업이 실행 중이어도 검사를 면제하지 않는다. 다른 작업의 수정 범위(실제 경로)에 속한 변경만 제외한다.
       const base = realFolder(plan.folder);
       // 지금 실행 중이거나 이 시도 도중에 끝난 다른 쓰기 작업의 범위(실행 구간이 겹친 작업)
@@ -1113,7 +1123,8 @@ export class Engine {
           role === 'author' && node.outputs.length ? (rel) => node.outputs.some((o) => within(rel, normRel(o.path))) : undefined);
         left = res.left;
         if (keepCopy) addEv('system', `시간 제한에 걸렸습니다. 지금까지의 작업(${changed.length}개 파일)은 원본에 반영하지 않고 복사본에 남겨 두었습니다. 다음 시도가 같은 세션·같은 복사본에서 이어 가고, 끝나서 검사를 통과해야 반영합니다.`, '');
-        attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];
+        // 원본이 복사본과 같은 내용으로 바뀐 파일(same)도 리뷰 대상에는 넣는다(바뀐 파일 목록). 다만 앱이 쓴 것이 아니므로 직원 이름 커밋에서는 뺀다
+        attempt.changedFiles = [...res.applied, ...res.same]; notOurs = new Set(res.same); conflicts = [...res.conflicts, ...res.blocked];
         if (res.skipped.length) addEv('system', `복사본에 새로 생긴 링크 ${res.skipped.length}개는 원본에 만들지 않고 나머지만 반영했습니다: ${res.skipped.slice(0, 3).join(', ')}`, '');
         attempt.outOfScopeChanges = outside.map((f) => `${f} (격리 실행에서 차단, 반영 안 함)`);
         if (!keepCopy) cleanupIsolated(workDir);
@@ -1152,7 +1163,7 @@ export class Engine {
       if (lim) { attempt.status = 'interrupted'; attempt.error = `사용 한도 도달: ${redact(lim.text)}`; }
       attempt.finishedAt = now();
       this.atomic(() => { if (attempt.status === 'succeeded' && role === 'author') this.registerArtifacts(runId, node, attempt, plan); this.saveAttempt(attempt); });
-      if (attempt.status === 'succeeded' && role === 'author') { await this.commitFor(runId, node, plan, attempt.changedFiles, agentIdentity(agent.code, agent.name), `${agent.code} ${agent.name}`, attempt, userDirty); this.saveAttempt(attempt); }
+      if (attempt.status === 'succeeded' && role === 'author') { await this.commitFor(runId, node, plan, attempt.changedFiles.filter((x) => !notOurs.has(x)), agentIdentity(agent.code, agent.name), `${agent.code} ${agent.name}`, attempt, userDirty); this.saveAttempt(attempt); }
       this.o.tracer?.attemptFinished(run, attempt, node.label);
       if (attempt.status === 'cancelled') throw new Cancelled();
       if (lim) this.hitLimit(runId, node, lim);

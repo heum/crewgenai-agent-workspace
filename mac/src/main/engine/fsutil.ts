@@ -175,6 +175,9 @@ function deepestExisting(p: string): string { let cur = p; while (!existsSync(cu
  *   앱이 쓰지 않은 파일을 직원 이름으로 커밋하지 않게.
  * - mustApply를 주면: 충돌한 파일이 꼭 반영해야 하는 것(작업의 결과물)이 아니면 그 파일만 원본 그대로 두고(left) 나머지를 반영한다.
  *   예) 떠 있는 개발 서버가 실행 중에 스스로 고쳐 쓴 설정 파일 하나 때문에 측정 결과 전체를 버리지 않게. 결과물이 충돌하면 전부 반영하지 않는다.
+ *   서로 맞물린 변경의 일부만 들어가는 일을 막기 위해 다음일 때만 그렇게 한다(아니면 예전처럼 전부 반영하지 않음):
+ *   · 충돌한 것이 양쪽 모두 보통 파일이고 복사 시점의 내용을 알고 있다(폴더·삭제·새 파일의 충돌은 아님).
+ *   · 반영할 나머지가 전부 결과물이다(결과물이 아닌 다른 파일을 함께 반영해야 하면 전부 막는다).
  */
 export function applyIsolated(project: string, dir: string, changed: string[], base: Record<string, string>, mustApply?: (rel: string) => boolean): { applied: string[]; conflicts: string[]; blocked: string[]; skipped: string[]; same: string[]; left: string[] } {
   const projReal = realpathSync(project);
@@ -197,12 +200,14 @@ export function applyIsolated(project: string, dir: string, changed: string[], b
     const nowSha = d ? (d.isFile() ? fileSha(dst) : 'DIR') : '';
     if (nowSha !== (base[rel] ?? '')) {
       if ((!d && !sl) || (d?.isFile() && sl?.isFile() && fileSha(src) === nowSha)) { same.push(rel); continue; } // 이미 같은 내용
-      if (mustApply && !mustApply(rel)) { left.push(rel); continue; } // 결과물이 아닌 파일의 충돌: 원본 그대로 둔다
+      if (mustApply && !mustApply(rel) && d?.isFile() && sl?.isFile() && (base[rel] ?? '') !== '') { left.push(rel); continue; } // 결과물이 아닌 보통 파일의 충돌: 원본 그대로 둘 후보
       conflicts.push(rel); continue;
     }
     plan.push({ rel, write: !!sl?.isFile() });
   }
-  if (conflicts.length || blocked.length) return { applied: [], conflicts, blocked, skipped, same, left };
+  // 일부 제외는 나머지가 전부 결과물일 때만: 결과물이 아닌 다른 변경과 함께면 맞물린 변경이 반쪽만 들어갈 수 있으므로 충돌로 되돌린다
+  if (left.length && mustApply && plan.some((x) => !mustApply(x.rel))) { conflicts.push(...left); left.length = 0; }
+  if (conflicts.length || blocked.length) return { applied: [], conflicts, blocked, skipped, same, left: [] };
   // 삭제 먼저(파일→폴더 전환 대비), 비워진 폴더도 복사본에 없으면 지운다
   for (const x of plan.filter((y) => !y.write)) {
     const dst = join(project, x.rel);

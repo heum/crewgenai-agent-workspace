@@ -102,6 +102,7 @@ export interface GraphNode {
   timeoutSec: number;
   condition: BranchCondition | null;
   entryCondition: 'all' | 'any'; // 여러 선행 단계가 있을 때 진입 조건
+  cycleReview?: boolean; // true면(미션이 만든 Codex 리뷰 단계) 작업 하나가 아니라 이번 사이클에 바뀐 코드 전체를 한 번 리뷰한다. 실패해도 사이클을 막지 않는다
   lightSkip?: boolean; // true면(미션이 만든 Codex 리뷰·재검토 단계) 앞 작업이 문서·화면 사진만 바꿨을 때 이 단계를 건너뛴다
   skipInlineReview?: boolean; // true면 노드 안 독립 검토를 건너뛴다(다음 단계에 Codex 리뷰·Claude 재검토가 있을 때)
 }
@@ -343,7 +344,7 @@ export interface AppSettings {
   devSync?: boolean; // 매일 dev 반영(기본 켬): 하루 한 번 비밀값을 뺀 변경을 커밋해 dev에 합치고 push. main 병합은 하지 않는다
   devSyncHour?: number; // 매일 dev 반영 시각(0~23시, 기본 22)
   docTidy?: boolean; // 문서 정리(기본 켬): 앱 기록 파일은 최근 실행만 남기고, 사이클별 문서는 10사이클마다 HISTORY.md로 요약한 뒤 커밋된 원본만 지운다
-  reviewMode?: 'close' | 'full'; // 검증 방식. close(기본): 작업(기능)을 닫을 때 다른 직원의 검증 한 번. full: 작업마다 Codex 리뷰 + Claude 재검토
+  reviewMode?: 'close' | 'full'; // 검증 방식. close(기본): 작업(기능)을 닫을 때 다른 직원의 검증 한 번 + 사이클 끝에 바뀐 코드 전체 Codex 리뷰 한 번. full: 작업마다 Codex 리뷰 + Claude 재검토
   techAuto?: boolean; // 기술 권한 요청(명령 허용·경로 읽기)을 사용자에게 묻지 않고 앱·오퍼레이터가 처리(기본 켬). 보호 규칙은 그대로
   paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
   paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유

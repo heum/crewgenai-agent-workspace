@@ -346,7 +346,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
       </ul>
       <Field label="검증 방식" hint="미션이 작업 결과를 확인하는 방법">
         <select className="input" value={s.reviewMode === 'full' ? 'full' : 'close'} onChange={(e) => setS({ ...s, reviewMode: e.target.value as 'close' | 'full' })}>
-          <option value="close">기능을 닫을 때 한 번 (권장 · 빠름)</option>
+          <option value="close">기능을 닫을 때 검증 한 번 + 사이클마다 Codex 리뷰 한 번 (권장)</option>
           <option value="full">작업마다 Codex 리뷰 + 재검토 (느림 · 사용량 많음)</option>
         </select>
       </Field>

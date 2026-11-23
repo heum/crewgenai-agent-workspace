@@ -538,7 +538,9 @@ function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { st
   const [big, setBig] = useState(false);
   // 이 사이클의 흐름에 Codex 리뷰 단계가 없으면(검증 방식: 닫을 때 한 번) 띠에서 빼고, 재검토 칸은 '검증'으로 보여 준다
   const noCodex = !!run && stage !== 'codex' && !run.graph.nodes.some((n) => n.kind === 'codexReview');
-  const strip = noCodex ? STRIP.filter((s) => s !== 'codex') : STRIP;
+  // 사이클에 한 번 도는 Codex 리뷰는 검증 뒤에 온다
+  const cycleCodex = !!run && run.graph.nodes.some((n) => n.kind === 'codexReview' && n.cycleReview);
+  const strip: MissionStage[] = noCodex ? STRIP.filter((s) => s !== 'codex') : cycleCodex ? ['plan', 'execute', 'claude_review', 'codex', 'judge'] : STRIP;
   const idx = strip.indexOf(stage);
   const end = stage === 'ask_user' || stage === 'done' || stage === 'stopped';
   return (
@@ -547,7 +549,7 @@ function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { st
         <span className="loop-cycle" title="반복 사이클">⟳ 사이클 {cycle}/{maxCycles}</span>
         {strip.map((s, i) => (
           <span key={s} className={`loop-step ${s === stage ? `now ${live ? 'live' : ''}` : ''} ${idx > i || end ? 'past' : ''}`} aria-current={s === stage ? 'step' : undefined}>
-            {noCodex && s === 'claude_review' ? '검증' : MISSION_STAGE_LABEL[s]}
+            {(noCodex || cycleCodex) && s === 'claude_review' ? '검증' : MISSION_STAGE_LABEL[s]}
           </span>
         ))}
         <span className={`loop-step end ${end ? 'now' : ''}`}>{end ? MISSION_STAGE_LABEL[stage] : '확인·완료'}</span>

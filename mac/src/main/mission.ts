@@ -1969,14 +1969,19 @@ export class MissionRunner {
       }
       chains.push({ first: a, last });
     });
+    // 검증 방식 close: 사이클 끝에 바뀐 코드 전체를 Codex가 한 번 리뷰한다(작업마다 붙이지 않음). 결과는 판단 단계가 읽는다.
+    const cyc = full || !chains.length ? null : mk('codexReview', `Codex 리뷰: 사이클 ${m.cycle} 코드 변경`, 300, 600, { cycleReview: true, timeoutSec: 1800,
+      doneCriteria: '이번 사이클에 바뀐 코드 전체를 본다. P0·P1(정확성 오류, 보안, 데이터 손실, 요구 위반, 시험이 실제로는 검증하지 않음)을 먼저 찾고, severity에 P0·P1·P2 중 하나를 쓴다. P2(다듬기·표현·있으면 좋은 것)는 5건 이내로만 적는다. 문서의 문체는 보지 않는다.' });
+    if (cyc) nodes.push(cyc);
     nodes.push(merge);
     const wire = (sequential: boolean) => {
       const es = [...edges]; // 작업 내부 연결(작성 → 검증(full이면 Codex → Claude 재검토) → 검사, 실패 시 작성으로)
       chains.forEach((c, i) => {
         if (sequential && i > 0) es.push({ id: randomUUID(), source: chains[i - 1].last.id, target: c.first.id, kind: 'next' });
         else es.push({ id: randomUUID(), source: inp.id, target: c.first.id, kind: 'next' });
-        if (!sequential || i === chains.length - 1) es.push({ id: randomUUID(), source: c.last.id, target: merge.id, kind: 'next' });
+        if (!sequential || i === chains.length - 1) es.push({ id: randomUUID(), source: c.last.id, target: (cyc ?? merge).id, kind: 'next' });
       });
+      if (cyc) es.push({ id: randomUUID(), source: cyc.id, target: merge.id, kind: 'next' });
       return autoLayout({ nodes, edges: es });
     };
     for (const sequential of [false, true]) {
@@ -2031,7 +2036,7 @@ export class MissionRunner {
       ...this.refSection(m),
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
-      `- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 ${this.d.reviewMode?.() === 'full' ? 'Codex 리뷰와 다른 직원의 Claude 재검토를 거친다' : '작업을 닫을 때 다른 직원의 검증을 한 번 거친다(완료 조건별 통과·실패)'}.`,
+      `- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 ${this.d.reviewMode?.() === 'full' ? 'Codex 리뷰와 다른 직원의 Claude 재검토를 거친다' : '작업을 닫을 때 다른 직원의 검증을 한 번 거치고(완료 조건별 통과·실패), 사이클 끝에 바뀐 코드 전체를 Codex가 한 번 리뷰한다'}.`,
       '- 작업 지시에 적는 폴더 이름·명령·포트는 그 저장소의 스크립트·설정이 허용하는 형식인지 Read로 확인하고 쓴다(허용되지 않는 이름을 지시해 직원이 시작도 못 하고 시간을 쓰는 일을 만들지 않는다).',
       '- 한 기능은 한 직원이 끝까지 맡는다: 지난 사이클에 그 기능을 맡았던 직원에게 이어서 맡긴다(맥락이 이어지게). 한 기능을 여러 직원에게 나누지 않는다.',
       '- 동시에 진행하는 작업은 서로 독립인 것만 둔다: 저장소나 폴더가 겹치지 않고, 한 작업이 다른 작업의 결과를 기다리지 않는다. 순서 의존이 있으면(예: 측정 → 그 결과로 문서) 한 작업으로 합쳐 한 직원에게 맡긴다.',
@@ -2148,7 +2153,7 @@ export class MissionRunner {
     const d = this.d.engine.detail(runId);
     const md = d.deliverable?.markdown ?? '(결과물 없음)';
     const failed = d.nodes.filter((n) => n.status === 'failed').map((n) => `${d.graph.nodes.find((g) => g.id === n.nodeId)?.label}: ${n.failureReason}`);
-    const reviews = d.reviews.map((r) => `- ${r.kind === 'codex' ? 'Codex' : r.kind === 'agent' ? 'Claude 재검토' : '사용자'}: ${r.verdict} — ${r.comments.slice(0, 300).replace(/\n/g, ' ')}`);
+    const reviews = d.reviews.map((r) => `- ${r.kind === 'codex' ? 'Codex' : r.kind === 'agent' ? 'Claude 재검토' : '사용자'}: ${r.verdict} — ${r.comments.slice(0, r.kind === 'codex' ? 2000 : 300).replace(/\n/g, ' ')}`);
     return [
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
@@ -2168,6 +2173,7 @@ export class MissionRunner {
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
+      '- 사이클 Codex 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. Codex 지적만으로 이번 작업을 실패로 되돌리지 않는다.',
       '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다. 작업 목록이 있으면 모든 단원이 완료일 때만 done이다(앱이 남은 단원이 있는 done은 받지 않는다). 작업 목록 갱신은 진척 관리 직원이 하니 summary에 단원 상태를 길게 다시 쓰지 않는다.',
       FLOW_RULE, CHECKPOINT_RULE, ...this.assumptionsSection(m),
       '- ask_user: 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',

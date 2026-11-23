@@ -389,6 +389,14 @@ describe('격리 반영 규칙(Codex 4차)', () => {
     const r2 = applyIsolated(proj, dir, ['docs/out/result.md', 'docs/out/more.md'], { ...st.base, 'docs/out/result.md': 'old' }, must);
     expect(r2.conflicts).toEqual(['docs/out/result.md']); expect(r2.applied).toEqual([]);
     expect(fs.existsSync(join(proj, 'docs/out/more.md'))).toBe(false);
+    // 결과물이 아닌 다른 파일을 함께 반영해야 하면 일부 제외를 하지 않는다(맞물린 변경이 반쪽만 들어가지 않게)
+    fs.writeFileSync(join(dir, 'docs/caller.md'), '설정에 맞춘 호출부');
+    const r4 = applyIsolated(proj, dir, ['docs/config.md', 'docs/caller.md', 'docs/out/more.md'], st.base, must);
+    expect(r4.conflicts).toEqual(['docs/config.md']); expect(r4.left).toEqual([]); expect(r4.applied).toEqual([]);
+    expect(fs.existsSync(join(proj, 'docs/caller.md'))).toBe(false);
+    // 복사 시점의 내용을 모르는 파일(기준 없음)과 폴더가 얽힌 충돌은 일부 제외 대상이 아니다
+    const r5 = applyIsolated(proj, dir, ['docs/config.md', 'docs/out/more.md'], {}, must);
+    expect(r5.conflicts).toEqual(['docs/config.md']); expect(r5.applied).toEqual([]);
     // mustApply를 주지 않으면 어떤 충돌이든 전부 반영하지 않는다
     const r3 = applyIsolated(proj, dir, ['docs/config.md', 'docs/out/more.md'], st.base);
     expect(r3.conflicts).toEqual(['docs/config.md']); expect(r3.applied).toEqual([]);

@@ -95,9 +95,12 @@ describe('오퍼레이터 루프', () => {
     const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
     expect(m.status).toBe('done');
     const r1 = svc.engine.detail(svc.missions.detail(m.id).cycles[0].runId);
-    expect(r1.graph.nodes.some((n) => n.kind === 'codexReview')).toBe(false);
+    // Codex 리뷰는 작업마다가 아니라 사이클에 하나(바뀐 코드 전체)
+    expect(r1.graph.nodes.filter((n) => n.kind === 'codexReview').map((n) => !!n.cycleReview)).toEqual([true]);
     expect(r1.graph.nodes.filter((n) => n.kind === 'review').map((n) => n.label.startsWith('검증: '))).toEqual([true]);
-    expect(r1.attempts.filter((a) => a.role === 'codex').length).toBe(0);
+    expect(r1.attempts.filter((a) => a.role === 'codex').length).toBe(1);
+    expect(r1.reviews.filter((r) => r.kind === 'codex').length).toBe(1);
+    expect(r1.artifacts.some((a) => a.relPath.includes('reviews/codex-'))).toBe(true);
     expect(r1.reviews.filter((r) => r.kind === 'agent').map((r) => r.verdict)).toEqual(['changes_requested', 'approve']);
     expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(2);
     expect(readFileSync(join(dir, 'docs/mission/cycle-1.md'), 'utf8')).toContain('FIXED');
@@ -111,7 +114,7 @@ describe('오퍼레이터 루프', () => {
     expect(validate.docsOnly(['docs/a.md', 'tests/a.test.ts'])).toBe(false);
     expect(validate.docsOnly(['docs/result.json'])).toBe(false);
     expect(validate.docsOnly([])).toBe(false); // 바뀐 파일을 모르면 리뷰한다
-    for (const f of ['src/.tmp/live.ts', 'CMakeLists.txt', 'requirements.txt', 'data/prices.csv', 'docs/run.log', 'AGENTS.md', 'skills/x/SKILL.md', '.github/pull_request_template.md', '.claude/commands/a.md', 'docs/.tmp/a.md', 'src/handler.md', 'README.md', 'skills/x/references/instructions.md', 'docs/prompts/a.md'])
+    for (const f of ['src/.tmp/live.ts', 'CMakeLists.txt', 'requirements.txt', 'data/prices.csv', 'docs/run.log', 'AGENTS.md', 'skills/x/SKILL.md', '.github/pull_request_template.md', '.claude/commands/a.md', 'docs/.tmp/a.md', 'src/handler.md', 'README.md', 'skills/x/references/instructions.md', 'docs/prompts/a.md', 'docs/AGENTS.override.md', 'docs/CLAUDE.local.md'])
       expect(validate.docsOnly([f]), f).toBe(false);
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '문서를 정리하라');
@@ -122,7 +125,7 @@ describe('오퍼레이터 루프', () => {
     expect(r1.attempts.filter((a) => a.role === 'codex' || a.role === 'reviewer').length).toBe(0);
     expect(r1.reviews.length).toBe(0);
     const skipped = r1.graph.nodes.filter((n) => n.kind === 'codexReview' || n.kind === 'review').map((n) => r1.nodes.find((x) => x.nodeId === n.id));
-    expect(skipped.length).toBe(1); // 기본 검증 방식에는 검증 단계 하나만 있다
+    expect(skipped.length).toBe(2); // 검증 단계와 사이클 Codex 리뷰 둘 다 건너뛴다(바뀐 코드 없음)
     for (const n of skipped) { expect(n?.status).toBe('succeeded'); expect(n?.summary).toContain('건너뜀'); }
     // 검사 단계 뒤에 있는 다른 작성 단계까지 거슬러 올라가 본다: 그 단계가 무엇을 바꿨는지 모르면 건너뛰지 않는다
     const rv = r1.graph.nodes.find((n) => n.kind === 'review')!; const au = r1.graph.nodes.find((n) => n.kind === 'agent')!;
@@ -138,10 +141,10 @@ describe('오퍼레이터 루프', () => {
     // 실패 연결로 들어오는 작성 단계도 본다
     const failIn = { nodes: [...r1.graph.nodes, other], edges: [...r1.graph.edges, { id: 'x4', source: 'other-author', target: rv.id, kind: 'fail' }] };
     expect(eng.lightSkip(runId, failIn, rv, [])).toBeNull();
-    // 앞 작성 단계가 자기 리뷰를 거쳤으면 그 리뷰에서 멈춘다(A → 리뷰A → B → 검증)
+    // 앞 작성 단계 뒤에 리뷰 단계가 있어도 멈추지 않는다: 리뷰 단계가 있다고 승인된 것은 아니다(A → 리뷰A → B → 검증)
     const rvA = { ...rv, id: 'other-review' };
     const reviewed = { nodes: [...r1.graph.nodes, other, rvA], edges: [...r1.graph.edges, { id: 'x5', source: 'other-author', target: 'other-review', kind: 'next' }, { id: 'x6', source: 'other-review', target: au.id, kind: 'next' }] };
-    expect(eng.lightSkip(runId, reviewed, rv, [])).not.toBeNull();
+    expect(eng.lightSkip(runId, reviewed, rv, [])).toBeNull();
     svc.close();
   });
 
