@@ -380,6 +380,8 @@ void app.whenReady().then(async () => {
   });
   // 멈춘 실행을 자동으로 이어 가기 전에 Claude CLI 위치를 먼저 찾는다(찾기 전에 이어 가면 'CLI 경로 없음'으로 실패)
   if (svc.settings().executor === 'claude') await svc.cliStatus(false).catch(() => null);
+  // 검증 방식이 Codex 검증이면, 멈춘 실행을 이어 계획하기 전에 Codex 준비 상태도 먼저 확인한다(모르는 채로 준비된 것으로 보지 않는다)
+  if (svc.settings().reviewMode === 'codex') await svc.codexStatus(false).catch(() => null);
   await svc.engine.recoverOnStartup();
   await svc.missions.recoverProcesses();
   svc.missions.recoverOnStartup();

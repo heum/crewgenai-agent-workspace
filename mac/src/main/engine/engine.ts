@@ -119,6 +119,22 @@ const REVIEW_BAR = [
   '- blocked: 통과하지 못한 원인을 작성자가 자기 수정 범위 안에서 고칠 수 없을 때만 true로 한다(예: 떠 있는 서버·DB 같은 환경 문제, 이 작업이 건드릴 수 없는 저장소·파일의 수정, 사용자의 결정·승인·허용이 있어야 하는 일). 이때 verdict는 changes_requested로 두고, needs에 "누가 무엇을 해야 풀리는지"를 사용자가 읽을 한두 문장으로 쓴다. 작성자가 다시 하면 고칠 수 있는 것은 blocked가 아니다.',
 ].join('\n');
 
+/**
+ * Codex 검증이 완료 조건을 빠짐없이 판정했는지. 문제가 없으면 '', 있으면 이유.
+ * 완료 조건이 "1. … 2. …" 같은 번호 목록(2개 이상)일 때만 번호를 맞춰 본다. 번호가 없는 글이면 줄 형식만 본다.
+ */
+export function verifyCoverage(doneCriteria: string, rows: unknown[]): string {
+  const bad = rows.filter((c) => !c || typeof (c as { pass?: unknown }).pass !== 'boolean').length;
+  if (bad) return `형식이 틀린 판정 ${bad}줄`;
+  const want = [...new Set([...String(doneCriteria ?? '').matchAll(/(?:^|\n)\s*(\d{1,2})[.)]\s/g)].map((m) => String(Number(m[1]))))];
+  if (want.length < 2) return '';
+  const got = rows.map((c) => (String((c as { no?: unknown }).no ?? '').match(/\d+/) ?? [''])[0]).map((x) => (x ? String(Number(x)) : ''));
+  const dup = got.filter((x, i) => x && got.indexOf(x) !== i);
+  if (dup.length) return `겹친 조건 번호 ${[...new Set(dup)].join(', ')}`;
+  const missing = want.filter((w) => !got.includes(w));
+  return missing.length ? `판정이 빠진 조건 ${missing.join(', ')}` : '';
+}
+
 /** 지적 심각도 순서: P0·치명 → P1·높음 → 그 밖 (판단 단계에 잘려 전달돼도 심각한 것이 앞에 오게) */
 const sevRank = (v: string) => (/p0|critical|치명/i.test(v) ? 0 : /p1|high|높음|major/i.test(v) ? 1 : /p2|medium|중간/i.test(v) ? 2 : 3);
 
@@ -624,7 +640,7 @@ export class Engine {
     if (visit > node.maxVisits) {
       const msg = `"${node.label}" 재작업 상한(${node.maxVisits}회)을 넘었습니다.`;
       this.setNode(runId, node.id, { status: 'failed', failureReason: msg, nextAction: '흐름·지시를 고친 뒤 이 단계부터 재실행하세요.' });
-      return this.commit(runId, node, visit, { route: { [node.id]: [] }, terminal: [msg] });
+      return this.commit(runId, node, visit, { route: { [node.id]: this.cycleNodesAfter(graph, node) }, records: { [node.id]: { status: 'fail', outputs: [], summary: msg, at: now() } }, terminal: [msg] });
     }
     const feedback = state.feedback[node.id] ?? '';
     this.setNode(runId, node.id, { status: feedback && visit > 1 ? 'rework' : 'running', visits: visit, failureReason: '', nextAction: '' });
@@ -949,8 +965,8 @@ export class Engine {
       // 검증 모드: 끝난 시도의 판정을 그대로 다시 쓴다(중단 직후 재개 때 통과로 바뀌지 않게)
       if (!node.verify) return { status: 'ok' as const, summary: finished.summary, outputs: [reportRel, ...targets] };
       // 판정 기록이 없거나 읽을 수 없으면 통과로 보지 않는다: 아래로 내려가 다시 검증한다
-      const kept = this.meta(runId, `codexverify:${finished.id}`);
-      if (kept) { try { return JSON.parse(kept) as { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean }; } catch { /* 다시 검증 */ } }
+      const kept = [...prev].reverse().filter((a) => a.status === 'succeeded').map((a) => this.meta(runId, `codexverify:${a.id}`)).find(Boolean);
+      if (kept) { try { return JSON.parse(kept) as { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean; target?: string | null }; } catch { /* 다시 검증 */ } }
     }
     const run = this.s.getRun(runId);
     const cx = this.o.codex?.() ?? { path: null, model: 'gpt-6.1-sol', effort: 'high' };
@@ -1028,15 +1044,19 @@ export class Engine {
       attempt.summary = `${safeRes.verdict === 'approve' ? '승인' : '수정 요청'}: ${safeRes.summary} (지적 ${safeRes.findings.length}건)`;
       // 검증 모드: Codex의 판정이 통과·재작업을 정한다. 승인이라고 써도 실패한 완료 조건이나 P0·P1이 있으면 통과가 아니다(P2뿐이면 통과).
       // 완료 조건을 하나도 판정하지 않았으면 검증하지 않은 것으로 본다. 판정은 시도 저장과 한 묶음으로 남긴다(중단 뒤 통과로 바뀌지 않게).
-      let verifyOut: { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean } | null = null;
+      let verifyOut: { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean; target?: string | null } | null = null;
       if (node.verify) {
-        const crit = Array.isArray(safeRes.criteria) ? safeRes.criteria.filter((c) => c && typeof c.pass === 'boolean') : [];
+        const rows = Array.isArray(safeRes.criteria) ? safeRes.criteria : [];
+        const crit = rows.filter((c) => c && typeof c.pass === 'boolean');
+        // 완료 조건이 번호 목록이면 그 번호를 빠짐없이, 한 번씩 판정했는지 본다. 형식이 틀린 줄·겹친 번호·빠진 번호가 있으면 검증하지 않은 것으로 본다
+        const cover = verifyCoverage(node.doneCriteria || plan.doneCriteria, rows);
         const failed = crit.filter((c) => c.pass === false);
         const serious = safeRes.findings.filter((f) => sevRank(f.severity) <= 1);
         if (safeRes.verdict === 'changes_requested' && safeRes.blocked === true)
           verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `${BLOCKED_PREFIX}${String(safeRes.needs ?? '').replace(/\s+/g, ' ').trim() || failed[0]?.evidence || safeRes.summary}`.slice(0, 700), noRework: true };
-        else if (!crit.length)
-          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: 'Codex 검증이 완료 조건을 하나도 판정하지 않아 통과로 볼 수 없습니다(검증을 다시 해야 합니다).', noRework: true };
+        else if (!crit.length || cover)
+          // 검증 응답이 불완전함: 작성자 탓이 아니므로 작성자에게 보내지 않고 검증만 다시 한다(이 단계의 방문 상한까지)
+          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `Codex 검증이 완료 조건을 빠짐없이 판정하지 않아 통과로 볼 수 없습니다(${cover || '조건 판정 없음'}). 검증을 다시 합니다.`, target: node.id };
         else if (failed.length || serious.length)
           verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `Codex 검증 수정 요청: ${safeRes.summary}`.slice(0, 700),
             feedbackText: ['Codex 검증 지적:', ...failed.map((c) => `- 완료 조건 ${c.no} 실패: ${c.evidence}`), ...serious.map((f) => `- [${f.severity}] ${f.file}: ${f.issue} → ${f.fix}`)].join('\n').slice(0, 6000) };

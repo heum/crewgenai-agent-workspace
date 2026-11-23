@@ -1556,6 +1556,12 @@ export class MissionRunner {
             this.event(m, 'system', `프로젝트 진척의 모든 기능이 완료돼 미션을 완료 검토로 멈춥니다(${progressLine(wp)}).`);
             judge.decision = 'done';
           } }
+        // 이번 실행이 실패로 끝났으면 오퍼레이터가 '완료'라고 해도 완료로 받지 않는다(실패한 작업이 있는 채로 끝내지 않게).
+        // 다만 실패한 업무를 이미 보류해 사용자 확인을 기다리는 중이면 예전처럼 완료 보고에 '보류한 업무 N건'으로 알린다(할 일 없이 사이클만 도는 것을 막음).
+        if (judge.decision === 'done' && this.d.engine.detail(run.id).run.status !== 'succeeded' && !(this.get(id).blockers?.length || this.get(id).denials?.length)) {
+          this.event(m, 'system', "이번 사이클의 실행이 실패로 끝나 오퍼레이터의 '완료' 판단을 받지 않고 계속 진행합니다.");
+          judge.decision = 'continue';
+        }
         if (judge.decision === 'done') {
           const pk = this.get(id); const open = (pk.denials?.length ?? 0) + (pk.blockers?.length ?? 0); const wp = this.progress(m.projectId);
           const left = wp?.items.length && !allDone(wp) ? `\n프로젝트 진척: ${progressLine(wp)} — 남은 단계·기능은 진척 메뉴에서 볼 수 있습니다.` : '';

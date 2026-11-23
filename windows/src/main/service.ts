@@ -109,7 +109,7 @@ export class Service {
       captureRef: d.captureRef ? async (url, missionId) => { const dir = refDirFor(join(dirname(d.dbFile), 'references'), missionId, url); const r = await d.captureRef!(url, dir); return { ...r, dir }; } : undefined,
       techAuto: () => this.settings().techAuto !== false,
       reviewMode: () => { const v = this.settings().reviewMode; return v === 'full' || v === 'codex' ? v : 'close'; },
-      codexReady: () => this.settings().executor === 'mock' || (this.codex ? !!this.codex.ready : !!this.settings().codexPath),
+      codexReady: () => this.settings().executor === 'mock' || (this.codex ? !!this.codex.ready : false),
       docTidy: () => this.settings().docTidy !== false,
       devSync: () => this.settings().devSync !== false,
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,

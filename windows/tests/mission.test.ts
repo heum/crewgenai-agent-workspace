@@ -172,6 +172,17 @@ describe('오퍼레이터 루프', () => {
     b.svc.close();
   });
 
+  it('Codex 검증의 조건 판정 범위: 번호 목록이면 빠진 번호·겹친 번호·형식이 틀린 줄을 잡는다', async () => {
+    const { verifyCoverage } = await import('../src/main/engine/engine');
+    const dc = '1. 시험이 통과한다\n2. 화면에 버튼이 1개다\n3) 넘침이 없다';
+    const ok = [{ no: '1', pass: true, evidence: 'a' }, { no: '조건 2', pass: false, evidence: 'b' }, { no: '3', pass: true, evidence: 'c' }];
+    expect(verifyCoverage(dc, ok)).toBe('');
+    expect(verifyCoverage(dc, ok.slice(0, 2))).toContain('판정이 빠진 조건 3');
+    expect(verifyCoverage(dc, [...ok, { no: '1', pass: true, evidence: 'd' }])).toContain('겹친 조건 번호 1');
+    expect(verifyCoverage(dc, [{ no: '1', pass: 'yes', evidence: 'a' }])).toContain('형식이 틀린 판정 1줄');
+    expect(verifyCoverage('TODO 없이 작성', [{ no: '1', pass: true, evidence: 'a' }])).toBe(''); // 번호 목록이 아니면 줄 형식만 본다
+  });
+
   it('검증 방식 codex: 승인이라고 해도 실패한 완료 조건이 있으면 재작업시키고, 조건 판정이 없으면 통과로 보지 않으며, 문서만 바뀐 작업도 검증한다', async () => {
     const a = setup();
     a.svc.saveSettings({ reviewMode: 'codex' });
@@ -187,8 +198,9 @@ describe('오퍼레이터 루프', () => {
     const runB = await (async () => { for (let i = 0; i < 1200; i++) { const c = b.svc.missions.detail(mb.id).cycles[0]; if (c && ['succeeded', 'failed'].includes(b.svc.engine.detail(c.runId).run.status)) return c.runId; await sleep(50); } throw new Error('실행이 끝나지 않음'); })();
     const rb = b.svc.engine.detail(runB);
     expect(rb.run.status).toBe('failed');
-    expect(rb.nodes.find((n) => rb.graph.nodes.find((g) => g.id === n.nodeId)?.verify)?.failureReason).toContain('완료 조건을 하나도 판정하지 않아');
-    expect(rb.attempts.filter((x) => x.role === 'author').length).toBe(1);
+    expect(rb.attempts.filter((x) => x.role === 'author').length).toBe(1); // 작성자에게 다시 시키지 않는다
+    expect(rb.attempts.filter((x) => x.role === 'codex').length).toBe(3); // 검증만 다시 한다(방문 상한까지)
+    expect(rb.reviews.filter((r) => r.kind === 'codex').length).toBe(3);
     await b.svc.missions.stop(mb.id).catch(() => {}); b.svc.close();
     const c = setup();
     c.svc.saveSettings({ reviewMode: 'codex' });
