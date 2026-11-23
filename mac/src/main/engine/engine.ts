@@ -11,7 +11,7 @@ import type {
 import {
   buildClaudeArgs, claudeLimit, cleanEnv, codexLimit, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactArgs, redactDeep, startProcess, type ProcessHandle, type ResultInfo,
 } from '../cli/claudeCli';
-import { BLOCKED_PREFIX } from '../../shared/types';
+import { BLOCKED_PREFIX, TEAM_BLOCKED_PREFIX } from '../../shared/types';
 import { cleanDomains } from '../netallow';
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
@@ -118,6 +118,7 @@ const REVIEW_BAR = [
   '- 기록 정리·표현·줄 번호·작은 불일치·추가로 있으면 좋은 검증(Codex P2·P3 등급)은 재작업 사유가 아니다. 승인하고 followUps에 적는다(다음 작업 목록으로 넘어간다).',
   '- issues에는 막는 결함만 쓴다.',
   '- blocked: 통과하지 못한 원인을 작성자가 자기 수정 범위 안에서 고칠 수 없을 때만 true로 한다(예: 떠 있는 서버·DB 같은 환경 문제, 이 작업이 건드릴 수 없는 저장소·파일의 수정, 사용자의 결정·승인·허용이 있어야 하는 일). 이때 verdict는 changes_requested로 두고, needs에 "누가 무엇을 해야 풀리는지"를 사용자가 읽을 한두 문장으로 쓴다. 작성자가 다시 하면 고칠 수 있는 것은 blocked가 아니다.',
+  '- needsUser: blocked일 때, 풀 수 있는 사람이 팀장뿐이면 true(제품 방향·완료 기준 변경 같은 결정, 돈, 권한 허용, 비밀값·로그인·외부 계정). 시연 서버 켜기·다시 켜기, 작업 범위 조정, 다른 직원이 고칠 코드, 시험 환경 정리처럼 앱·오퍼레이터·다른 직원이 할 수 있으면 false(팀장에게 묻지 않고 다음 계획으로 넘어간다). blocked가 아니면 false.',
 ].join('\n');
 
 /**
@@ -172,7 +173,7 @@ const sevRank = (v: string) => (/p0|critical|치명/i.test(v) ? 0 : /p1|high|높
 
 const VERDICT_SCHEMA = {
   type: 'object',
-  properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } }, followUps: { type: 'array', items: { type: 'string' } }, blocked: { type: 'boolean' }, needs: { type: 'string' } },
+  properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } }, followUps: { type: 'array', items: { type: 'string' } }, blocked: { type: 'boolean' }, needs: { type: 'string' }, needsUser: { type: 'boolean' } },
   required: ['verdict', 'summary', 'issues'],
 };
 
@@ -831,7 +832,7 @@ export class Engine {
       const reviewer = this.agentOf(runId, reviewerId);
       if (!reviewer) return { status: 'fail' as const, summary: author.summary, outputs: [], reason: '검토 담당을 찾을 수 없습니다.' };
       const v = await this.runReviewer(runId, node, visit, plan, reviewer, reviewTargets, node.doneCriteria || agent.doneCriteria);
-      if (v.verdict !== 'approve' && v.blocked) return { status: 'fail' as const, summary: author.summary, outputs: [], reason: `${BLOCKED_PREFIX}${v.needs || v.issues[0] || v.summary}`.slice(0, 700), noRework: true };
+      if (v.verdict !== 'approve' && v.blocked) return { status: 'fail' as const, summary: author.summary, outputs: [], reason: `${v.needsUser ? BLOCKED_PREFIX : TEAM_BLOCKED_PREFIX}${v.needs || v.issues[0] || v.summary}`.slice(0, 700), noRework: true };
       if (v.verdict !== 'approve') return { status: 'fail' as const, summary: author.summary, outputs: [], reason: `독립 검토 수정 요청: ${v.summary}`, feedbackText: `독립 검토(${reviewer.name}) 지적:\n- ${v.issues.join('\n- ')}`, target: node.id };
     }
     return { status: 'ok' as const, summary: author.summary, outputs: reviewTargets };
@@ -865,7 +866,7 @@ export class Engine {
         ...(node.kind === 'review' && node.instructions.trim() ? ['## 검토 지시', node.instructions.trim(), ''] : []),
         '## 검토 대상', ...targets.map((t) => `- ${t}`), '', '## 완료 조건', criteria || plan.doneCriteria, '',
         '## 프로젝트 목표', plan.goal, '', '## 판정 기준', REVIEW_BAR, '',
-        '## 출력', 'verdict(approve|changes_requested), summary, issues(막는 결함), followUps(다음 작업으로 미룰 경미한 지적), blocked(작성자가 고칠 수 없으면 true), needs(blocked일 때 필요한 조치)를 구조화 출력으로 반환한다. 근거 없이 승인하지 않는다.',
+        '## 출력', 'verdict(approve|changes_requested), summary, issues(막는 결함), followUps(다음 작업으로 미룰 경미한 지적), blocked(작성자가 고칠 수 없으면 true), needs(blocked일 때 필요한 조치), needsUser(팀장만 풀 수 있으면 true)를 구조화 출력으로 반환한다. 근거 없이 승인하지 않는다.',
       ].join('\n');
       a = await this.runClaude(runId, node, visit, prior.length + 1, 'reviewer', reviewer, plan, prompt, [], VERDICT_SCHEMA, null);
     }
@@ -875,10 +876,10 @@ export class Engine {
     return v;
   }
 
-  private verdictOf(a: Attempt): { verdict: 'approve' | 'changes_requested'; summary: string; issues: string[]; followUps: string[]; blocked?: boolean; needs?: string } {
+  private verdictOf(a: Attempt): { verdict: 'approve' | 'changes_requested'; summary: string; issues: string[]; followUps: string[]; blocked?: boolean; needs?: string; needsUser?: boolean } {
     if (a.status !== 'succeeded') return { verdict: 'changes_requested', summary: `검토 실행 실패: ${a.error}`, issues: [a.error || '검토가 끝나지 않았습니다.'], followUps: [] };
     const raw = this.meta(a.runId, `structured:${a.id}`);
-    let v: { verdict?: string; summary?: string; issues?: string[]; followUps?: string[]; blocked?: unknown; needs?: unknown } | null = null;
+    let v: { verdict?: string; summary?: string; issues?: string[]; followUps?: string[]; blocked?: unknown; needs?: unknown; needsUser?: unknown } | null = null;
     try { v = raw ? JSON.parse(raw) : null; } catch { v = null; }
     if (!v) { const m = a.summary.match(/\{[\s\S]*"verdict"[\s\S]*\}/); try { v = m ? JSON.parse(m[0]) : null; } catch { v = null; } }
     if (!v || (v.verdict !== 'approve' && v.verdict !== 'changes_requested')) return { verdict: 'changes_requested', summary: '검토 결과 형식을 확인할 수 없어 승인으로 처리하지 않았습니다.', issues: ['구조화된 검토 결과 없음'], followUps: [] };
@@ -888,7 +889,7 @@ export class Engine {
     const blocked = v.verdict === 'changes_requested' && v.blocked === true;
     // 막는 결함 없이 수정 요청만 낸 경우(경미한 지적뿐)는 재작업하지 않고 후속으로 넘긴다
     if (!blocked && v.verdict === 'changes_requested' && !issues.length && followUps.length) return { verdict: 'approve', summary: String(v.summary ?? ''), issues: [], followUps };
-    return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps, ...(blocked ? { blocked: true, needs: String(v.needs ?? '').replace(/\s+/g, ' ').trim().slice(0, 500) } : {}) };
+    return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps, ...(blocked ? { blocked: true, needs: String(v.needs ?? '').replace(/\s+/g, ' ').trim().slice(0, 500), needsUser: v.needsUser === true } : {}) };
   }
 
   /**
@@ -1018,7 +1019,8 @@ export class Engine {
       '- 완료 조건을 번호 하나씩 근거와 직접 대조해 criteria에 {no, pass, evidence}로 적는다. 근거는 직접 연 것만 쓴다(시험 결과 파일, 바뀐 코드, 측정 파일). 작성자의 보고 문장은 근거가 아니다. 열어 볼 수 없는 근거(예: 열 수 없는 화면 사진)에만 달린 조건은 pass=false로 두고 evidence에 "확인 불가"라고 쓴다.',
       '- verdict는 통과하지 못한 완료 조건이 있거나 P0·P1(정확성 오류, 보안, 데이터 손실, 요구 위반) 결함이 있을 때만 changes_requested로 한다. 다듬기·표현·있으면 좋은 추가 검증은 findings에 P2로 적고 승인한다.',
       '- blocked: 통과하지 못한 원인을 작성자가 자기 수정 범위 안에서 고칠 수 없을 때만 true(환경 문제, 이 작업이 건드릴 수 없는 저장소·파일, 사용자의 결정·승인이 필요한 일). 이때 needs에 "누가 무엇을 해야 풀리는지"를 한두 문장으로 쓴다. 아니면 blocked=false, needs는 빈 문자열.',
-      '## 출력', 'verdict, summary(첫 줄에 "완료 조건 N개 중 M개 통과"), criteria, findings[{severity,file,issue,fix}], blocked, needs를 한국어로 반환한다.',
+      '- needsUser: blocked일 때, 풀 수 있는 사람이 팀장뿐이면 true(제품 방향·완료 기준 변경 같은 결정, 돈, 권한 허용, 비밀값·로그인·외부 계정). 시연 서버 켜기·다시 켜기, 작업 범위 조정, 다른 직원이 고칠 코드, 시험 환경 정리처럼 앱·오퍼레이터·다른 직원이 할 수 있으면 false(팀장에게 묻지 않고 다음 계획으로 넘어간다). blocked가 아니면 false.',
+      '## 출력', 'verdict, summary(첫 줄에 "완료 조건 N개 중 M개 통과"), criteria, findings[{severity,file,issue,fix}], blocked, needs, needsUser를 한국어로 반환한다.',
     ].join('\n') : [
       `# Codex 코드·산출물 리뷰 — ${node.label}`, '', '읽기 전용으로 검토한다. 파일을 수정하지 않는다. 실제 결함(정확성·보안·요구 위반·근거 불일치)만 보고하고 문체 지적은 하지 않는다.', '',
       '## 검토 대상', ...targets.map((t) => `- ${t}`), '',
@@ -1085,7 +1087,7 @@ export class Engine {
         const failed = crit.filter((c) => c.pass === false);
         const serious = safeRes.findings.filter((f) => sevRank(f.severity) <= 1);
         if (safeRes.verdict === 'changes_requested' && safeRes.blocked === true)
-          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `${BLOCKED_PREFIX}${String(safeRes.needs ?? '').replace(/\s+/g, ' ').trim() || failed[0]?.evidence || safeRes.summary}`.slice(0, 700), noRework: true };
+          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `${(safeRes as { needsUser?: unknown }).needsUser === true ? BLOCKED_PREFIX : TEAM_BLOCKED_PREFIX}${String(safeRes.needs ?? '').replace(/\s+/g, ' ').trim() || failed[0]?.evidence || safeRes.summary}`.slice(0, 700), noRework: true };
         else if (!crit.length || cover)
           // 검증 응답이 불완전함: 작성자 탓이 아니므로 작성자에게 보내지 않고 검증만 다시 한다(이 단계의 방문 상한까지)
           verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `Codex 검증이 완료 조건을 빠짐없이 판정하지 않아 통과로 볼 수 없습니다(${cover || '조건 판정 없음'}). 검증을 다시 합니다.`, target: node.id };
@@ -1118,7 +1120,7 @@ export class Engine {
     const v = await this.runReviewer(runId, node, visit, plan, reviewer, targets, criteria);
     if (v.verdict === 'approve') return { status: 'ok' as const, summary: `승인: ${v.summary}`, outputs: upstream };
     // 작성자가 고칠 수 없는 원인: 같은 작성자에게 다시 시키지 않고 이 단계에서 끝낸다(미션이 바로 확인함에 올린다)
-    if (v.blocked) return { status: 'fail' as const, summary: v.summary, outputs: [], reason: `${BLOCKED_PREFIX}${v.needs || v.issues[0] || v.summary}`.slice(0, 700), noRework: true };
+    if (v.blocked) return { status: 'fail' as const, summary: v.summary, outputs: [], reason: `${v.needsUser ? BLOCKED_PREFIX : TEAM_BLOCKED_PREFIX}${v.needs || v.issues[0] || v.summary}`.slice(0, 700), noRework: true };
     return { status: 'fail' as const, summary: v.summary, outputs: [], reason: `검토 수정 요청: ${v.summary}`, feedbackText: `독립 검토(${reviewer.name}) 지적:\n- ${v.issues.join('\n- ')}`, target: this.reworkTarget(graph, node, `${v.summary}\n${v.issues.join('\n')}`) };
   }
 
@@ -1548,7 +1550,7 @@ export class Engine {
 /** Codex 작성자에게: 앱이 지키는 경계를 알린다(실제 차단은 샌드박스와 앱의 반영 검사가 한다) */
 const CODEX_AUTHOR_NOTE = ['## 실행 환경(Codex)',
   '- 지금 작업 폴더는 프로젝트의 격리 복사본이다. 파일은 작업 폴더 안에서만 고친다. 다른 폴더에 쓰면 막히고, 수정 가능 경로 밖 변경은 앱이 원본에 반영하지 않는다.',
-  '- 네트워크는 꺼져 있다(패키지 설치·외부 호출 불가). 이미 설치된 도구로 시험·빌드를 돌린다. 막히면 같은 시도를 되풀이하지 말고 보고에 무엇이 필요한지 쓴다.',
+  '- 네트워크는 꺼져 있다(패키지 설치·외부 호출 불가, 이 컴퓨터에 켜 둔 시연 서버 127.0.0.1:포트에도 접속할 수 없음). 이미 설치된 도구로 시험·빌드를 돌리고, 화면 확인은 작업 폴더 안에서 띄운 것이나 예시 데이터로 한다. 켜 둔 시연 서버 확인은 미실행으로 적어 두면 다른 직원이 한다. 같은 시도를 되풀이하지 않는다.',
   '- 비밀값 파일(.env 등)·인증 파일을 읽거나 출력하거나 다른 파일에 옮기지 않는다. 커밋·푸시는 하지 않는다(앱이 한다).'].join('\n');
 /** Codex 작성자용 스킬 안내: 스킬 사본은 <root>/<묶음>/skills/<스킬>/SKILL.md 구조라 정확한 파일 경로를 준다(추측한 경로로 읽다 실패하지 않게) */
 export function codexSkillNote(names: string[], root: string): string {

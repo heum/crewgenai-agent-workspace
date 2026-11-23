@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { isolatedDir } from './engine/fsutil';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { BLOCKED_PREFIX, BLOCKER_LABEL } from '../shared/types';
+import { BLOCKED_PREFIX, BLOCKER_LABEL, TEAM_BLOCKED_PREFIX } from '../shared/types';
 import { MAX_DOMAINS, cleanDomain, cleanDomains } from './netallow';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus, NextMissionDraft, WorkItem } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
@@ -1242,6 +1242,7 @@ export class MissionRunner {
   onLive(e: LiveEvent) {
     if (e.type !== 'node') return;
     if (e.state.status === 'failed' && String(e.state.failureReason ?? '').startsWith(BLOCKED_PREFIX)) { this.raiseBlocked(e.state.runId, e.state.nodeId, String(e.state.failureReason)); return; }
+    if (e.state.status === 'failed' && String(e.state.failureReason ?? '').startsWith(TEAM_BLOCKED_PREFIX)) { this.teamBlocked(e.state.runId, e.state.nodeId, String(e.state.failureReason)); return; }
     if (e.state.status === 'succeeded') { this.announceResult(e.state.runId, e.state.nodeId, e.state.visits, 'ok'); return; }
     if (e.state.status === 'failed') { this.announceResult(e.state.runId, e.state.nodeId, e.state.visits, 'fail'); return; }
     if (!['running', 'checking', 'rework'].includes(e.state.status)) return;
@@ -1317,6 +1318,32 @@ export class MissionRunner {
     if ((cur.blockers ?? []).some((x) => `fail|${failureSig(x.reason, x.step)}` === sig) || (cur.resolvedFail ?? []).includes(`${runId}|${sig}`)) return; // 이미 올렸거나 사용자가 답한 것
     this.event(cur, 'system', `검증 결과, 이 업무는 담당 직원이 고칠 수 없는 이유로 멈췄습니다. 다시 시키지 않고 확인함에 올렸습니다(나머지 작업은 계속합니다).\n- [${BLOCKER_LABEL.needs_user}] ${b.step}: ${b.reason}`, { blockers: [b] });
     this.set(m.id, { blockers: [...(cur.blockers ?? []), b].slice(-20), parkedSigs: [...new Set([...(cur.parkedSigs ?? []), sig])] });
+  }
+
+  /**
+   * 검증이 '작성자는 못 고치지만 팀 안에서 풀 수 있음'으로 끝낸 업무: 확인함에 올리지 않는다(팀장에게 묻지 않음).
+   * 같은 작성자에게 다시 시키지 않고, 다음 계획이 먼저 풀도록(서버 켜기·범위 조정·다른 직원에게 맡기기) 넘긴다.
+   */
+  private teamBlocked(runId: string, nodeId: string, reason: string) {
+    const r = this.d.store.db.prepare("SELECT data FROM missions WHERE json_extract(data,'$.currentRunId')=?").get(runId) as Row | undefined;
+    if (!r) return;
+    const m = JSON.parse(String(r.data)) as Mission;
+    if (['stopped', 'failed', 'done'].includes(m.status)) return;
+    let label = nodeId;
+    try { label = this.d.store.getGraphVersion(this.d.store.getRun(runId).graphVersionId).graph.nodes.find((n) => n.id === nodeId)?.label ?? nodeId; } catch { /* 표시 이름 없이 진행 */ }
+    const line = `${label}: ${redact(reason.slice(TEAM_BLOCKED_PREFIX.length)).replace(/\s+/g, ' ').slice(0, 500)}`;
+    const cur = this.get(m.id);
+    if ((cur.teamNotes ?? []).includes(line)) return;
+    this.event(cur, 'system', `검증 결과, 담당 직원 혼자서는 풀 수 없지만 팀 안에서 풀 일입니다. 팀장에게 묻지 않고 다음 계획에서 먼저 풉니다(나머지 작업은 계속).\n- ${line}`);
+    this.set(m.id, { teamNotes: [...(cur.teamNotes ?? []), line].slice(-10) });
+  }
+  private teamSection(m: Mission): string[] {
+    const ns = m.teamNotes ?? [];
+    if (!ns.length) return [];
+    return ['## 팀 안에서 풀 일(지난 검증이 담당 직원 혼자서는 못 푼다고 한 것 — 팀장에게 묻지 않는다, 이번 계획에서 먼저 푼다)', UNTRUSTED_NOTE, ...ns.map((x) => `- ${quote(x)}`),
+      '- 시연 서버가 꺼져 있어 확인하지 못했으면: 앱이 이번 사이클 작업 전에 승인된 시연 서버를 다시 켜므로 그 확인을 다시 맡긴다.',
+      '- 수정 범위가 모자랐으면 그 작업의 writeScope를 기획의 자동 수정 허용 경로 안에서 넓혀 다시 맡긴다. 다른 직원이 고칠 코드면 그 직원에게 작업을 준다.',
+      '- 같은 방법으로 다시 돌리지 않는다. 팀장만 풀 수 있는 것(제품 결정·돈·권한·비밀값·로그인)일 때만 gaps에 kind=decide로 한 건 올린다.', ''];
   }
 
   // ───── 루프 ─────
@@ -1500,6 +1527,13 @@ export class MissionRunner {
           return;
         }
         this.planFix.delete(id);
+        if (this.get(id).teamNotes?.length) this.set(id, { teamNotes: null }); // 이번 계획이 넘겨받았다
+        // 직원이 일하기 전에 승인된 시연 서버를 켠다: 앱을 다시 켜면 앱이 켠 서버도 꺼지므로, 사이클 끝 확인 때만 켜면 직원은 꺼진 서버를 보게 된다
+        if (this.d.demoVerify) {
+          try { const asks: DemoAsk[] = []; const lines = await this.d.demoVerify(m.projectId, asks); this.demoChecks.set(id, lines); this.noteDemoAsks(id, asks); if (lines.length) this.event(m, 'system', `직원 작업 전에 시연 서버를 확인했습니다(꺼져 있던 승인된 서비스는 앱이 켬):\n${lines.join('\n')}`); }
+          catch (e) { this.event(m, 'system', `직원 작업 전 시연 서버 확인 실패: ${redact((e as Error).message).slice(0, 200)}`); }
+          if (this.closed || this.get(id).status === 'stopped') return;
+        }
         const saved = this.d.store.saveGraph(m.projectId, built.graph, `미션 ${m.id.slice(0, 8)} 사이클 ${m.cycle}`);
         if (!this.hasSnapshot(id)) await this.snapshot(m, project.plan.folder, 'start', '미션 시작 전');
         // 스냅샷을 기다리는 동안 중단·종료·'지금 반영' 추가 지시가 들어왔으면 이 계획으로 실행하지 않는다
@@ -1565,7 +1599,7 @@ export class MissionRunner {
           const items = failed.map((n) => ({ step: labels.get(n.nodeId) ?? n.nodeId, reason: n.failureReason.slice(0, 600) })).filter((x) => !answered.has(`${run.id}|fail|${failureSig(x.reason, x.step)}`));
           if (fin.status === 'failed' && !failed.length && fin.reason) items.push({ step: '실행', reason: fin.reason.slice(0, 600) }); // 사용자가 답한 실패를 걸러 비게 된 경우에는 다시 만들지 않는다
           const prev = this.get(id).failSigs ?? [];
-          const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => x.reason.startsWith(BLOCKED_PREFIX) ? [{ ...x, kind: 'needs_user' as const }] : ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
+          const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => x.reason.startsWith(TEAM_BLOCKED_PREFIX) ? [] : x.reason.startsWith(BLOCKED_PREFIX) ? [{ ...x, kind: 'needs_user' as const }] : ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
           if (blockers.length) {
             const list = blockers.map((b) => `- [${BLOCKER_LABEL[b.kind]}] ${b.step}: ${b.reason}`).join('\n');
             const parked = this.get(id).parkedSigs ?? [];
@@ -2170,6 +2204,7 @@ export class MissionRunner {
       ...this.limitSection(m),
       ...this.planFixSection(m),
       ...this.techSection(m),
+      ...this.teamSection(m),
       ...this.lessonsSection(m.projectId),
       ...this.repeatSection(m),
       ...DROP_RULES,
@@ -2177,7 +2212,7 @@ export class MissionRunner {
       ...workPlanSection(this.progress(m.projectId), m.cycle),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
-      '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}`), '',
+      '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}${a.runner === 'codex' ? ' · 실행 도구 Codex(네트워크·켜 둔 시연 서버 접속 불가 — 시연 서버로 화면을 재는 확인은 다른 직원에게 맡긴다)' : ''}`), '',
       ...this.skillSection(plan, agents),
       ...this.docsSection(plan, m.projectId),
       '## 지금까지의 판단·질문·사용자 답변', this.history(m), '',
@@ -2616,7 +2651,8 @@ export function carryCheckpoint(cp: MissionCheckpoint | null | undefined, gaps: 
 
 /** 판단 요약 첫 줄을 검토 지점 제목으로(굵은 '한 줄 요약:' 머리말은 뺀다). 다음 계획이 아니라 이번에 한 일을 제목으로 쓴다. */
 export function summaryTitle(summary: string): string {
-  const line = String(summary ?? '').split('\n').map((l) => l.replace(/\*\*/g, '').replace(/^\s*한\s*줄\s*요약\s*[:：]\s*/, '').trim()).find(Boolean) ?? '';
+  // 머리글 기호(#)와 '한 줄 요약' 같은 머리글만 있는 줄은 건너뛰고 첫 문장을 쓴다(확인함 질문이 '### 한 줄 요약'으로 보이지 않게)
+  const line = String(summary ?? '').split('\n').map((l) => l.replace(/\*\*/g, '').replace(/^\s*#+\s*/, '').replace(/^\s*한\s*줄\s*(요약|결론)\s*[:：]?\s*/, '').replace(/^[|\-\s:]+$/, '').trim()).find(Boolean) ?? '';
   return redact(line).slice(0, 160);
 }
 

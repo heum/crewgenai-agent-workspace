@@ -265,6 +265,25 @@ describe('오퍼레이터 루프', () => {
     svc.close();
   });
 
+  it('팀 안에서 풀 막힘(시연 서버 꺼짐 등)은 확인함에 올리지 않고 다음 계획이 먼저 푼다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:blocked-team]] [[mock:code]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    const texts = svc.missions.events(m.id).map((e) => e.text);
+    expect(texts.some((x) => x.startsWith('검증 결과, 담당 직원 혼자서는 풀 수 없지만 팀 안에서 풀 일입니다'))).toBe(true);
+    expect(svc.pendingDecisions().filter((x) => x.missionId === m.id && x.kind === 'blocker')).toHaveLength(0); // 팀장에게 묻지 않는다
+    expect(svc.missions.get(m.id).blockers ?? []).toHaveLength(0);
+    const r1 = svc.engine.detail(svc.missions.detail(m.id).cycles[0].runId);
+    expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(1); // 같은 작성자에게 다시 시키지 않는다
+    svc.close();
+  });
+
+  it('요약 제목: 머리글만 있는 줄은 건너뛰고 첫 문장을 쓴다', async () => {
+    const { summaryTitle } = await import('../src/main/mission');
+    expect(summaryTitle('### 한 줄 요약\n승인함을 처리 대기와 처리 완료로 나눴습니다.\n\n| 항목 |')).toBe('승인함을 처리 대기와 처리 완료로 나눴습니다.');
+    expect(summaryTitle('한 줄 요약: 서버가 꺼져 있었습니다.')).toBe('서버가 꺼져 있었습니다.');
+  });
+
   it('진단 판정: 같은 제목이나 기능 ID로 다시 계획했는데 원인·바꾼 방법이 없으면 잡는다', async () => {
     const { missingDiagnoses, lessonKey } = await import('../src/main/mission');
     const xs = [{ label: 'W26 기록 화면 (13 AI)', title: 'W26 기록 화면', ids: ['W26'], rejections: 2, failed: true, reasons: [] }, { label: '문서 정리 (06 문서)', title: '문서 정리', ids: [], rejections: 2, failed: false, reasons: [] }];

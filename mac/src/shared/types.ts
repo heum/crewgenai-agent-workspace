@@ -658,6 +658,7 @@ export interface Mission {
   denialSigs?: string[]; // 직전 사이클의 거부 항목(반복 판별)
   /** 앱이 처리한 기술 권한 막힘(사용자에게 묻지 않음): 오퍼레이터가 다른 방법으로 계획하도록 알린다 */
   techNotes?: string[] | null;
+  teamNotes?: string[] | null; // 검증이 '팀 안에서 풀 일'로 넘긴 막힘(확인함에 올리지 않고 다음 계획이 먼저 푼다)
   /** 앱이 처리해 봤지만 꼭 필요한 명령·경로 허용 요청: 확인함 팝업으로 사용자에게 묻는다(미션은 멈추지 않음) */
   permAsks?: MissionPermAsk[] | null;
   /** 같은 막힘이 몇 개 사이클에서 났는지(sig별) — 반복되면 사용자에게 허용을 묻는다 */
@@ -782,6 +783,8 @@ export interface MissionBlocker { step: string; reason: string; kind: 'environme
 export const BLOCKER_LABEL: Record<MissionBlocker['kind'], string> = { environment: '내 PC 환경', repeated: '같은 실패 반복', needs_user: '결정·조치 필요' };
 /** 엔진이 '작성자가 고칠 수 없음'으로 끝낸 단계의 실패 사유 머리말(미션이 이 말로 알아본다) */
 export const BLOCKED_PREFIX = '막힘(작성자가 고칠 수 없음): ';
+/** 작성자는 고칠 수 없지만 팀 안(앱·오퍼레이터·다른 직원)에서 풀 수 있는 막힘: 확인함에 올리지 않고 다음 계획에 넘긴다 */
+export const TEAM_BLOCKED_PREFIX = '팀 안에서 풀 일(작성자가 고칠 수 없음): ';
 /** 직원이 권한 때문에 막힌 행위(명령·경로). 앱 설정으로만 허용할 수 있다. */
 export interface MissionDenial {
   agentId: ID | null;

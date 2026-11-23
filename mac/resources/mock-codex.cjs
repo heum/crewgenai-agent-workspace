@@ -42,7 +42,8 @@ process.stdin.on('end', () => {
   // 검증 모드(# Codex 검증): 완료 조건별 판정과 막힘 여부를 함께 낸다. 산출물에 BLOCKED-ENV가 있으면 막힘, P2-ONLY가 있으면 P2 지적만 있는 수정 요청
   if (input.includes('# Codex 검증')) {
     const has = (w) => targets.some((t) => { const p = path.resolve(process.cwd(), t); return fs.existsSync(p) && fs.statSync(p).isFile() && fs.readFileSync(p, 'utf8').includes(w); });
-    if (has('BLOCKED-ENV')) res = { verdict: 'changes_requested', summary: '완료 조건 1개 중 0개 통과', criteria: [{ no: '1', pass: false, evidence: '기록 0건' }], findings: [], blocked: true, needs: '시연 DB를 쥐고 있는 예전 서버를 정리해야 합니다(팀장 결정).' };
+    if (has('BLOCKED-ENV')) res = { verdict: 'changes_requested', summary: '완료 조건 1개 중 0개 통과', criteria: [{ no: '1', pass: false, evidence: '기록 0건' }], findings: [], blocked: true, needs: '시연 DB를 쥐고 있는 예전 서버를 정리해야 합니다(팀장 결정).', needsUser: true };
+    else if (has('BLOCKED-TEAM')) res = { verdict: 'changes_requested', summary: '완료 조건 1개 중 0개 통과', criteria: [{ no: '1', pass: false, evidence: '시연 서버 꺼짐' }], findings: [], blocked: true, needs: '앱이 시연 서버를 켠 뒤 확인을 다시 맡겨야 합니다.', needsUser: false };
     else if (has('MISSING-ONE')) res = { verdict: 'approve', summary: '완료 조건 2개 중 1개 통과', criteria: [{ no: '1', pass: true, evidence: '파일 확인' }], findings: [], blocked: false, needs: '' };
     else if (has('NO-CRITERIA')) res = { verdict: 'approve', summary: '문제 없음', criteria: [], findings: [], blocked: false, needs: '' };
     else if (has('APPROVE-BUT-FAILED')) res = { verdict: 'approve', summary: '완료 조건 1개 중 0개 통과', criteria: [{ no: '1', pass: false, evidence: '시험 결과 없음' }], findings: [], blocked: false, needs: '' };
