@@ -837,16 +837,20 @@ export class Engine {
   private lightSkip(runId: string, graph: WorkGraph, node: GraphNode, upstream: string[]) {
     if (!node.lightSkip) return null;
     const rev = new Map<string, string[]>();
-    for (const e of graph.edges) if (e.kind === 'next') rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]);
-    const authors = new Set<string>(); const seen = new Set<string>(); const st = [...(rev.get(node.id) ?? [])];
+    for (const e of graph.edges) if (e.kind !== 'fail') rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]);
+    // 이 단계로 들어오는 모든 길을 거슬러 올라가, 길마다 처음 만나는 작성 단계를 모은다(검사·분기·취합 같은 중간 단계는 지나간다)
+    const authors = new Set<string>(); const seen = new Set<string>([node.id]); const st = [...(rev.get(node.id) ?? [])];
     while (st.length) {
       const x = st.pop()!; if (seen.has(x)) continue; seen.add(x);
       const n = graph.nodes.find((g) => g.id === x);
-      if (n?.kind === 'agent') authors.add(x); else if (n?.kind === 'codexReview' || n?.kind === 'review') st.push(...(rev.get(x) ?? []));
+      if (n?.kind === 'agent') authors.add(x); else st.push(...(rev.get(x) ?? []));
     }
     if (!authors.size) return null;
-    const changed = this.s.runAttempts(runId).filter((a) => authors.has(a.nodeId) && a.role === 'author').flatMap((a) => a.changedFiles);
-    if (!docsOnly(changed)) return null;
+    const atts = this.s.runAttempts(runId).filter((a) => a.role === 'author');
+    // 작성 단계마다 따로 본다: 하나라도 바뀐 파일을 알 수 없거나(기록 없음) 문서 밖을 바꿨으면 리뷰한다
+    const per = [...authors].map((id) => atts.filter((a) => a.nodeId === id).flatMap((a) => a.changedFiles));
+    if (!per.every((files) => docsOnly(files))) return null;
+    const changed = per.flat();
     return { status: 'ok' as const, summary: `건너뜀: 문서·화면 사진만 바뀜(${new Set(changed).size}개) — 코드·시험 변경이 없어 리뷰하지 않음`, outputs: upstream };
   }
 

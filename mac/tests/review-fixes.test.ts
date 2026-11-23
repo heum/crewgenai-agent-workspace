@@ -373,6 +373,22 @@ describe('격리 반영 규칙(Codex 4차)', () => {
     cleanupIsolated(dir);
   });
 
+  it('있던 폴더를 링크로 바꾸면 아무것도 반영하지 않는다(링크를 따라가 원본을 덮어쓰거나 지우지 않음)', () => {
+    const proj = tmpProject(); const outside = join(proj, '..', 'outside-src'); fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(join(outside, 'a.md'), '밖의 내용');
+    fs.mkdirSync(join(proj, 'docs/sub'), { recursive: true });
+    fs.writeFileSync(join(proj, 'docs/sub/a.md'), '원본'); fs.writeFileSync(join(proj, 'docs/sub/b.md'), '원본b'); fs.writeFileSync(join(proj, 'docs/c.md'), '원본c');
+    const dir = isolatedDir(`t2c:${proj}`); const st = prepareIsolated(proj, dir, inDocs, false);
+    fs.rmSync(join(dir, 'docs/sub'), { recursive: true }); fs.symlinkSync(outside, join(dir, 'docs/sub'));
+    fs.writeFileSync(join(dir, 'docs/c.md'), '에이전트');
+    const r = applyIsolated(proj, dir, diffSnapshots(new Map(st.before), snapshot(dir)), st.base);
+    expect(r.applied).toEqual([]); expect(r.blocked.length).toBeGreaterThan(0); expect(r.skipped).toEqual([]);
+    expect(fs.readFileSync(join(proj, 'docs/sub/a.md'), 'utf8')).toBe('원본');
+    expect(fs.existsSync(join(proj, 'docs/sub/b.md'))).toBe(true);
+    expect(fs.readFileSync(join(proj, 'docs/c.md'), 'utf8')).toBe('원본c');
+    cleanupIsolated(dir);
+  });
+
   it('파일→폴더 전환과 폴더 삭제를 반영한다', () => {
     const proj = tmpProject(); fs.mkdirSync(join(proj, 'docs/old'), { recursive: true });
     fs.writeFileSync(join(proj, 'docs/a.md'), '파일'); fs.writeFileSync(join(proj, 'docs/old/x.md'), 'x');

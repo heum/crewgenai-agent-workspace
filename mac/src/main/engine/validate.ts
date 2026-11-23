@@ -187,9 +187,14 @@ export function edgesFrom(g: WorkGraph, id: string, kind?: GraphEdge['kind']) {
   return g.edges.filter((e) => e.source === id && (!kind || e.kind === kind));
 }
 
-/** 리뷰를 건너뛰어도 되는 파일: 문서·화면 사진·기록(코드·시험·설정·데이터는 아님) */
-const LIGHT_EXT = /\.(md|txt|png|jpe?g|gif|webp|pdf|log|csv)$/i;
-/** 바뀐 파일이 문서·증빙뿐인가. 바뀐 파일을 알 수 없으면(빈 목록) 아니라고 본다(리뷰한다). */
+/** 리뷰를 건너뛰어도 되는 파일: 문서(.md)와 화면 사진·PDF뿐이다. 코드·시험·설정·의존성 목록·데이터(.txt·.csv·.json 포함)는 아니다. */
+const LIGHT_EXT = /\.(md|png|jpe?g|gif|webp|pdf)$/i;
+/** 직원·도구가 지시로 읽는 문서는 문서라도 리뷰한다(행동을 바꾸는 파일) */
+const AGENT_DOC = /^(agents|claude|gemini|skill|codex)\.md$/i;
+/** 바뀐 파일이 문서·화면 사진뿐인가. 바뀐 파일을 알 수 없으면(빈 목록) 아니라고 본다(리뷰한다). 점으로 시작하는 폴더(.github·.claude·.tmp 등) 안은 문서로 보지 않는다. */
 export function docsOnly(files: string[]): boolean {
-  return files.length > 0 && files.every((f) => LIGHT_EXT.test(f) || normRel(f).split('/').includes('.tmp'));
+  return files.length > 0 && files.every((f) => {
+    const parts = normRel(f).split('/'); const name = parts[parts.length - 1] ?? '';
+    return LIGHT_EXT.test(name) && !AGENT_DOC.test(name) && !parts.some((p) => p.startsWith('.'));
+  });
 }

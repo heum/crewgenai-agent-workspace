@@ -111,6 +111,8 @@ describe('오퍼레이터 루프', () => {
     expect(validate.docsOnly(['docs/a.md', 'tests/a.test.ts'])).toBe(false);
     expect(validate.docsOnly(['docs/result.json'])).toBe(false);
     expect(validate.docsOnly([])).toBe(false); // 바뀐 파일을 모르면 리뷰한다
+    for (const f of ['src/.tmp/live.ts', 'CMakeLists.txt', 'requirements.txt', 'data/prices.csv', 'docs/run.log', 'AGENTS.md', 'skills/x/SKILL.md', '.github/pull_request_template.md', '.claude/commands/a.md', 'docs/.tmp/a.md'])
+      expect(validate.docsOnly([f]), f).toBe(false);
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '문서를 정리하라');
     const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
@@ -122,6 +124,14 @@ describe('오퍼레이터 루프', () => {
     const skipped = r1.graph.nodes.filter((n) => n.kind === 'codexReview' || n.kind === 'review').map((n) => r1.nodes.find((x) => x.nodeId === n.id));
     expect(skipped.length).toBe(1); // 기본 검증 방식에는 검증 단계 하나만 있다
     for (const n of skipped) { expect(n?.status).toBe('succeeded'); expect(n?.summary).toContain('건너뜀'); }
+    // 검사 단계 뒤에 있는 다른 작성 단계까지 거슬러 올라가 본다: 그 단계가 무엇을 바꿨는지 모르면 건너뛰지 않는다
+    const rv = r1.graph.nodes.find((n) => n.kind === 'review')!; const au = r1.graph.nodes.find((n) => n.kind === 'agent')!;
+    const eng = svc.engine as unknown as { lightSkip: (runId: string, g: unknown, n: unknown, up: string[]) => unknown };
+    const runId = svc.missions.detail(m.id).cycles[0].runId;
+    expect(eng.lightSkip(runId, r1.graph, rv, [])).not.toBeNull();
+    const other = { ...au, id: 'other-author' }; const ck = { ...au, id: 'other-check', kind: 'check' };
+    const mixed = { nodes: [...r1.graph.nodes, other, ck], edges: [...r1.graph.edges, { id: 'x1', source: 'other-author', target: 'other-check', kind: 'next' }, { id: 'x2', source: 'other-check', target: rv.id, kind: 'next' }] };
+    expect(eng.lightSkip(runId, mixed, rv, [])).toBeNull();
     svc.close();
   });
 

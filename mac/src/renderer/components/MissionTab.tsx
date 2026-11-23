@@ -174,7 +174,7 @@ function NewMissionIntro({ ready, onGoTab, onRecheck }: { ready: MissionReadines
     <div className="mission-view">
       <div className="card">
         <h3>새 지시</h3>
-        <p className="muted">아래 입력창에 무엇을 만들거나 고칠지 적어 주세요. 오퍼레이터가 기획의 완성 문서를 근거로 읽고 계획을 세워 담당 직원에게 배정합니다. 결과는 Codex 리뷰와 Claude 재검토를 거칩니다.</p>
+        <p className="muted">아래 입력창에 무엇을 만들거나 고칠지 적어 주세요. 오퍼레이터가 기획의 완성 문서를 근거로 읽고 계획을 세워 담당 직원에게 배정합니다. 결과는 다른 직원의 검증을 거칩니다(설정의 검증 방식에 따라 작업마다 Codex 리뷰와 Claude 재검토).</p>
         <p className="muted small">근거 문서가 빈약하거나 애매하면 오퍼레이터가 채울 부분을 알려 주고 멈춥니다. 문서는 <strong>기획</strong> 탭의 ‘완성 문서 목록…’에서 올립니다.</p>
       </div>
       {ready && <ReadinessBox ready={ready} onGoTab={onGoTab} onRecheck={onRecheck} />}
@@ -536,15 +536,18 @@ function Fold({ id, title, count, summary, extra, className = 'card', children }
 const STRIP: MissionStage[] = ['plan', 'execute', 'codex', 'claude_review', 'judge'];
 function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { stage: MissionStage; live: boolean; cycle: number; maxCycles: number; working: WorkingItem[]; run: RunDetail | null; agents: Agent[] }) {
   const [big, setBig] = useState(false);
-  const idx = STRIP.indexOf(stage);
+  // 이 사이클의 흐름에 Codex 리뷰 단계가 없으면(검증 방식: 닫을 때 한 번) 띠에서 빼고, 재검토 칸은 '검증'으로 보여 준다
+  const noCodex = !!run && !run.graph.nodes.some((n) => n.kind === 'codexReview');
+  const strip = noCodex ? STRIP.filter((s) => s !== 'codex') : STRIP;
+  const idx = strip.indexOf(stage);
   const end = stage === 'ask_user' || stage === 'done' || stage === 'stopped';
   return (
     <div className="loop-strip-card">
       <div className="loop-strip" aria-label="오퍼레이터 루프 현재 단계">
         <span className="loop-cycle" title="반복 사이클">⟳ 사이클 {cycle}/{maxCycles}</span>
-        {STRIP.map((s, i) => (
+        {strip.map((s, i) => (
           <span key={s} className={`loop-step ${s === stage ? `now ${live ? 'live' : ''}` : ''} ${idx > i || end ? 'past' : ''}`} aria-current={s === stage ? 'step' : undefined}>
-            {MISSION_STAGE_LABEL[s]}
+            {noCodex && s === 'claude_review' ? '검증' : MISSION_STAGE_LABEL[s]}
           </span>
         ))}
         <span className={`loop-step end ${end ? 'now' : ''}`}>{end ? MISSION_STAGE_LABEL[stage] : '확인·완료'}</span>
