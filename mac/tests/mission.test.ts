@@ -138,8 +138,52 @@ describe('오퍼레이터 루프', () => {
     expect(item?.urgent).toBe(true);
     expect(item?.explain).toContain('[결정·조치 필요]');
     expect(svc.missions.get(m0.id).blockers!.filter((b) => b.kind === 'needs_user').length).toBe(1); // 사이클 끝 정리에서 중복으로 늘지 않는다
+    const evs = svc.missions.events(m0.id); const raised = evs.findIndex((e) => e.text.includes('확인함에 올렸습니다')); const ended = evs.findIndex((e) => e.kind === 'cycle_end');
+    expect(raised).toBeGreaterThanOrEqual(0); expect(ended === -1 || raised < ended).toBe(true); // 사이클이 끝나기 전에 올렸다
     if (!['stopped', 'done', 'failed'].includes(m.status)) await svc.missions.stop(m0.id);
     svc.close();
+  });
+
+  it('검증 방식 codex: 작업은 Codex가 완료 조건으로 판정하고(실패면 재작업), 사이클 끝에 다른 직원의 최종 리뷰가 한 번 돈다', async () => {
+    const { dir, svc, p } = setup();
+    svc.saveSettings({ reviewMode: 'codex' });
+    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    expect(m.status).toBe('done');
+    const r1 = svc.engine.detail(svc.missions.detail(m.id).cycles[0].runId);
+    expect(r1.graph.nodes.filter((n) => n.kind === 'codexReview').map((n) => [!!n.verify, !!n.cycleReview])).toEqual([[true, false]]);
+    expect(r1.graph.nodes.filter((n) => n.kind === 'review').map((n) => !!n.cycleReview)).toEqual([true]); // 작업별 Claude 검증은 없다
+    expect(r1.reviews.filter((r) => r.kind === 'codex').map((r) => r.verdict)).toEqual(['changes_requested', 'approve']);
+    expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(2);
+    expect(r1.attempts.filter((a) => a.role === 'reviewer').length).toBe(1); // 사이클 최종 리뷰 한 번
+    const fin = r1.graph.nodes.find((n) => n.kind === 'review')!;
+    const author = r1.graph.nodes.find((n) => n.kind === 'agent')!;
+    expect(fin.agentId).not.toBe(author.agentId); // 작성자가 아닌 직원
+    expect(r1.nodes.find((x) => x.nodeId === fin.id)?.summary).toContain('최종 리뷰');
+    expect(readFileSync(join(dir, 'docs/mission/cycle-1.md'), 'utf8')).toContain('FIXED');
+    svc.close();
+  });
+
+  it('검증 방식 codex: P2 지적뿐인 수정 요청은 재작업시키지 않고, 막힘이면 재작업 없이 확인함에 올린다', async () => {
+    const a = setup();
+    a.svc.saveSettings({ reviewMode: 'codex' });
+    const ma = await a.svc.startMission(a.p.id, '[[mock:code]] [[mock:p2-only]] 문서를 정리하라');
+    const mA = await waitMission(a.svc, ma.id, ['done', 'waiting_user', 'failed']);
+    const ra = a.svc.engine.detail(a.svc.missions.detail(mA.id).cycles[0].runId);
+    expect(ra.reviews.filter((r) => r.kind === 'codex').map((r) => r.verdict)).toEqual(['changes_requested']);
+    expect(ra.attempts.filter((x) => x.role === 'author').length).toBe(1);
+    expect(ra.run.status).toBe('succeeded');
+    a.svc.close();
+    const b = setup();
+    b.svc.saveSettings({ reviewMode: 'codex' });
+    const mb = await b.svc.startMission(b.p.id, '[[mock:code]] [[mock:blocked-env]] 문서를 정리하라');
+    const withBlocker = await (async () => { for (let i = 0; i < 1200; i++) { const x = b.svc.missions.get(mb.id); if (x.blockers?.length) return x; await sleep(50); } throw new Error('보류 항목이 생기지 않음'); })();
+    expect(withBlocker.blockers![0].kind).toBe('needs_user');
+    const runId = b.svc.missions.detail(mb.id).cycles[0].runId;
+    const mB = await waitMission(b.svc, mb.id, ['done', 'waiting_user', 'failed', 'stopped']);
+    expect(b.svc.engine.detail(runId).attempts.filter((x) => x.role === 'author').length).toBe(1);
+    if (!['stopped', 'done', 'failed'].includes(mB.status)) await b.svc.missions.stop(mb.id);
+    b.svc.close();
   });
 
   it('문서만 바꾼 작업은 Codex 리뷰와 재검토를 건너뛴다(코드·시험을 바꾸면 리뷰한다)', async () => {
@@ -611,6 +655,7 @@ describe('직원이 올린 결정 필요', () => {
     ]);
     expect(collectStaffAsks(['통과했습니다.', ''])).toEqual([]);
     expect(collectStaffAsks(['추가 결정이 필요하지 않습니다.', '- 결정은 필요 없습니다.'])).toEqual([]);
+    expect(collectStaffAsks(['추가 설치는 필요 없습니다. 결정 필요: 운영 DB를 정리할지 정해 주세요.']).length).toBe(1);
     expect(collectStaffAsks(['결정은 필요합니다: 설치 방식은 사용자에게 확인해야 합니다.'])).toEqual(['결정은 필요합니다: 설치 방식은 사용자에게 확인해야 합니다.']);
     expect(collectStaffAsks(Array.from({ length: 30 }, (_, i) => `- 결정 필요: 항목 ${i}번을 어떻게 할지 정해 주세요.`)).length).toBe(12);
   });

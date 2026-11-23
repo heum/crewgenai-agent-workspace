@@ -42,6 +42,20 @@ export async function checkCodex(setting: string | null): Promise<CodexStatus> {
     : { path, version, loggedIn, ready: false, problem: 'Codex CLI는 있지만 로그인되지 않았습니다.', fix: '터미널에서 `codex login`을 실행해 로그인한 뒤 다시 확인하세요.' };
 }
 
+/** 작업별 검증(검증 방식 codex): 완료 조건마다 통과·실패를 내고, 작성자가 고칠 수 없는 원인이면 blocked로 알린다 */
+export const CODEX_VERIFY_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['verdict', 'summary', 'criteria', 'findings', 'blocked', 'needs'],
+  properties: {
+    verdict: { type: 'string', enum: ['approve', 'changes_requested'] },
+    summary: { type: 'string' },
+    criteria: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['no', 'pass', 'evidence'],
+      properties: { no: { type: 'string' }, pass: { type: 'boolean' }, evidence: { type: 'string' } } } },
+    findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'file', 'issue', 'fix'],
+      properties: { severity: { type: 'string', enum: ['P0', 'P1', 'P2'] }, file: { type: 'string' }, issue: { type: 'string' }, fix: { type: 'string' } } } },
+    blocked: { type: 'boolean' },
+    needs: { type: 'string' },
+  },
+};
 export const CODEX_REVIEW_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['verdict', 'summary', 'findings'],
   properties: {

@@ -5,7 +5,7 @@ import { autoLayout } from '../../shared/layout';
 import { Background, Controls, ReactFlow } from '@xyflow/react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, LiveEvent, Mission, MissionGap, MissionPick, MissionResult, MissionRef, RefSnippet, StaffProposal, MissionDetail, MissionEvent, MissionFile, MissionReadiness, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, Project, PromptTemplate, RunDetail, NextMissionDraft } from '../../shared/types';
-import { MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS_LABEL, RUN_STATUS_LABEL, billingLabel } from '../../shared/types';
+import { BLOCKER_LABEL, MISSION_STAGE_LABEL, MISSION_STATUS_LABEL, NODE_KIND_LABEL, NODE_STATUS_LABEL, RUN_STATUS_LABEL, billingLabel } from '../../shared/types';
 import { fmtDate, isComposingEnter, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Collapsible, Empty, Loading, Modal } from './common';
 import { Markdown } from '../markdown';
@@ -575,6 +575,8 @@ function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { st
   const noCodex = !!run && stage !== 'codex' && !run.graph.nodes.some((n) => n.kind === 'codexReview');
   // 사이클에 한 번 도는 Codex 리뷰는 검증 뒤에 온다
   const cycleCodex = !!run && run.graph.nodes.some((n) => n.kind === 'codexReview' && n.cycleReview);
+  // 검증 방식 codex: 작업별 Codex 검증 뒤에 코드 리뷰 직원의 최종 리뷰가 온다(기본 순서 그대로)
+  const finalReview = !!run && run.graph.nodes.some((n) => n.kind === 'review' && n.cycleReview);
   const strip: MissionStage[] = noCodex ? STRIP.filter((s) => s !== 'codex') : cycleCodex ? ['plan', 'execute', 'claude_review', 'codex', 'judge'] : STRIP;
   const idx = strip.indexOf(stage);
   const end = stage === 'ask_user' || stage === 'done' || stage === 'stopped';
@@ -584,7 +586,7 @@ function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { st
         <span className="loop-cycle" title="반복 사이클">⟳ 사이클 {cycle}/{maxCycles}</span>
         {strip.map((s, i) => (
           <span key={s} className={`loop-step ${s === stage ? `now ${live ? 'live' : ''}` : ''} ${idx > i || end ? 'past' : ''}`} aria-current={s === stage ? 'step' : undefined}>
-            {(noCodex || cycleCodex) && s === 'claude_review' ? '검증' : MISSION_STAGE_LABEL[s]}
+            {finalReview && s === 'claude_review' ? '최종 리뷰' : finalReview && s === 'codex' ? '검증(Codex)' : (noCodex || cycleCodex) && s === 'claude_review' ? '검증' : MISSION_STAGE_LABEL[s]}
           </span>
         ))}
         <span className={`loop-step end ${end ? 'now' : ''}`}>{end ? MISSION_STAGE_LABEL[stage] : '확인·완료'}</span>
@@ -686,13 +688,15 @@ function QuestionCard({ mission, agents, onChanged }: { mission: Mission; agents
           <ul className="gap-list">
             {blockers.map((b, i) => (
               <li key={i}>
-                <div><span className={`blocker-kind ${b.kind}`}>{b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}</span> <strong>{b.step}</strong></div>
+                <div><span className={`blocker-kind ${b.kind}`}>{BLOCKER_LABEL[b.kind] ?? '보류'}</span> <strong>{b.step}</strong></div>
                 <div className="mono small denial-target">{b.reason}</div>
               </li>
             ))}
           </ul>
           <div className="muted small">
-            {blockers.some((b) => b.kind === 'environment')
+            {blockers.some((b) => b.kind === 'needs_user')
+              ? '검증 결과, 담당 직원이 자기 범위에서 고칠 수 없는 이유로 멈춘 업무입니다. 적힌 조치를 하신 뒤 다시 시도를 누르세요. 다시 시도는 다시 계획하게 할 뿐이며 권한이나 승인을 주지 않습니다. 다른 방법으로 진행하려면 바꿀 지시를 적으세요.'
+              : blockers.some((b) => b.kind === 'environment')
               ? '명령·프로그램 설치, 경로, 로그인, 네트워크처럼 이 PC에서 직접 고쳐야 하는 문제입니다. 고친 뒤 아래에서 다시 시도를 누르세요. 다른 방법으로 진행하려면 바꿀 지시를 적으세요.'
               : '같은 원인으로 다시 실패했습니다. 지시·완료 조건·검사 명령을 바꾸거나 원인을 고친 뒤 다시 시도하세요.'}
           </div>
@@ -937,7 +941,7 @@ function ParkedCard({ mission, agents, onChanged }: { mission: Mission; agents: 
         <ul className="gap-list">
           {blockers.map((b, i) => (
             <li key={i}>
-              <div><span className={`blocker-kind ${b.kind}`}>{b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}</span> <strong>{b.step}</strong></div>
+              <div><span className={`blocker-kind ${b.kind}`}>{BLOCKER_LABEL[b.kind] ?? '보류'}</span> <strong>{b.step}</strong></div>
               <div className="mono small denial-target">{b.reason}</div>
             </li>
           ))}

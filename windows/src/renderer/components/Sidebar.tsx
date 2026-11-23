@@ -240,7 +240,7 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
           paceReservePct: s.paceReservePct ?? 10,
           paceStartPct: s.paceStartPct ?? 80,
           commandLevel: s.commandLevel ?? 'medium',
-          reviewMode: s.reviewMode === 'full' ? 'full' : 'close',
+          reviewMode: s.reviewMode === 'full' || s.reviewMode === 'codex' ? s.reviewMode : 'close',
           ...(skillsTouched && skills ? { skillDirs: skills.dirs } : {}),
         },
         keyArg,
@@ -345,8 +345,9 @@ function SettingsModal({ settings, setSettings, codex, setCodex, onClose }: { se
         <li>사용률은 계정 전체 값이라, 직접 쓰는 Claude 사용량도 포함됩니다. 그래서 아래 몫은 앱이 쓰지 않고 남깁니다.</li>
       </ul>
       <Field label="검증 방식" hint="미션이 작업 결과를 확인하는 방법">
-        <select className="input" value={s.reviewMode === 'full' ? 'full' : 'close'} onChange={(e) => setS({ ...s, reviewMode: e.target.value as 'close' | 'full' })}>
+        <select className="input" value={s.reviewMode === 'full' || s.reviewMode === 'codex' ? s.reviewMode : 'close'} onChange={(e) => setS({ ...s, reviewMode: e.target.value as 'close' | 'full' | 'codex' })}>
           <option value="close">기능을 닫을 때 검증 한 번 + 사이클마다 Codex 리뷰 한 번 (권장)</option>
+          <option value="codex">작업마다 Codex 검증 + 사이클마다 코드 리뷰 직원의 최종 리뷰 (Claude 사용량 절약)</option>
           <option value="full">작업마다 Codex 리뷰 + 재검토 (느림 · 사용량 많음)</option>
         </select>
       </Field>

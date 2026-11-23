@@ -220,7 +220,9 @@ export interface MissionDeps {
   /** 기술 권한 막힘(명령 허용·경로 읽기)을 사용자에게 묻지 않고 오퍼레이터가 다른 방법을 찾게 한다 */
   techAuto?: () => boolean;
   /** 검증 방식: close(기본)는 작업을 닫을 때 다른 직원의 검증 한 번, full은 작업마다 Codex 리뷰 + Claude 재검토 */
-  reviewMode?: () => 'close' | 'full';
+  reviewMode?: () => 'close' | 'full' | 'codex';
+  /** Codex CLI를 쓸 수 있는가(검증 방식 codex는 Codex가 없으면 close로 돌아간다) */
+  codexReady?: () => boolean;
   docTidy?: () => boolean;
   /** 매일 dev 반영이 켜져 있으면 앱이 하루 한 번 알아서 커밋·push한다: 오퍼레이터는 커밋 승인 요청을 내지 않는다 */
   devSync?: () => boolean;
@@ -776,7 +778,8 @@ export class MissionRunner {
     const m = this.get(id); if (!m.blockers?.length) return m;
     const keep = new Set((m.denials ?? []).map((d) => d.sig));
     this.event(m, 'answer', `보류한 업무 ${m.blockers.length}건을 해결했다고 확인했습니다. 다음 계획부터 다시 시도합니다.`);
-    const next = this.set(id, { blockers: null, failSigs: [], parkedSigs: (m.parkedSigs ?? []).filter((x) => keep.has(x)) });
+    const done = m.currentRunId ? m.blockers.map((b) => `${m.currentRunId}|fail|${failureSig(b.reason, b.step)}`) : [];
+    const next = this.set(id, { resolvedFail: [...(m.resolvedFail ?? []), ...done].slice(-60), blockers: null, failSigs: [], parkedSigs: (m.parkedSigs ?? []).filter((x) => keep.has(x)) });
     // 이 보류 때문에 확인 대기였고, 다른 필수 결정(권한·막는 결정·막는 검토 카드)이 없으면 바로 이어서 진행한다
     if (next.status === 'waiting_user' && !next.denials?.length && !(next.gaps ?? []).some((g) => g.blocking) && !next.checkpoint?.blocking)
       return this.answer(id, '', 'continue', { gaps: next.gaps ?? null, denials: null, blockers: null, parkedSigs: next.parkedSigs ?? [] });
@@ -1257,7 +1260,7 @@ export class MissionRunner {
     const b: MissionBlocker = { step: label, reason: redact(reason).slice(0, 600), kind: 'needs_user' };
     const sig = `fail|${failureSig(b.reason, b.step)}`;
     const cur = this.get(m.id);
-    if ((cur.blockers ?? []).some((x) => `fail|${failureSig(x.reason, x.step)}` === sig)) return; // 이미 올린 것
+    if ((cur.blockers ?? []).some((x) => `fail|${failureSig(x.reason, x.step)}` === sig) || (cur.resolvedFail ?? []).includes(`${runId}|${sig}`)) return; // 이미 올렸거나 사용자가 답한 것
     this.event(cur, 'system', `검증 결과, 이 업무는 담당 직원이 고칠 수 없는 이유로 멈췄습니다. 다시 시키지 않고 확인함에 올렸습니다(나머지 작업은 계속합니다).\n- [${BLOCKER_LABEL.needs_user}] ${b.step}: ${b.reason}`, { blockers: [b] });
     this.set(m.id, { blockers: [...(cur.blockers ?? []), b].slice(-20), parkedSigs: [...new Set([...(cur.parkedSigs ?? []), sig])] });
   }
@@ -1479,7 +1482,8 @@ export class MissionRunner {
         if (!this.replan.has(id)) {
           const failed = fin.status === 'failed' ? this.d.store.runNodes(run.id).filter((n) => n.status === 'failed' && n.failureReason) : [];
           const labels = new Map(graphNodes.map((n) => [n.id, n.label]));
-          const items = failed.map((n) => ({ step: labels.get(n.nodeId) ?? n.nodeId, reason: n.failureReason.slice(0, 600) }));
+          const answered = new Set(this.get(id).resolvedFail ?? []); // 이 실행 도중 사용자가 이미 '다시 시도'를 고른 실패는 다시 보류하지 않는다
+          const items = failed.map((n) => ({ step: labels.get(n.nodeId) ?? n.nodeId, reason: n.failureReason.slice(0, 600) })).filter((x) => !answered.has(`${run.id}|fail|${failureSig(x.reason, x.step)}`));
           if (fin.status === 'failed' && !items.length && fin.reason) items.push({ step: '실행', reason: fin.reason.slice(0, 600) });
           const prev = this.get(id).failSigs ?? [];
           const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => x.reason.startsWith(BLOCKED_PREFIX) ? [{ ...x, kind: 'needs_user' as const }] : ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
@@ -1966,7 +1970,11 @@ export class MissionRunner {
     const refIn = [...snaps.map((r) => r.dir), ...atts];
     const attNote = atts.length ? `\n\n[사용자가 지시에 첨부한 파일(읽기 전용)]\n${atts.map((f) => `- ${f}`).join('\n')}\n작업에 관련 있으면 먼저 읽고 반영한다.` : '';
     const refNote = attNote + (snaps.length ? `\n\n[참고 사이트 스냅샷(읽기 전용, 로그인 없이 본 공개 화면)]\n${snaps.map((r) => `- ${r.title || r.url} (${r.url}): ${r.dir}/page.png(화면 사진), ${r.dir}/page.md(본문·링크)`).join('\n')}\n화면 구성·정보 배치·용어를 참고하되 그대로 베끼지 않는다(문구·디자인은 우리 서비스에 맞게 다시 쓴다).` : '');
-    const full = this.d.reviewMode?.() === 'full';
+    const mode = this.d.reviewMode?.() ?? 'close';
+    const full = mode === 'full';
+    // 검증 방식 codex: 작업마다 Codex가 완료 조건을 판정하고, 사이클 끝에 코드 리뷰 직원이 한 번 본다. Codex를 쓸 수 없으면 close로 돌아간다(작업이 전부 실패하지 않게).
+    let codexMode = mode === 'codex';
+    if (codexMode && this.d.codexReady && !this.d.codexReady()) { codexMode = false; this.event(m, 'system', "검증 방식이 'Codex 검증'이지만 Codex CLI를 쓸 수 없어, 이번 사이클은 다른 직원의 검증으로 진행합니다(설정에서 Codex 준비 상태를 확인해 주세요)."); }
     p.tasks.forEach((t, i) => {
       const author = by(t.agentCode) ?? by('00');
       if (!author) throw new Error(`담당 직원 ${t.agentCode}를 찾을 수 없습니다.`);
@@ -1985,19 +1993,31 @@ export class MissionRunner {
         instructions: 'Codex 리뷰 보고서의 지적을 원문 산출물과 직접 대조한다. 재작업(changes_requested)은 완료 조건을 충족하지 못했거나, 근거 문서와 다르게 만들었거나, P0·P1(정확성·보안·요구 위반) 지적이 타당할 때만 요청한다. P2 같은 경미한 지적·표현·완성도 지적은 재작업 사유가 아니다. 승인하되 summary에 "남은 경미 지적"으로 적는다. 근거 없는 지적은 이유를 들어 기각한다.' })
         : mk('review', `검증: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 260, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true, inputs: outs.map((o) => o.path),
           instructions: '이 작업(기능)을 닫는 검증이다. 시작 전에 정한 완료 조건을 하나씩 근거와 직접 대조해 통과·실패를 낸다. 근거는 직접 연 것만 쓴다: 시험 결과 파일, 화면 사진 파일(Read로 열어 본다), 바뀐 코드. 작성자의 보고 문장은 근거가 아니다. 통과하지 못한 완료 조건이 있거나 P0·P1(정확성·보안·요구 위반) 결함이 있을 때만 changes_requested를 내고, issues에 어느 조건이 왜 실패인지와 고칠 것을 쓴다. 다듬기·표현·있으면 좋은 추가 검증은 followUps에 적고 승인한다. summary 첫 줄에 "완료 조건 N개 중 M개 통과"를 쓴다.' });
-      if (full) { nodes.push(a, cx, rv); e(a, cx); e(cx, rv); } else { nodes.push(a, rv); e(a, rv); }
-      e(rv, a, 'fail');
-      let last = rv;
+      // 검증 방식 codex: 작업의 통과·재작업을 Codex가 정한다(완료 조건별 통과·실패). Claude 검증 호출을 작업마다 하지 않는다.
+      const cxv = codexMode ? mk('codexReview', `검증(Codex): ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, lightSkip: true, verify: true }) : null;
+      const gate = cxv ?? rv; // 이 단계가 통과해야 작업이 끝난다
+      if (cxv) { nodes.push(a, cxv); e(a, cxv); }
+      else if (full) { nodes.push(a, cx, rv); e(a, cx); e(cx, rv); } else { nodes.push(a, rv); e(a, rv); }
+      e(gate, a, 'fail');
+      let last = gate;
       const ck0 = this.safeCheck(t.checkCommand, author, plan.folder);
       if (t.checkCommand.length && !ck0) refused.push(`${t.title}: ${t.checkCommand.join(' ')}`);
       if (ck0) {
         const ck = mk('check', `검사: ${t.title}`, x, 520, { command: ck0, timeoutSec: 600 });
-        nodes.push(ck); e(rv, ck); e(ck, a, 'fail'); last = ck;
+        nodes.push(ck); e(gate, ck); e(ck, a, 'fail'); last = ck;
       }
       chains.push({ first: a, last });
     });
     // 검증 방식 close: 사이클 끝에 바뀐 코드 전체를 Codex가 한 번 리뷰한다(작업마다 붙이지 않음). 결과는 판단 단계가 읽는다.
-    const cyc = full || !chains.length ? null : mk('codexReview', `Codex 리뷰: 사이클 ${m.cycle} 코드 변경`, 300, 600, { cycleReview: true, timeoutSec: 1800,
+    // 검증 방식 codex의 사이클 최종 리뷰 담당: 이번 사이클에 작성하지 않은 직원 중 코드 리뷰 담당(이름·역할에 '리뷰') → 읽기 전용 직원 → 총괄 순
+    const authorIds = new Set(p.tasks.map((t) => (by(t.agentCode) ?? by('00'))?.id));
+    const free = agents.filter((a) => a.active !== false && !authorIds.has(a.id));
+    const finalReviewer = codexMode ? (free.find((a) => /리뷰|review/i.test(`${a.name} ${a.role}`)) ?? free.find((a) => !a.tools.includes('Edit') && !a.tools.includes('Write')) ?? free.find((a) => a.code === '00') ?? free[0] ?? null) : null;
+    const cyc = full || !chains.length ? null
+      : codexMode && finalReviewer ? mk('review', `최종 리뷰: 사이클 ${m.cycle} 코드 변경 (${finalReviewer.code} ${finalReviewer.name})`, 300, 600, { agentId: finalReviewer.id, cycleReview: true, timeoutSec: 1800,
+          doneCriteria: plan.doneCriteria,
+          instructions: '이번 사이클에 바뀐 코드 전체의 최종 리뷰다(작업별 검증은 Codex가 이미 했다). 바뀐 코드를 직접 열어 P0·P1(정확성 오류, 보안, 데이터 손실, 요구 위반, 시험이 실제로는 검증하지 않음)을 찾는다. issues에는 P0·P1만, 한 줄에 "[P0|P1] 파일: 문제 → 고칠 것"으로 쓴다. 다듬기·표현은 followUps에 5건 이내로 적는다. 막는 결함이 없으면 approve. 이 리뷰는 작업을 되돌리지 않고 판단 단계의 자료가 된다. blocked는 쓰지 않는다.' })
+      : mk('codexReview', `Codex 리뷰: 사이클 ${m.cycle} 코드 변경`, 300, 600, { cycleReview: true, timeoutSec: 1800,
       doneCriteria: '이번 사이클에 바뀐 코드 전체를 본다. P0·P1(정확성 오류, 보안, 데이터 손실, 요구 위반, 시험이 실제로는 검증하지 않음)을 먼저 찾고, severity에 P0·P1·P2 중 하나를 쓴다. P2(다듬기·표현·있으면 좋은 것)는 5건 이내로만 적는다. 문서의 문체는 보지 않는다.' });
     if (cyc) nodes.push(cyc);
     nodes.push(merge);
@@ -2064,7 +2084,7 @@ export class MissionRunner {
       ...this.refSection(m),
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
-      `- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 ${this.d.reviewMode?.() === 'full' ? 'Codex 리뷰와 다른 직원의 Claude 재검토를 거친다' : '작업을 닫을 때 다른 직원의 검증을 한 번 거치고(완료 조건별 통과·실패), 사이클 끝에 바뀐 코드 전체를 Codex가 한 번 리뷰한다'}.`,
+      `- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 ${this.d.reviewMode?.() === 'full' ? 'Codex 리뷰와 다른 직원의 Claude 재검토를 거친다' : this.d.reviewMode?.() === 'codex' ? '작업을 닫을 때 Codex가 완료 조건별로 통과·실패를 판정하고, 사이클 끝에 코드 리뷰 직원이 바뀐 코드 전체를 한 번 리뷰한다' : '작업을 닫을 때 다른 직원의 검증을 한 번 거치고(완료 조건별 통과·실패), 사이클 끝에 바뀐 코드 전체를 Codex가 한 번 리뷰한다'}.`,
       '- 작업 지시에 적는 폴더 이름·명령·포트는 그 저장소의 스크립트·설정이 허용하는 형식인지 Read로 확인하고 쓴다(허용되지 않는 이름을 지시해 직원이 시작도 못 하고 시간을 쓰는 일을 만들지 않는다).',
       '- 한 기능은 한 직원이 끝까지 맡는다: 지난 사이클에 그 기능을 맡았던 직원에게 이어서 맡긴다(맥락이 이어지게). 한 기능을 여러 직원에게 나누지 않는다.',
       '- 동시에 진행하는 작업은 서로 독립인 것만 둔다: 저장소나 폴더가 겹치지 않고, 한 작업이 다른 작업의 결과를 기다리지 않는다. 순서 의존이 있으면(예: 측정 → 그 결과로 문서) 한 작업으로 합쳐 한 직원에게 맡긴다.',
@@ -2249,7 +2269,8 @@ export class MissionRunner {
     const d = this.d.engine.detail(runId);
     const md = d.deliverable?.markdown ?? '(결과물 없음)';
     const failed = d.nodes.filter((n) => n.status === 'failed').map((n) => `${d.graph.nodes.find((g) => g.id === n.nodeId)?.label}: ${n.failureReason}`);
-    const reviews = d.reviews.map((r) => `- ${r.kind === 'codex' ? 'Codex' : r.kind === 'agent' ? 'Claude 재검토' : '사용자'}: ${r.verdict} — ${r.comments.slice(0, r.kind === 'codex' ? 4000 : 300).replace(/\n/g, ' ')}`);
+    const finalIds = new Set(d.graph.nodes.filter((n) => n.kind === 'review' && n.cycleReview).map((n) => n.id)); // 사이클 최종 리뷰는 길게 넘긴다
+    const reviews = d.reviews.map((r) => `- ${r.kind === 'codex' ? 'Codex' : r.kind === 'agent' ? (finalIds.has(r.nodeId) ? '사이클 최종 리뷰' : 'Claude 재검토') : '사용자'}: ${r.verdict} — ${r.comments.slice(0, r.kind === 'codex' ? 4000 : finalIds.has(r.nodeId) ? 3000 : 300).replace(/\n/g, ' ')}`);
     return [
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
@@ -2269,7 +2290,7 @@ export class MissionRunner {
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
-      '- 사이클 Codex 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. Codex 지적만으로 이번 작업을 실패로 되돌리지 않는다. 리뷰 기록에 P0·P1이 있거나 "일부만 리뷰"라고 적혀 있으면 결과물 목록의 Codex 보고서 파일(reviews/codex-…)을 Read로 끝까지 읽고 판단한다.',
+      '- 사이클 Codex 리뷰 또는 사이클 최종 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. 이 리뷰의 지적만으로 이번 작업을 실패로 되돌리지 않는다. 리뷰 기록에 P0·P1이 있거나 "일부만 리뷰"라고 적혀 있으면 결과물 목록의 Codex 보고서 파일(reviews/codex-…)을 Read로 끝까지 읽고 판단한다.',
       '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다. 작업 목록이 있으면 모든 단원이 완료일 때만 done이다(앱이 남은 단원이 있는 done은 받지 않는다). 작업 목록 갱신은 진척 관리 직원이 하니 summary에 단원 상태를 길게 다시 쓰지 않는다.',
       FLOW_RULE, CHECKPOINT_RULE, ...this.assumptionsSection(m),
       '- ask_user: 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',
@@ -2479,8 +2500,9 @@ export function parseSecretSpec(v: unknown): MissionSecretSpec | null {
 export function collectStaffAsks(texts: string[]): string[] {
   const out: string[] = []; const seen = new Set<string>();
   for (const t of texts) for (const raw of String(t ?? '').split(/\r?\n/)) {
-    if (!/결정\s*(이|은|을|도)?\s*필요|결정해\s*주|정해\s*주세요|정해야\s*합니다/.test(raw)) continue;
-    if (/필요\s*(하지|치)\s*않|필요\s*(가\s*)?없|필요하지는\s*않/.test(raw)) continue; // "결정이 필요하지 않습니다" 같은 부정문은 뺀다
+    // 문장 단위로 본다: "결정이 필요하지 않습니다" 같은 부정문은 빼되, 같은 줄의 다른 문장에 있는 요청은 살린다
+    const asks = raw.split(/(?<=[.!?。])\s+/).some((c) => /결정\s*(이|은|을|도)?\s*필요|결정해\s*주|정해\s*주세요|정해야\s*합니다/.test(c) && !/필요\s*(하지|치)\s*않|필요\s*(가\s*)?없|필요하지는\s*않/.test(c));
+    if (!asks) continue;
     const line = raw.replace(/^[\s>*-]+/, '').replace(/^\[후속\]\s*/, '').replace(/^\*\*?결정 필요:?\*\*?:?\s*/, '').replace(/^결정 필요:\s*/, '').trim().slice(0, 300);
     const key = line.replace(/[\s.·,:]/g, '').slice(0, 40);
     if (line.length < 8 || seen.has(key)) continue;

@@ -103,6 +103,7 @@ export interface GraphNode {
   condition: BranchCondition | null;
   entryCondition: 'all' | 'any'; // 여러 선행 단계가 있을 때 진입 조건
   cycleReview?: boolean; // true면(미션이 만든 Codex 리뷰 단계) 작업 하나가 아니라 이번 사이클에 바뀐 코드 전체를 한 번 리뷰한다. 실패해도 사이클을 막지 않는다
+  verify?: boolean; // true면(미션이 만든 Codex 단계) Codex의 판정이 곧 통과·재작업을 정한다(완료 조건별 통과·실패). false면 보고서만 남기고 다음 단계로 간다
   lightSkip?: boolean; // true면(미션이 만든 Codex 리뷰·재검토 단계) 앞 작업이 문서·화면 사진만 바꿨을 때 이 단계를 건너뛴다
   skipInlineReview?: boolean; // true면 노드 안 독립 검토를 건너뛴다(다음 단계에 Codex 리뷰·Claude 재검토가 있을 때)
 }
@@ -346,7 +347,8 @@ export interface AppSettings {
   devSync?: boolean; // 매일 dev 반영(기본 켬): 하루 한 번 비밀값을 뺀 변경을 커밋해 dev에 합치고 push. main 병합은 하지 않는다
   devSyncHour?: number; // 매일 dev 반영 시각(0~23시, 기본 22)
   docTidy?: boolean; // 문서 정리(기본 켬): 앱 기록 파일은 최근 실행만 남기고, 사이클별 문서는 10사이클마다 HISTORY.md로 요약한 뒤 커밋된 원본만 지운다
-  reviewMode?: 'close' | 'full'; // 검증 방식. close(기본): 작업(기능)을 닫을 때 다른 직원의 검증 한 번 + 사이클 끝에 바뀐 코드 전체 Codex 리뷰 한 번. full: 작업마다 Codex 리뷰 + Claude 재검토
+  reviewMode?: 'close' | 'full' | 'codex'; // codex: 작업마다 Codex가 완료 조건을 판정(통과·실패) + 사이클 끝에 코드 리뷰 직원의 최종 리뷰 한 번
+  // 아래는 close·full 설명: // 검증 방식. close(기본): 작업(기능)을 닫을 때 다른 직원의 검증 한 번 + 사이클 끝에 바뀐 코드 전체 Codex 리뷰 한 번. full: 작업마다 Codex 리뷰 + Claude 재검토
   techAuto?: boolean; // 기술 권한 요청(명령 허용·경로 읽기)을 사용자에게 묻지 않고 앱·오퍼레이터가 처리(기본 켬). 보호 규칙은 그대로
   paceEnabled?: boolean; // 사용량 속도 조절(기본 켬): 주간·5시간 사용 한도를 초기화까지 나눠 쓰도록 새 사이클 시작을 미룬다
   paceReservePct?: number; // 주간 한도 중 앱이 쓰지 않고 남길 몫(%, 기본 10). 사람이 직접 쓰는 Claude 몫과 여유
@@ -661,6 +663,8 @@ export interface Mission {
   failSigs?: string[]; // 직전 사이클의 실패 원인(반복 판별)
   /** 보류한 업무의 거부·실패 표식. 보류한 업무는 사용자가 해결하기 전까지 다시 계획하지 않고, 다시 막히면 미션을 멈춘다 */
   parkedSigs?: string[];
+  /** 사용자가 '다시 시도'를 고른 보류(실행 ID|실패 서명): 같은 실행의 실패로 다시 보류하지 않는다 */
+  resolvedFail?: string[];
   results?: MissionResult[]; // 마지막 판단의 '열어 볼 결과물'(작업별)
   /** 오퍼레이터가 요청한 커밋(이미 있는 미커밋 변경). 사용자가 팝업에서 파일·메시지를 보고 승인해야만 앱이 커밋한다 */
   commitRequests?: MissionCommitRequest[];

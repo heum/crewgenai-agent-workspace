@@ -14,7 +14,7 @@ import {
 import { BLOCKED_PREFIX } from '../../shared/types';
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
-import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
+import { CODEX_REVIEW_SCHEMA, CODEX_VERIFY_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
 import { checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { commandNote, levelNote, materializeLink, referencedRepos, repoDirs, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
@@ -605,7 +605,9 @@ export class Engine {
     const sat = (p: string) => (state.route[p] ?? []).includes(node.id) && !['stale', 'waiting', undefined].includes(state.records[p]?.status as RecStatus);
     const enteredByFail = !!state.feedback[node.id] && state.records[node.id]?.status !== 'ok';
     if (preds.length > 1 && !enteredByFail) {
-      const ready = node.entryCondition === 'any' ? preds.some(sat) : preds.every(sat);
+      // 사이클 리뷰 단계는 앞의 작업이 '모두 끝났을 때'(통과했거나, 실패로 끝나 더 진행할 수 없을 때) 시작한다
+      const settled = (p: string) => sat(p) || (!!node.cycleReview && this.chainDead(runId, graph, p));
+      const ready = node.entryCondition === 'any' ? preds.some(sat) : preds.every(settled);
       const already = node.entryCondition === 'any' && state.records[node.id] && !['stale', 'waiting'].includes(state.records[node.id].status);
       if (!ready || already) return { route: { [node.id]: [] }, records: already ? {} : { [node.id]: { status: 'waiting', outputs: [], summary: '', at: now() } } };
     }
@@ -632,7 +634,7 @@ export class Engine {
       case 'agent': out = await this.runAgentNode(runId, graph, node, visit, plan, upstream, feedback); break;
       case 'check': out = await this.runCheckNode(runId, node, visit, plan); break;
       case 'codexReview': out = node.cycleReview ? await this.runCycleCodex(runId, node, visit, plan, upstream) : this.lightSkip(runId, graph, node, upstream) ?? await this.runCodexNode(runId, node, visit, plan, upstream); break;
-      case 'review': out = this.lightSkip(runId, graph, node, upstream) ?? await this.runReviewNode(runId, node, visit, plan, upstream, preds.map((p) => graph.nodes.find((n) => n.id === p)!).filter(Boolean), graph); break;
+      case 'review': out = node.cycleReview ? await this.runCycleReview(runId, node, visit, plan, upstream) : this.lightSkip(runId, graph, node, upstream) ?? await this.runReviewNode(runId, node, visit, plan, upstream, preds.map((p) => graph.nodes.find((n) => n.id === p)!).filter(Boolean), graph); break;
       case 'branch': out = this.evalBranch(node, state, plan); break;
       case 'merge': out = this.runMerge(runId, graph, node, plan); await this.commitFor(runId, node, plan, out.outputs, { name: 'CREWGENAI 00 총괄(결과물 취합)', email: 'agent-00@crewgenai.local' }, '00 총괄(결과물 취합)'); break;
       case 'userReview': out = await this.runUserReview(runId, node, visit); break;
@@ -656,6 +658,7 @@ export class Engine {
         if (tv >= tNode.maxVisits) {
           const msg = `"${tNode.label}" 재작업 상한(${tNode.maxVisits}회) 초과 — ${out.reason ?? ''}`;
           update.terminal = [msg];
+          route = this.cycleNodesAfter(graph, node);
           this.setNode(runId, node.id, { status: 'failed', failureReason: out.reason ?? '', nextAction: '재작업 상한을 넘어 실행을 멈췄습니다. 원인을 확인한 뒤 해당 담당 단계부터 재실행하세요.' });
         } else {
           route = [target];
@@ -664,6 +667,7 @@ export class Engine {
         }
       } else {
         update.terminal = [`"${node.label}" 실패: ${out.reason ?? ''}`];
+        route = this.cycleNodesAfter(graph, node);
       }
     }
     update.route = { [node.id]: route };
@@ -777,6 +781,7 @@ export class Engine {
       const reviewer = this.agentOf(runId, reviewerId);
       if (!reviewer) return { status: 'fail' as const, summary: author.summary, outputs: [], reason: '검토 담당을 찾을 수 없습니다.' };
       const v = await this.runReviewer(runId, node, visit, plan, reviewer, reviewTargets, node.doneCriteria || agent.doneCriteria);
+      if (v.verdict !== 'approve' && v.blocked) return { status: 'fail' as const, summary: author.summary, outputs: [], reason: `${BLOCKED_PREFIX}${v.needs || v.issues[0] || v.summary}`.slice(0, 700), noRework: true };
       if (v.verdict !== 'approve') return { status: 'fail' as const, summary: author.summary, outputs: [], reason: `독립 검토 수정 요청: ${v.summary}`, feedbackText: `독립 검토(${reviewer.name}) 지적:\n- ${v.issues.join('\n- ')}`, target: node.id };
     }
     return { status: 'ok' as const, summary: author.summary, outputs: reviewTargets };
@@ -829,10 +834,10 @@ export class Engine {
     if (!v || (v.verdict !== 'approve' && v.verdict !== 'changes_requested')) return { verdict: 'changes_requested', summary: '검토 결과 형식을 확인할 수 없어 승인으로 처리하지 않았습니다.', issues: ['구조화된 검토 결과 없음'], followUps: [] };
     const issues = Array.isArray(v.issues) ? v.issues.map(String) : [];
     const followUps = Array.isArray(v.followUps) ? v.followUps.map(String) : [];
-    // 막는 결함 없이 수정 요청만 낸 경우(경미한 지적뿐)는 재작업하지 않고 후속으로 넘긴다
-    if (v.verdict === 'changes_requested' && !issues.length && followUps.length) return { verdict: 'approve', summary: String(v.summary ?? ''), issues: [], followUps };
-    // 막힘은 수정 요청일 때만 뜻이 있다(승인에 붙은 blocked는 무시)
+    // 막힘은 수정 요청일 때만 뜻이 있다(승인에 붙은 blocked는 무시). 아래 '후속만 있으면 승인' 지름길보다 먼저 본다
     const blocked = v.verdict === 'changes_requested' && v.blocked === true;
+    // 막는 결함 없이 수정 요청만 낸 경우(경미한 지적뿐)는 재작업하지 않고 후속으로 넘긴다
+    if (!blocked && v.verdict === 'changes_requested' && !issues.length && followUps.length) return { verdict: 'approve', summary: String(v.summary ?? ''), issues: [], followUps };
     return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps, ...(blocked ? { blocked: true, needs: String(v.needs ?? '').replace(/\s+/g, ' ').trim().slice(0, 500) } : {}) };
   }
 
@@ -867,9 +872,8 @@ export class Engine {
    * Codex가 없거나 실행에 실패해도 사이클을 막지 않는다(사용 한도는 예외 — 한도 처리대로 멈춘다).
    */
   private async runCycleCodex(runId: string, node: GraphNode, visit: number, plan: PlanFields, upstream: string[]) {
-    const all = [...new Set(this.s.runAttempts(runId).filter((a) => a.role === 'author').flatMap((a) => [...a.changedFiles, ...(a.observedFiles ?? [])]))].filter((f) => !isDocFile(f));
+    const { all, code, deleted } = this.cycleChanged(runId, plan);
     if (!all.length) return { status: 'ok' as const, summary: '건너뜀: 이번 사이클에 바뀐 코드가 없습니다(문서·화면 사진만 바뀜).', outputs: upstream };
-    const code = all.filter((f) => existsSync(join(plan.folder, f))); const deleted = all.filter((f) => !code.includes(f));
     const CAP = 150; const shown = code.slice(0, CAP);
     // 지워진 파일과 한도를 넘은 파일도 리뷰가 알게 한다(목록에서 조용히 빠지지 않게)
     const extra = [
@@ -882,6 +886,49 @@ export class Engine {
     return { status: 'ok' as const, summary: `사이클 Codex 리뷰를 끝내지 못해 리뷰 없이 진행합니다: ${r.reason ?? '원인 미상'}`, outputs: upstream };
   }
 
+  /** 이 단계 뒤에 있는 사이클 리뷰 단계(자기 자신은 제외) */
+  private cycleNodesAfter(graph: WorkGraph, node: GraphNode): string[] {
+    if (node.cycleReview) return [];
+    const after = reach(forwardAdj(graph), node.id);
+    return graph.nodes.filter((n) => n.cycleReview && n.id !== node.id && after.has(n.id)).map((n) => n.id);
+  }
+  /** p로 끝나는 작업 줄이 실패로 끝났는가: 줄 안에 실패한 단계가 있고, 돌고 있거나 재작업 중인 단계가 없다 */
+  private chainDead(runId: string, graph: WorkGraph, p: string): boolean {
+    const rev = new Map<string, string[]>();
+    for (const e of graph.edges) if (e.kind !== 'fail') rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]);
+    const chain = new Set<string>(); const st = [p];
+    while (st.length) { const x = st.pop()!; if (chain.has(x)) continue; const n = graph.nodes.find((g) => g.id === x); if (!n || n.kind === 'input') continue; chain.add(x); st.push(...(rev.get(x) ?? [])); }
+    const status = new Map(this.s.runNodes(runId).map((n) => [n.nodeId, n.status]));
+    const of = [...chain].map((id) => status.get(id));
+    return of.some((x) => x === 'failed') && !of.some((x) => x === 'running' || x === 'checking' || x === 'rework');
+  }
+
+  /** 이번 실행에서 바뀐 코드(문서·화면 사진 제외): 남아 있는 파일과 지워진 파일 */
+  private cycleChanged(runId: string, plan: PlanFields) {
+    const all = [...new Set(this.s.runAttempts(runId).filter((a) => a.role === 'author').flatMap((a) => [...a.changedFiles, ...(a.observedFiles ?? [])]))].filter((f) => !isDocFile(f));
+    const code = all.filter((f) => existsSync(join(plan.folder, f)));
+    return { all, code, deleted: all.filter((f) => !code.includes(f)) };
+  }
+
+  /**
+   * 사이클 최종 리뷰(검증 방식 codex): 작업별 검증은 Codex가 하고, 사이클 끝에 코드 리뷰 직원이 바뀐 코드 전체를 한 번 본다.
+   * 작업을 되돌리지 않는다: 결과는 리뷰 기록으로 남고 판단 단계가 P0·P1만 다음 일로 넘긴다. 리뷰가 실패해도 사이클을 막지 않는다.
+   */
+  private async runCycleReview(runId: string, node: GraphNode, visit: number, plan: PlanFields, upstream: string[]) {
+    const reviewer = this.agentOf(runId, node.agentId);
+    if (!reviewer) return { status: 'ok' as const, summary: '건너뜀: 최종 리뷰 담당을 찾을 수 없습니다.', outputs: upstream };
+    const { all, code, deleted } = this.cycleChanged(runId, plan);
+    if (!all.length) return { status: 'ok' as const, summary: '건너뜀: 이번 사이클에 바뀐 코드가 없습니다(문서·화면 사진만 바뀜).', outputs: upstream };
+    const CAP = 150;
+    const extra = [
+      ...(deleted.length ? [`이번 사이클에 지워진 파일 ${deleted.length}개도 본다: ${deleted.slice(0, 40).join(', ')}${deleted.length > 40 ? ` … 그 밖에 ${deleted.length - 40}개` : ''}`] : []),
+      ...(code.length > CAP ? [`바뀐 코드 파일이 ${code.length}개라 앞의 ${CAP}개만 검토 대상에 넣었다. 보지 못한 범위를 summary 첫 줄에 적는다.`] : []),
+    ];
+    const v = await this.runReviewer(runId, { ...node, instructions: [node.instructions, ...extra].filter(Boolean).join('\n') }, visit, plan, reviewer, code.slice(0, CAP), node.doneCriteria || plan.doneCriteria);
+    const partial = code.length > CAP ? `[일부만 리뷰: ${code.length}개 중 ${CAP}개] ` : '';
+    return { status: 'ok' as const, summary: `${partial}최종 리뷰(${v.verdict === 'approve' ? '막는 결함 없음' : `막는 지적 ${v.issues.length}건`}): ${v.summary}`.slice(0, 2000), outputs: upstream };
+  }
+
   /** Codex 리뷰: 읽기 전용 샌드박스·구조화 출력. 결과 보고서를 산출물 위치에 남겨 다음 Claude 재검토의 입력으로 넘긴다. */
   private async runCodexNode(runId: string, node: GraphNode, visit: number, plan: PlanFields, upstream: string[]) {
     const ctl = this.active.get(runId);
@@ -891,7 +938,12 @@ export class Engine {
     const targets = [...new Set([...node.inputs, ...upstream.filter((u) => !isAbsolute(u))])];
     const safe = node.label.replace(/[^0-9A-Za-z가-힣_-]+/g, '-').slice(0, 40) || 'codex';
     const reportRel = normRel(join(plan.outputDir || 'crewgenai-output', 'reviews', `codex-${safe}-${runId.slice(0, 8)}-v${visit}.md`));
-    if (finished && existsSync(join(plan.folder, reportRel))) return { status: 'ok' as const, summary: finished.summary, outputs: [reportRel, ...targets] };
+    if (finished && existsSync(join(plan.folder, reportRel))) {
+      // 검증 모드: 끝난 시도의 판정을 그대로 다시 쓴다(중단 직후 재개 때 통과로 바뀌지 않게)
+      const kept = node.verify ? this.meta(runId, `codexverify:${finished.id}`) : null;
+      if (kept) { try { return JSON.parse(kept) as { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean }; } catch { /* 아래 기본값 */ } }
+      return { status: 'ok' as const, summary: finished.summary, outputs: [reportRel, ...targets] };
+    }
     const run = this.s.getRun(runId);
     const cx = this.o.codex?.() ?? { path: null, model: 'gpt-6.1-sol', effort: 'high' };
     const mock = run.executor === 'mock';
@@ -900,8 +952,18 @@ export class Engine {
     const tmp = join(tmpdir(), 'crewgenai-codex', sha256(`${runId}:${node.id}:${visit}:${prev.length}`).slice(0, 16));
     mkdirSync(tmp, { recursive: true });
     const schemaFile = join(tmp, 'schema.json'); const outFile = join(tmp, 'out.json');
-    writeFileSync(schemaFile, JSON.stringify(CODEX_REVIEW_SCHEMA));
-    const prompt = [
+    writeFileSync(schemaFile, JSON.stringify(node.verify ? CODEX_VERIFY_SCHEMA : CODEX_REVIEW_SCHEMA));
+    const prompt = node.verify ? [
+      `# Codex 검증 — ${node.label}`, '', '이 작업(기능)을 닫는 검증이다. 읽기 전용으로 확인한다. 파일을 수정하지 않는다.', '',
+      '## 검토 대상', ...targets.map((t) => `- ${t}`), '',
+      '## 완료 조건', node.doneCriteria || plan.doneCriteria, '',
+      '## 프로젝트 목표', plan.goal, '',
+      '## 판정 규칙',
+      '- 완료 조건을 번호 하나씩 근거와 직접 대조해 criteria에 {no, pass, evidence}로 적는다. 근거는 직접 연 것만 쓴다(시험 결과 파일, 바뀐 코드, 측정 파일). 작성자의 보고 문장은 근거가 아니다. 열어 볼 수 없는 근거(예: 열 수 없는 화면 사진)에만 달린 조건은 pass=false로 두고 evidence에 "확인 불가"라고 쓴다.',
+      '- verdict는 통과하지 못한 완료 조건이 있거나 P0·P1(정확성 오류, 보안, 데이터 손실, 요구 위반) 결함이 있을 때만 changes_requested로 한다. 다듬기·표현·있으면 좋은 추가 검증은 findings에 P2로 적고 승인한다.',
+      '- blocked: 통과하지 못한 원인을 작성자가 자기 수정 범위 안에서 고칠 수 없을 때만 true(환경 문제, 이 작업이 건드릴 수 없는 저장소·파일, 사용자의 결정·승인이 필요한 일). 이때 needs에 "누가 무엇을 해야 풀리는지"를 한두 문장으로 쓴다. 아니면 blocked=false, needs는 빈 문자열.',
+      '## 출력', 'verdict, summary(첫 줄에 "완료 조건 N개 중 M개 통과"), criteria, findings[{severity,file,issue,fix}], blocked, needs를 한국어로 반환한다.',
+    ].join('\n') : [
       `# Codex 코드·산출물 리뷰 — ${node.label}`, '', '읽기 전용으로 검토한다. 파일을 수정하지 않는다. 실제 결함(정확성·보안·요구 위반·근거 불일치)만 보고하고 문체 지적은 하지 않는다.', '',
       '## 검토 대상', ...targets.map((t) => `- ${t}`), '',
       '## 검토 기준', node.doneCriteria || node.instructions || plan.doneCriteria, '',
@@ -931,7 +993,7 @@ export class Engine {
       const done = await h.done; ctl.procs.delete(attempt.id);
       if (this.closed) throw new Cancelled();
       attempt.exitCode = done.code;
-      let res: { verdict: string; summary: string; findings: { severity: string; file: string; issue: string; fix: string }[] } | null = null;
+      let res: { verdict: string; summary: string; findings: { severity: string; file: string; issue: string; fix: string }[]; criteria?: { no: string; pass: boolean; evidence: string }[]; blocked?: boolean; needs?: string } | null = null;
       try { res = JSON.parse(readFileSync(outFile, 'utf8')); } catch { res = null; }
       if (done.cancelled || ctl.abort.signal.aborted) { attempt.status = 'cancelled'; attempt.error = '취소'; }
       else if (done.timedOut) { attempt.status = 'timeout'; attempt.error = '시간 제한 초과'; }
@@ -948,6 +1010,7 @@ export class Engine {
       }
       const safeRes = redactDeep(res);
       const md = [`# Codex 리뷰 — ${node.label} (방문 ${visit})`, '', `- 모델: ${cx.model} · 강도: ${cx.effort} · 읽기 전용`, `- 판정: ${safeRes.verdict}`, `- 요약: ${safeRes.summary}`, '',
+        ...(safeRes.criteria?.length ? ['| 완료 조건 | 판정 | 근거 |', '| --- | --- | --- |', ...safeRes.criteria.map((c) => `| ${String(c.no).replace(/\|/g, '/')} | ${c.pass ? '통과' : '실패'} | ${String(c.evidence).replace(/\|/g, '/').replace(/\n/g, ' ')} |`), ''] : []),
         '| 심각도 | 파일 | 지적 | 제안 |', '| --- | --- | --- | --- |',
         ...safeRes.findings.map((f) => `| ${f.severity} | ${f.file.replace(/\|/g, '/')} | ${f.issue.replace(/\|/g, '/').replace(/\n/g, ' ')} | ${f.fix.replace(/\|/g, '/').replace(/\n/g, ' ')} |`),
         ...(safeRes.findings.length ? [] : ['| - | - | 지적 없음 | - |'])].join('\n');
@@ -962,6 +1025,21 @@ export class Engine {
       });
       await this.commitFor(runId, node, plan, [reportRel], { name: 'CREWGENAI Codex 리뷰', email: 'codex@crewgenai.local' }, 'Codex 리뷰', attempt);
       this.saveAttempt(attempt);
+      if (node.verify) {
+        // 검증 모드: Codex의 판정이 통과·재작업을 정한다. 재작업은 완료 조건 미충족이나 P0·P1일 때만(P2뿐이면 통과).
+        const failed = (safeRes.criteria ?? []).filter((c) => c && c.pass === false);
+        const serious = safeRes.findings.filter((f) => sevRank(f.severity) <= 1);
+        const needsFix = safeRes.verdict === 'changes_requested' && (failed.length > 0 || serious.length > 0);
+        let res2: { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean };
+        if (safeRes.verdict === 'changes_requested' && safeRes.blocked === true)
+          res2 = { status: 'fail', summary: attempt.summary, outputs: [], reason: `${BLOCKED_PREFIX}${String(safeRes.needs ?? '').replace(/\s+/g, ' ').trim() || failed[0]?.evidence || safeRes.summary}`.slice(0, 700), noRework: true };
+        else if (needsFix)
+          res2 = { status: 'fail', summary: attempt.summary, outputs: [], reason: `Codex 검증 수정 요청: ${safeRes.summary}`.slice(0, 700),
+            feedbackText: ['Codex 검증 지적:', ...failed.map((c) => `- 완료 조건 ${c.no} 실패: ${c.evidence}`), ...serious.map((f) => `- [${f.severity}] ${f.file}: ${f.issue} → ${f.fix}`)].join('\n').slice(0, 6000) };
+        else res2 = { status: 'ok', summary: attempt.summary, outputs: [reportRel, ...targets] };
+        this.setMeta(runId, `codexverify:${attempt.id}`, JSON.stringify(res2));
+        return res2;
+      }
       // Codex 결과는 판정이 아니라 다음 Claude 재검토의 입력이다(항상 다음 단계로 진행).
       return { status: 'ok' as const, summary: attempt.summary, outputs: [reportRel, ...targets] };
     } finally { release(); }

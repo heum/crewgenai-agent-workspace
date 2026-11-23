@@ -21,7 +21,7 @@ import { decisionVersion } from '../shared/decisions';
 export { decisionVersion };
 import { autoLayout, needsLayout } from '../shared/layout';
 import { checkCli } from './cli/claudeCli';
-import { Store } from './db';
+import { Store, sha256 } from './db';
 import { NodeSqliteSaver } from './engine/checkpointer';
 import { Engine, type Tracer } from './engine/engine';
 import { DEFAULT_TEMPLATE_SET, TEMPLATE_SETS, defaultGraph, type TemplateSetId } from './engine/templates';
@@ -108,7 +108,8 @@ export class Service {
       referenceRoot: join(dirname(d.dbFile), 'references'),
       captureRef: d.captureRef ? async (url, missionId) => { const dir = refDirFor(join(dirname(d.dbFile), 'references'), missionId, url); const r = await d.captureRef!(url, dir); return { ...r, dir }; } : undefined,
       techAuto: () => this.settings().techAuto !== false,
-      reviewMode: () => (this.settings().reviewMode === 'full' ? 'full' : 'close'),
+      reviewMode: () => { const v = this.settings().reviewMode; return v === 'full' || v === 'codex' ? v : 'close'; },
+      codexReady: () => this.settings().executor === 'mock' || !!(this.codex?.path ?? this.settings().codexPath),
       docTidy: () => this.settings().docTidy !== false,
       devSync: () => this.settings().devSync !== false,
       store: this.store, engine: this.engine, emit: d.emit, mockScript: d.mockScript,
@@ -433,8 +434,8 @@ export class Service {
         if (m.blockers?.length && !['stopped', 'failed'].includes(m.status)) {
           const list = m.blockers.map((b) => `- [${BLOCKER_LABEL[b.kind] ?? '보류'}] ${b.step}: ${b.reason}`).join('\n');
           const needsUser = m.blockers.some((b) => b.kind === 'needs_user');
-          out.push({ ...base, key: `${m.id}|bk|${m.blockers.length}|${m.blockers.map((b) => b.step).join('|').slice(0, 200)}`, kind: 'blocker', task: `보류한 업무 ${m.blockers.length}건`, question: needsUser ? '담당 직원이 고칠 수 없는 이유로 이 업무가 멈췄습니다. 아래에 적힌 조치를 하셨거나 허용하시면 다시 시도합니다. 다시 시도할까요?' : '앱이 스스로 풀 수 없는 문제로 이 업무를 보류했습니다. 해결했으면 다시 시도할까요?', explain: list.slice(0, 3000), doc: '', issue: '',
-            choices: [{ label: '해결했으니 다시 시도', effect: '다음 계획부터 보류한 업무를 다시 시도합니다.', recommended: false, why: '' }, { label: '보류 유지', effect: '보류한 채로 나머지 작업만 계속합니다.', recommended: false, why: '' }],
+          out.push({ ...base, key: `${m.id}|bk|${m.blockers.length}|${sha256(m.blockers.map((b) => `${b.kind}|${b.step}|${b.reason}`).join('\n')).slice(0, 16)}`, kind: 'blocker', task: `보류한 업무 ${m.blockers.length}건`, question: needsUser ? '담당 직원이 고칠 수 없는 이유로 이 업무가 멈췄습니다. 아래에 적힌 조치가 끝났으면 다시 시도할까요? (이 선택은 다시 계획하게 할 뿐이며, 권한이나 승인을 주지 않습니다)' : '앱이 스스로 풀 수 없는 문제로 이 업무를 보류했습니다. 해결했으면 다시 시도할까요?', explain: list.slice(0, 3000), doc: '', issue: '',
+            choices: [{ label: '해결했으니 다시 시도', effect: `다음 계획부터 보류한 업무 ${m.blockers.length}건을 모두 다시 시도합니다(권한·승인은 바뀌지 않습니다).`, recommended: false, why: '' }, { label: '보류 유지', effect: '보류한 채로 나머지 작업만 계속합니다.', recommended: false, why: '' }],
             waiting: blocked, urgent: needsUser, held: '이 업무만 보류했습니다(나머지는 계속 진행).', resumes: '해결했다고 고르면 다음 계획부터 다시 시도합니다.' });
         }
         // 직원 제안(위쪽 막대의 '직원 제안'과 같은 것)

@@ -134,7 +134,8 @@ export function validateGraph(g: WorkGraph, agents: Agent[], plan: PlanFields): 
     }
     if (n.kind === 'review') {
       const fail = fails[0];
-      if (!fail) err('review_no_fail', `교차검토 "${n.label}"에 수정 요청 시 돌아갈 실패 연결이 없습니다.`, n.id);
+      // 사이클 최종 리뷰(cycleReview)는 작업을 되돌리지 않는 리뷰라 실패 연결이 없어도 된다
+      if (!n.cycleReview && (!fail)) err('review_no_fail', `교차검토 "${n.label}"에 수정 요청 시 돌아갈 실패 연결이 없습니다.`, n.id);
       for (const p of ins) { const src = byId.get(p.source); if (src?.agentId && src.agentId === n.agentId) err('self_review', `"${n.label}"의 검토자가 앞 단계 작성자와 같습니다.`, n.id); }
     }
     if (n.kind === 'check') {
