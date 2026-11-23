@@ -3,6 +3,7 @@
 // 추가 지시(addDirective), 미션 제어(pause·resume·stop), 결과물(mission.results·시연 목록). 별도 승인 목록·미션 상태를 만들지 않는다.
 // 등록한 내 계정(사용자 ID + 1:1 대화방 ID)만 조회·조작할 수 있다. 버튼을 누를 때도 같은 확인을 하고, 연결을 해제하면 이전 버튼은 쓸 수 없다.
 // 토큰은 운영체제 보안 저장소에만 두고, 화면·로그·오류·설정 파일에 남기지 않는다. 상태 조회는 저장된 앱 상태만 읽는다(Claude를 부르지 않음).
+import { BLOCKER_LABEL } from '../shared/types';
 import { randomBytes } from 'node:crypto';
 import type { Mission, MissionEvent, PendingDecision, LiveEvent, MissionCommitRequest, CommitPreview, Project } from '../shared/types';
 import { RESULT_STATUS_LABEL } from '../shared/types';
@@ -748,7 +749,7 @@ export class TelegramBridge {
         out.push(`사이클 ${m.cycle} 업무`, r.length ? `진행 중:\n${r.join('\n')}` : '', w.length ? `대기:\n${w.join('\n')}` : '', f.length ? `실패·재개 대기:\n${f.join('\n')}` : '', ok.length ? `끝남 ${ok.length}건` : '');
       } catch { /* 실행 기록 없음 */ }
     }
-    const held = [...(m.denials ?? []).map((d) => `· [권한 보류] ${esc(d.agent)} — ${esc(cut(d.target, 100))}`), ...(m.blockers ?? []).map((b) => `· [${b.kind === 'environment' ? '환경' : '같은 실패 반복'}] ${esc(cut(b.step, 60))} — ${esc(cut(b.reason, 120))}`), ...(m.gaps ?? []).map((g) => `· [결정 대기] ${esc(cut(g.issue, 120))}`)];
+    const held = [...(m.denials ?? []).map((d) => `· [권한 보류] ${esc(d.agent)} — ${esc(cut(d.target, 100))}`), ...(m.blockers ?? []).map((b) => `· [${BLOCKER_LABEL[b.kind]}] ${esc(cut(b.step, 60))} — ${esc(cut(b.reason, 120))}`), ...(m.gaps ?? []).map((g) => `· [결정 대기] ${esc(cut(g.issue, 120))}`)];
     out.push(held.length ? `보류(이유):\n${held.slice(0, 10).join('\n')}` : '보류: 없음');
     return out.filter(Boolean).join('\n');
   }

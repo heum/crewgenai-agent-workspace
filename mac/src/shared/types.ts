@@ -768,7 +768,11 @@ export interface MissionDecision { doc: string; issue: string; choice: string; a
 /** 확인 필요 항목 하나에 대한 사용자 선택: 항목(문서·내용으로 식별)과 고른(또는 직접 적은) 내용 */
 export interface MissionPick { doc: string; issue: string; choice: string }
 /** 에이전트가 스스로 풀 수 없는 실패: 내 PC 환경 문제(명령·프로그램 없음, 접근 거부, 네트워크·로그인)이거나 같은 실패의 반복 */
-export interface MissionBlocker { step: string; reason: string; kind: 'environment' | 'repeated' }
+/** needs_user: 검증 직원이 '작성자가 자기 범위에서 고칠 수 없다(환경·다른 저장소·사용자 결정 필요)'고 판정한 업무. 재작업시키지 않고 바로 확인함에 올린다. */
+export interface MissionBlocker { step: string; reason: string; kind: 'environment' | 'repeated' | 'needs_user' }
+export const BLOCKER_LABEL: Record<MissionBlocker['kind'], string> = { environment: '내 PC 환경', repeated: '같은 실패 반복', needs_user: '결정·조치 필요' };
+/** 엔진이 '작성자가 고칠 수 없음'으로 끝낸 단계의 실패 사유 머리말(미션이 이 말로 알아본다) */
+export const BLOCKED_PREFIX = '막힘(작성자가 고칠 수 없음): ';
 /** 직원이 권한 때문에 막힌 행위(명령·경로). 앱 설정으로만 허용할 수 있다. */
 export interface MissionDenial {
   agentId: ID | null;

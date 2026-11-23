@@ -107,6 +107,27 @@ describe('오퍼레이터 루프', () => {
     svc.close();
   });
 
+  it("검증이 '작성자가 고칠 수 없음'으로 판정하면 재작업시키지 않고 바로 보류해 확인함에 올린다", async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:code]] [[mock:blocked-env]] 문서를 정리하라');
+    // 사이클이 끝나기를 기다리지 않고, 검증 직후에 보류 항목이 생긴다
+    const withBlocker = await (async () => { for (let i = 0; i < 1200; i++) { const x = svc.missions.get(m0.id); if (x.blockers?.length) return x; await sleep(50); } throw new Error('보류 항목이 생기지 않음'); })();
+    expect(withBlocker.blockers![0].kind).toBe('needs_user');
+    expect(withBlocker.blockers![0].reason).toContain('막힘(작성자가 고칠 수 없음): 시연 DB를 쥐고 있는 예전 서버를 정리해야 합니다');
+    const runId = svc.missions.detail(m0.id).cycles[0].runId;
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed', 'stopped']);
+    const r1 = svc.engine.detail(runId);
+    expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(1); // 같은 작성자에게 다시 시키지 않았다
+    expect(r1.attempts.filter((a) => a.role === 'reviewer').length).toBe(1);
+    expect(r1.reviews.filter((r) => r.kind === 'agent').map((r) => r.verdict)).toEqual(['changes_requested']);
+    const item = svc.pendingDecisions().find((x) => x.kind === 'blocker' && x.missionId === m0.id);
+    expect(item?.urgent).toBe(true);
+    expect(item?.explain).toContain('[결정·조치 필요]');
+    expect(svc.missions.get(m0.id).blockers!.filter((b) => b.kind === 'needs_user').length).toBe(1); // 사이클 끝 정리에서 중복으로 늘지 않는다
+    if (!['stopped', 'done', 'failed'].includes(m.status)) await svc.missions.stop(m0.id);
+    svc.close();
+  });
+
   it('문서만 바꾼 작업은 Codex 리뷰와 재검토를 건너뛴다(코드·시험을 바꾸면 리뷰한다)', async () => {
     const { validate } = { validate: await import('../src/main/engine/validate') };
     expect(validate.docsOnly(['docs/STATUS.md', 'docs/screens/a.png'])).toBe(true);

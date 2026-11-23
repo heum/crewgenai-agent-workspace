@@ -9,6 +9,7 @@ import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, phaseLines, progressLine, work
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { BLOCKED_PREFIX, BLOCKER_LABEL } from '../shared/types';
 import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus, NextMissionDraft, WorkItem } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
 import type { DemoAsk, MissionWorkPlan, QaMessage } from '../shared/types';
@@ -1231,7 +1232,9 @@ export class MissionRunner {
 
   /** 실행 노드 상태 변화로 루프 다이어그램의 현재 단계를 갱신한다. */
   onLive(e: LiveEvent) {
-    if (e.type !== 'node' || !['running', 'checking', 'rework'].includes(e.state.status)) return;
+    if (e.type !== 'node') return;
+    if (e.state.status === 'failed' && String(e.state.failureReason ?? '').startsWith(BLOCKED_PREFIX)) { this.raiseBlocked(e.state.runId, e.state.nodeId, String(e.state.failureReason)); return; }
+    if (!['running', 'checking', 'rework'].includes(e.state.status)) return;
     const r = this.d.store.db.prepare("SELECT data FROM missions WHERE json_extract(data,'$.currentRunId')=?").get(e.state.runId) as Row | undefined;
     if (!r) return;
     const m = JSON.parse(String(r.data)) as Mission;
@@ -1239,6 +1242,25 @@ export class MissionRunner {
     const node = this.d.store.getGraphVersion(run.graphVersionId).graph.nodes.find((n) => n.id === e.state.nodeId);
     const stage: MissionStage | null = node?.kind === 'agent' ? 'execute' : node?.kind === 'codexReview' ? 'codex' : node?.kind === 'review' ? 'claude_review' : null;
     if (stage && stage !== m.stage) this.save({ ...m, stage });
+  }
+
+  /**
+   * 검증이 '작성자가 고칠 수 없음'으로 끝낸 업무를, 사이클이 끝나기를 기다리지 않고 바로 보류하고 확인함에 올린다.
+   * 미션은 멈추지 않는다(나머지 작업은 계속). 사용자가 확인함에서 '해결했으니 다시 시도'를 고르기 전에는 다시 계획하지 않는다.
+   */
+  private raiseBlocked(runId: string, nodeId: string, reason: string) {
+    const r = this.d.store.db.prepare("SELECT data FROM missions WHERE json_extract(data,'$.currentRunId')=?").get(runId) as Row | undefined;
+    if (!r) return;
+    const m = JSON.parse(String(r.data)) as Mission;
+    if (['stopped', 'failed', 'done'].includes(m.status)) return;
+    let label = nodeId;
+    try { label = this.d.store.getGraphVersion(this.d.store.getRun(runId).graphVersionId).graph.nodes.find((n) => n.id === nodeId)?.label ?? nodeId; } catch { /* 표시 이름 없이 진행 */ }
+    const b: MissionBlocker = { step: label, reason: redact(reason).slice(0, 600), kind: 'needs_user' };
+    const sig = `fail|${failureSig(b.reason, b.step)}`;
+    const cur = this.get(m.id);
+    if ((cur.blockers ?? []).some((x) => `fail|${failureSig(x.reason, x.step)}` === sig)) return; // 이미 올린 것
+    this.event(cur, 'system', `검증 결과, 이 업무는 담당 직원이 고칠 수 없는 이유로 멈췄습니다. 다시 시키지 않고 확인함에 올렸습니다(나머지 작업은 계속합니다).\n- [${BLOCKER_LABEL.needs_user}] ${b.step}: ${b.reason}`, { blockers: [b] });
+    this.set(m.id, { blockers: [...(cur.blockers ?? []), b].slice(-20), parkedSigs: [...new Set([...(cur.parkedSigs ?? []), sig])] });
   }
 
   // ───── 루프 ─────
@@ -1461,9 +1483,9 @@ export class MissionRunner {
           const items = failed.map((n) => ({ step: labels.get(n.nodeId) ?? n.nodeId, reason: n.failureReason.slice(0, 600) }));
           if (fin.status === 'failed' && !items.length && fin.reason) items.push({ step: '실행', reason: fin.reason.slice(0, 600) });
           const prev = this.get(id).failSigs ?? [];
-          const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
+          const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => x.reason.startsWith(BLOCKED_PREFIX) ? [{ ...x, kind: 'needs_user' as const }] : ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
           if (blockers.length) {
-            const list = blockers.map((b) => `- [${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}] ${b.step}: ${b.reason}`).join('\n');
+            const list = blockers.map((b) => `- [${BLOCKER_LABEL[b.kind]}] ${b.step}: ${b.reason}`).join('\n');
             const parked = this.get(id).parkedSigs ?? [];
             const bsig = (b: MissionBlocker) => `fail|${failureSig(b.reason, b.step)}`;
             const all = [...(this.get(id).blockers ?? []).filter((x) => !blockers.some((b) => bsig(b) === bsig(x))), ...blockers].slice(0, 20);
@@ -1869,7 +1891,7 @@ export class MissionRunner {
     const blocked = [
       ...fail,
       ...(m.denials ?? []).map((d) => `권한 보류: ${d.agent} · ${d.tool}: ${d.target}`),
-      ...(m.blockers ?? []).map((b) => `${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}: ${b.step} — ${b.reason}`),
+      ...(m.blockers ?? []).map((b) => `${BLOCKER_LABEL[b.kind]}: ${b.step} — ${b.reason}`),
     ].slice(0, 12);
     const title = '실행 준비 확인에서 막혀 직원에게 작업을 배정하지 않았습니다';
     const cp = buildCheckpoint(undefined, m.cycle, m.results ?? [], m.gaps ?? [], (m.assumptions ?? []).map((a) => a.text), reason, title, this.demoChecks.get(id) ?? []);
@@ -2179,7 +2201,7 @@ export class MissionRunner {
     const ds = m.denials ?? []; const bs = m.blockers ?? [];
     if (!ds.length && !bs.length) return [];
     return ['', '## 보류한 업무(사용자 확인 대기 — 다시 계획하지 말 것)',
-      ...ds.map((d) => `- 권한: ${d.agent} · ${d.tool}: ${d.target}`), ...bs.map((b) => `- ${b.kind === 'environment' ? '내 PC 환경' : '같은 실패 반복'}: ${b.step} — ${b.reason.slice(0, 200)}`),
+      ...ds.map((d) => `- 권한: ${d.agent} · ${d.tool}: ${d.target}`), ...bs.map((b) => `- ${BLOCKER_LABEL[b.kind]}: ${b.step} — ${b.reason.slice(0, 200)}`),
       '- 위 업무와 같은 작업, 같은 명령·경로가 필요한 작업은 계획하지 않는다. 그 결과가 없어도 할 수 있는 나머지 일을 계획한다.',
       '- 남은 일이 모두 보류한 업무에 달려 있으면 tasks를 비우고 question에 무엇을 해결해야 하는지 한 가지로 묻는다.'];
   }

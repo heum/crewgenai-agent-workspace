@@ -11,6 +11,7 @@ import type {
 import {
   buildClaudeArgs, claudeLimit, cleanEnv, codexLimit, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactArgs, redactDeep, startProcess, type ProcessHandle, type ResultInfo,
 } from '../cli/claudeCli';
+import { BLOCKED_PREFIX } from '../../shared/types';
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
@@ -115,6 +116,7 @@ const REVIEW_BAR = [
   '- changes_requested는 막는 결함이 있을 때만 낸다: 정확성 오류, 보안 문제, 요구·완료 조건 위반, 시험 실패, 필수 산출물 누락. Codex 리뷰의 P0·P1 등급이 여기에 해당한다.',
   '- 기록 정리·표현·줄 번호·작은 불일치·추가로 있으면 좋은 검증(Codex P2·P3 등급)은 재작업 사유가 아니다. 승인하고 followUps에 적는다(다음 작업 목록으로 넘어간다).',
   '- issues에는 막는 결함만 쓴다.',
+  '- blocked: 통과하지 못한 원인을 작성자가 자기 수정 범위 안에서 고칠 수 없을 때만 true로 한다(예: 떠 있는 서버·DB 같은 환경 문제, 이 작업이 건드릴 수 없는 저장소·파일의 수정, 사용자의 결정·승인·허용이 있어야 하는 일). 이때 verdict는 changes_requested로 두고, needs에 "누가 무엇을 해야 풀리는지"를 사용자가 읽을 한두 문장으로 쓴다. 작성자가 다시 하면 고칠 수 있는 것은 blocked가 아니다.',
 ].join('\n');
 
 /** 지적 심각도 순서: P0·치명 → P1·높음 → 그 밖 (판단 단계에 잘려 전달돼도 심각한 것이 앞에 오게) */
@@ -122,7 +124,7 @@ const sevRank = (v: string) => (/p0|critical|치명/i.test(v) ? 0 : /p1|high|높
 
 const VERDICT_SCHEMA = {
   type: 'object',
-  properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } }, followUps: { type: 'array', items: { type: 'string' } } },
+  properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } }, followUps: { type: 'array', items: { type: 'string' } }, blocked: { type: 'boolean' }, needs: { type: 'string' } },
   required: ['verdict', 'summary', 'issues'],
 };
 
@@ -624,7 +626,7 @@ export class Engine {
     this.setNode(runId, node.id, { status: feedback && visit > 1 ? 'rework' : 'running', visits: visit, failureReason: '', nextAction: '' });
     const upstream = preds.flatMap((p) => state.records[p]?.outputs ?? []);
 
-    let out: { status: 'ok' | 'fail' | 'true' | 'false'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; target?: string | null };
+    let out: { status: 'ok' | 'fail' | 'true' | 'false'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; target?: string | null; noRework?: boolean };
     switch (node.kind) {
       case 'input': out = { status: 'ok', summary: `기획 전달(목표·완료 조건·참고 자료 ${plan.referenceDocs.length + plan.priorOutputs.length}건)`, outputs: [...plan.referenceDocs, ...plan.priorOutputs] }; break;
       case 'agent': out = await this.runAgentNode(runId, graph, node, visit, plan, upstream, feedback); break;
@@ -647,7 +649,7 @@ export class Engine {
     if (out.status === 'ok') route = fwd('next');
     else if (out.status === 'true' || out.status === 'false') route = fwd(out.status);
     else {
-      const target = out.target ?? fwd('fail')[0] ?? null;
+      const target = out.noRework ? null : (out.target ?? fwd('fail')[0] ?? null);
       if (target) {
         const tNode = graph.nodes.find((n) => n.id === target)!;
         const tv = state.visits[target] ?? 0;
@@ -808,7 +810,7 @@ export class Engine {
         ...(node.kind === 'review' && node.instructions.trim() ? ['## 검토 지시', node.instructions.trim(), ''] : []),
         '## 검토 대상', ...targets.map((t) => `- ${t}`), '', '## 완료 조건', criteria || plan.doneCriteria, '',
         '## 프로젝트 목표', plan.goal, '', '## 판정 기준', REVIEW_BAR, '',
-        '## 출력', 'verdict(approve|changes_requested), summary, issues(막는 결함), followUps(다음 작업으로 미룰 경미한 지적)를 구조화 출력으로 반환한다. 근거 없이 승인하지 않는다.',
+        '## 출력', 'verdict(approve|changes_requested), summary, issues(막는 결함), followUps(다음 작업으로 미룰 경미한 지적), blocked(작성자가 고칠 수 없으면 true), needs(blocked일 때 필요한 조치)를 구조화 출력으로 반환한다. 근거 없이 승인하지 않는다.',
       ].join('\n');
       a = await this.runClaude(runId, node, visit, prior.length + 1, 'reviewer', reviewer, plan, prompt, [], VERDICT_SCHEMA, null);
     }
@@ -818,10 +820,10 @@ export class Engine {
     return v;
   }
 
-  private verdictOf(a: Attempt): { verdict: 'approve' | 'changes_requested'; summary: string; issues: string[]; followUps: string[] } {
+  private verdictOf(a: Attempt): { verdict: 'approve' | 'changes_requested'; summary: string; issues: string[]; followUps: string[]; blocked?: boolean; needs?: string } {
     if (a.status !== 'succeeded') return { verdict: 'changes_requested', summary: `검토 실행 실패: ${a.error}`, issues: [a.error || '검토가 끝나지 않았습니다.'], followUps: [] };
     const raw = this.meta(a.runId, `structured:${a.id}`);
-    let v: { verdict?: string; summary?: string; issues?: string[]; followUps?: string[] } | null = null;
+    let v: { verdict?: string; summary?: string; issues?: string[]; followUps?: string[]; blocked?: unknown; needs?: unknown } | null = null;
     try { v = raw ? JSON.parse(raw) : null; } catch { v = null; }
     if (!v) { const m = a.summary.match(/\{[\s\S]*"verdict"[\s\S]*\}/); try { v = m ? JSON.parse(m[0]) : null; } catch { v = null; } }
     if (!v || (v.verdict !== 'approve' && v.verdict !== 'changes_requested')) return { verdict: 'changes_requested', summary: '검토 결과 형식을 확인할 수 없어 승인으로 처리하지 않았습니다.', issues: ['구조화된 검토 결과 없음'], followUps: [] };
@@ -829,7 +831,9 @@ export class Engine {
     const followUps = Array.isArray(v.followUps) ? v.followUps.map(String) : [];
     // 막는 결함 없이 수정 요청만 낸 경우(경미한 지적뿐)는 재작업하지 않고 후속으로 넘긴다
     if (v.verdict === 'changes_requested' && !issues.length && followUps.length) return { verdict: 'approve', summary: String(v.summary ?? ''), issues: [], followUps };
-    return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps };
+    // 막힘은 수정 요청일 때만 뜻이 있다(승인에 붙은 blocked는 무시)
+    const blocked = v.verdict === 'changes_requested' && v.blocked === true;
+    return { verdict: v.verdict, summary: String(v.summary ?? ''), issues, followUps, ...(blocked ? { blocked: true, needs: String(v.needs ?? '').replace(/\s+/g, ' ').trim().slice(0, 500) } : {}) };
   }
 
   /**
@@ -972,6 +976,8 @@ export class Engine {
     const criteria = node.doneCriteria || predNodes.map((p) => p.doneCriteria).filter(Boolean).join(' / ');
     const v = await this.runReviewer(runId, node, visit, plan, reviewer, targets, criteria);
     if (v.verdict === 'approve') return { status: 'ok' as const, summary: `승인: ${v.summary}`, outputs: upstream };
+    // 작성자가 고칠 수 없는 원인: 같은 작성자에게 다시 시키지 않고 이 단계에서 끝낸다(미션이 바로 확인함에 올린다)
+    if (v.blocked) return { status: 'fail' as const, summary: v.summary, outputs: [], reason: `${BLOCKED_PREFIX}${v.needs || v.issues[0] || v.summary}`.slice(0, 700), noRework: true };
     return { status: 'fail' as const, summary: v.summary, outputs: [], reason: `검토 수정 요청: ${v.summary}`, feedbackText: `독립 검토(${reviewer.name}) 지적:\n- ${v.issues.join('\n- ')}`, target: this.reworkTarget(graph, node, `${v.summary}\n${v.issues.join('\n')}`) };
   }
 

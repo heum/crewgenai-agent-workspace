@@ -203,7 +203,7 @@ async function main() {
     const needCmd = (user.match(/\[\[mock:needs:([^\]]+)\]\]/) || [])[1];
     const plan = ask ? { summary: '정보 부족', question: '어느 문서를 기준으로 할까요?', tasks: [] } : {
       summary: `사이클 ${cyc} 작업 1개`, question: '',
-      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
+      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:blocked-env]]') ? '[[mock:blocked-env]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
         writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [],
         ...(needCmd ? { needs: { commands: [needCmd], readPaths: [] } } : {}) }] };
     if (!ask && user.includes('[[mock:two-tasks]]')) plan.tasks.push({ title: `보조 문서 ${cyc}`, agentCode: code, instructions: `${mdir}-b/cycle-${cyc}.md를 작성한다.`, writeScope: [`${mdir}-b`], outputs: [{ path: `${mdir}-b/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: '작성', checkCommand: [] });
@@ -266,7 +266,11 @@ async function main() {
     }
     if (prompt.includes('[[mock:leak-review]]')) issues.push('검토 중 발견한 값 token=sk-ant-api03-REVIEWFAKEFAKEFAKE99');
     const verdict = issues.length ? 'changes_requested' : 'approve';
-    const structured = { verdict, summary: issues.length ? '수정이 필요합니다.' : '완료 조건을 충족합니다.', issues };
+    // 산출물에 BLOCKED-ENV가 있으면: 작성자가 고칠 수 없는 원인(막힘)으로 판정
+    const blockedEnv = targets.some((t) => { const p = path.resolve(cwd, t); return fs.existsSync(p) && fs.statSync(p).isFile() && fs.readFileSync(p, 'utf8').includes('BLOCKED-ENV'); });
+    const structured = blockedEnv
+      ? { verdict: 'changes_requested', summary: '기록이 0건이라 닫을 수 없습니다.', issues: ['실행 기록이 저장되지 않습니다.'], blocked: true, needs: '시연 DB를 쥐고 있는 예전 서버를 정리해야 합니다(팀장 결정).' }
+      : { verdict, summary: issues.length ? '수정이 필요합니다.' : '완료 조건을 충족합니다.', issues };
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(structured), structured_output: structured, num_turns: 2, permission_denials: [] });
     process.exit(0);
   }
@@ -283,7 +287,7 @@ async function main() {
     let body;
     if (o.format === 'json') body = JSON.stringify({ status: 'done', fixed: rework, todo: todo ? 'TODO' : undefined }, null, 2);
     else if (o.format === 'html') body = `<!doctype html><html><body><h1>모의 산출물</h1><p>${todo ? 'TODO' : '완료'}</p></body></html>`;
-    else body = `# 모의 산출물\n\n${rework ? 'FIXED: 재작업 요청을 반영했습니다.\n' : ''}${todo ? 'TODO: 남은 작업\n' : '내용 작성 완료\n'}`;
+    else body = `# 모의 산출물\n\n${rework ? 'FIXED: 재작업 요청을 반영했습니다.\n' : ''}${todo ? 'TODO: 남은 작업\n' : '내용 작성 완료\n'}${prompt.includes('[[mock:blocked-env]]') ? 'BLOCKED-ENV: 서버가 기록을 저장하지 못함\n' : ''}`;
     fs.mkdirSync(path.dirname(path.resolve(cwd, o.rel)), { recursive: true });
     fs.writeFileSync(path.resolve(cwd, o.rel), body);
     if (prompt.includes('[[mock:code]]') && editAllowed(`${o.rel}.mjs`)) fs.writeFileSync(path.resolve(cwd, `${o.rel}.mjs`), `export const done = ${!todo};\n`);
