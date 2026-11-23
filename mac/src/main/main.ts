@@ -261,6 +261,8 @@ function register() {
   h('listMissions', (pid) => s().missions.list(pid));
   h('projectProgress', (pid) => s().missions.progress(pid));
   h('reviewProjectProgress', (pid) => s().missions.reviewProgress(pid));
+  h('projectLessons', (pid) => s().missions.lessons(pid));
+  h('updateLesson', (pid: string, symptom: string, patch: { resolved?: unknown; remove?: unknown } | null) => s().missions.updateLesson(pid, String(symptom ?? ''), { resolved: typeof patch?.resolved === 'boolean' ? patch.resolved : undefined, remove: patch?.remove === true }));
   h('cancelDirective', (id, seq) => s().missions.cancelDirective(id, Number(seq)));
   h('qaList', (pid) => s().missions.qaList(pid));
   h('qaAsk', (pid, text) => s().missions.qaAsk(pid, String(text ?? '')));

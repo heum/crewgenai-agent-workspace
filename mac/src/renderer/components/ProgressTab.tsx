@@ -1,7 +1,7 @@
 // 진척 메뉴: 프로젝트 전체 완성도. 큰 단계별 진행률과 단계 안의 기능 목록(근거 문서 ID·완료 기준·상태·확인 근거), 계획 변경 기록.
 // 진척 관리(PM) 직원이 사이클마다 갱신하며, 미션이 바뀌어도 프로젝트에 하나로 이어진다.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { LiveEvent, MissionWorkPlan, Project, WorkItem, WorkStatus } from '../../shared/types';
+import type { LiveEvent, MissionWorkPlan, Project, ProjectLesson, WorkItem, WorkStatus } from '../../shared/types';
 import { fmtDate, useAction, useLoad, ws } from '../api';
 import { Badge, Banner, Empty, Loading } from './common';
 
@@ -59,7 +59,36 @@ export default function ProgressTab({ project }: { project: Project }) {
       </div>
       {prog.data?.items.length ? <PlanView projectId={project.id} wp={prog.data} onChanged={() => void prog.reload()} />
         : <Empty title="아직 진척 목록이 없습니다">미션의 다음 사이클 판단이 끝나면 진척 관리 직원이 기획의 목표·완료 조건과 근거 문서를 읽고, 프로젝트 전체를 큰 단계와 기능 목록으로 만듭니다(개발은 멈추지 않음).</Empty>}
+      <LessonsBox projectId={project.id} />
     </div>
+  );
+}
+
+/** 실패에서 배운 것: 앱이 모델 글에서 모은 기록. 틀렸으면 지우고, 풀렸으면 해결로 표시한다(계획에는 인용 자료로만 들어감) */
+function LessonsBox({ projectId }: { projectId: string }) {
+  const ls = useLoad(() => ws().projectLessons(projectId), [projectId]);
+  const act = useAction();
+  const [items, setItems] = useState<ProjectLesson[] | null>(null);
+  const list = items ?? ls.data ?? [];
+  if (!list.length) return null;
+  const change = (l: ProjectLesson, patch: { resolved?: boolean; remove?: boolean }) => void act.run(async () => setItems(await ws().updateLesson(projectId, l.symptom, patch)));
+  const open = list.filter((l) => !l.resolved).length;
+  return (
+    <details className="card small" style={{ marginTop: 10 }}>
+      <summary>실패에서 배운 것 {list.length}건{open ? ` · 미해결 ${open}건` : ''}</summary>
+      <p className="muted small">직원·판단 단계가 쓴 기록을 앱이 모은 것입니다. 다음 계획에 참고 자료로만 들어가며, 승인이나 권한으로 쓰이지 않습니다. 틀린 기록은 지우세요.</p>
+      {act.error && <Banner>{act.error}</Banner>}
+      <ul className="lesson-list">{list.map((l) => (
+        <li key={l.symptom}>
+          <Badge tone={l.resolved ? 'ok' : 'warn'}>{l.resolved ? '해결' : '미해결'}</Badge> {l.symptom} <span className="muted">({l.count}회 · 사이클 {l.cycle})</span>
+          <div className="muted">원인: {l.cause || '(미확인)'} → {l.fix || '(해결책 없음)'}</div>
+          <div className="row gap">
+            <button className="btn btn-sm" disabled={act.busy} onClick={() => change(l, { resolved: !l.resolved })}>{l.resolved ? '미해결로 되돌리기' : '해결로 표시'}</button>
+            <button className="btn btn-sm" disabled={act.busy} onClick={() => change(l, { remove: true })}>지우기</button>
+          </div>
+        </li>
+      ))}</ul>
+    </details>
   );
 }
 

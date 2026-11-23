@@ -332,8 +332,11 @@ export class TelegramBridge {
     if (ev.kind === 'question' && k.review) { for (const it of this.pending(m.id).filter((x) => x.urgent)) this.enqueueItem(it); return; }
     if (ev.kind === 'system' && ev.text.startsWith('시연 실행 승인 요청') && k.review) { for (const it of this.pending(m.id).filter((x) => x.kind === 'demo')) this.enqueueItem(it); return; }
     if (ev.kind === 'system' && ev.text.includes('확인함에 올렸습니다') && k.results && m.checkpoint) { this.enqueue(`cp:${m.id}:${m.checkpoint.at}`, this.checkpointMsg(m), true); return; }
-    // 작업 결과는 사이클 끝을 기다리지 않고 바로 보낸다(검증 전·검증 통과)
-    if (ev.kind === 'system' && /^(결과가 나왔습니다|검증 통과)/.test(ev.text) && k.results) { this.enqueue(`res:${m.id}:${ev.seq}`, { text: `${this.head(m)}\n${ev.text.startsWith('검증 통과') ? '✅' : '🆕'} ${esc(cut(ev.text, 900))}` }, true); return; }
+    // 작업 결과는 사이클 끝을 기다리지 않고 바로 보낸다(검증 전·통과·건너뜀·고칠 점·실패)
+    if (ev.kind === 'system' && /^(결과가 나왔습니다|검증 통과|검증 건너뜀|검증에서 고칠 점|검증 실패로)/.test(ev.text) && k.results) {
+      const mark = ev.text.startsWith('검증 통과') ? '✅' : ev.text.startsWith('검증 건너뜀') ? '⏭' : /^검증(에서 고칠 점| 실패로)/.test(ev.text) ? '🔧' : '🆕';
+      this.enqueue(`res:${m.id}:${ev.seq}`, { text: `${this.head(m)}\n${mark} ${esc(cut(ev.text, 900))}` }, true); return;
+    }
     if (ev.kind === 'system' && ev.text.startsWith('커밋 승인 요청') && k.commits) { for (const r of (m.commitRequests ?? []).filter((x) => x.status === 'pending')) void this.enqueueCommit(m, r); return; }
     if (ev.kind === 'cycle_end' && /: failed/.test(ev.text) && k.failures) { const sig = ev.text.replace(/사이클 \d+/g, '').replace(/\d+/g, '#').slice(0, 160); this.enqueue(`fail:${m.id}:${sig}`, { text: `${this.head(m)}\n❗ ${esc(cut(ev.text, 400))}\n(같은 실패는 다시 알리지 않습니다. 다른 작업은 계속됩니다.)` }, true); return; }
     if (ev.kind === 'system' && /^(Claude 한도 대기|사용 한도 도달|연결·서비스 일시 장애)/.test(ev.text) && k.limit) { this.enqueue(`limit:${m.id}:${ev.seq}`, { text: `${this.head(m)}\n⏳ ${esc(cut(ev.text, 400))}\n텔레그램 조회·지시 접수·결정 처리는 계속 됩니다.` }, true); return; }

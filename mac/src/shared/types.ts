@@ -458,6 +458,8 @@ export interface WorkspaceApi {
   /** 진척 메뉴: 프로젝트 진척 목록과 확인 */
   projectProgress(projectId: ID): Promise<MissionWorkPlan | null>;
   reviewProjectProgress(projectId: ID): Promise<MissionWorkPlan>;
+  projectLessons(projectId: ID): Promise<ProjectLesson[]>;
+  updateLesson(projectId: ID, symptom: string, patch: { resolved?: boolean; remove?: boolean }): Promise<ProjectLesson[]>;
   cancelDirective(missionId: ID, seq: number): Promise<Mission>;
   /** 문의 응대 직원과의 대화 */
   qaList(projectId: ID): Promise<QaMessage[]>;
@@ -849,6 +851,8 @@ export const MISSION_STAGE_LABEL: Record<MissionStage, string> = {
 /** 운영 지시 전 필수 준비 항목. 하나라도 빠지면 지시할 수 없다(서버에서도 같은 기준으로 막는다). */
 export interface ReadinessItem { key: string; label: string; ok: boolean; detail: string; tab: 'plan' | 'agents' | 'settings' | null; /** 참고 항목(부족해도 지시는 받음) */ info?: boolean }
 /** 다음 미션 추천 초안: 앱이 지난 미션의 기록에서 만들어 보여 주는 지시문. 사용자가 고쳐서 직접 시작할 때만 쓰인다(자동으로 시작하지 않음). */
+/** 실패에서 배운 것(프로젝트 단위, 미션이 바뀌어도 이어짐). 모델이 쓴 기록이라 계획에는 인용 자료로만 들어간다 */
+export interface ProjectLesson { symptom: string; cause: string; fix: string; resolved: boolean; cycle: number; count: number }
 export interface NextMissionDraft {
   title: string;
   /** 새 지시 입력창에 넣을 전체 글(오퍼레이터가 쓴 본문 + 앱이 진척 목록에서 그대로 붙인 완료 기준) */

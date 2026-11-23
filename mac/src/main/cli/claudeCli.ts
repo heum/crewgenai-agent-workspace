@@ -261,6 +261,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /lsv2_[A-Za-z0-9_]{10,}/g,
   /gh[pousr]_[A-Za-z0-9]{20,}/g,
   /(Bearer\s+)[A-Za-z0-9._\-]{12,}/gi,
+  /(\b[a-z][a-z0-9+.\-]*:\/\/[^\s:/@"']+:)[^\s@/"']+(?=@)/gi, // 접속 주소 안의 비밀번호(postgres://사용자:비밀번호@…)
   /((?:api[_-]?key|access[_-]?token|secret|password|passwd|token)\s*["']?\s*[:=]\s*["']?)[^\s"',}]{6,}/gi,
 ];
 export function redact(s: string): string {
