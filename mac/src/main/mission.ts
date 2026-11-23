@@ -576,6 +576,7 @@ export class MissionRunner {
       '- 사용자 지시 없이 완료 기준(criteria)을 더 엄격하게 고치거나 기능을 잘게 쪼개 늘리지 않는다.',
       '- blocked는 막힌 이유를 note에 쓴다. 사용자가 정하지 않은 범위를 가정해 넣었으면 note에 "가정"이라고 쓴다.',
       '- summary는 진척 한 줄 요약(전체 몇 % · 지금 단계 · 무엇이 막힘)이다.',
+      `- ${PLAIN_TEXT}`,
     ].join('\n');
   }
 
@@ -2172,6 +2173,7 @@ export class MissionRunner {
       ...this.lessonsSection(m.projectId),
       ...this.repeatSection(m),
       ...DROP_RULES,
+      ...PLAIN_RULES,
       ...workPlanSection(this.progress(m.projectId), m.cycle),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
@@ -2465,6 +2467,7 @@ export class MissionRunner {
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       ...this.lessonsSection(m.projectId),
+      ...PLAIN_RULES,
       '## 판단 규칙',
       '- lessons: 이번 사이클에 실패·반려·막힘이 있었거나, 위 "실패에서 배운 것"의 미해결 항목이 풀렸으면 한 줄씩 적는다(최대 5건). symptom은 겉으로 보인 증상(같은 문제면 위 목록과 같은 말로 — 앱이 합친다), cause는 확인한 원인, fix는 해결 또는 우회 방법, resolved는 풀렸으면 true. 추측이면 cause에 "추정"이라고 쓴다. 없으면 빈 배열.',
       '- 사이클 Codex 리뷰 또는 사이클 최종 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. 이 리뷰의 지적만으로 이번 작업을 실패로 되돌리지 않는다. 리뷰 기록에 P0·P1이 있거나 "일부만 리뷰"라고 적혀 있으면 결과물 목록의 Codex 보고서 파일(reviews/codex-…)을 Read로 끝까지 읽고 판단한다.',
@@ -2707,6 +2710,12 @@ export function buildNextDraft(r: { title?: string; prompt?: string; scopeIds?: 
 }
 
 /** 지난 일은 끌고 오지 않는다(계획 규칙) */
+/** 팀장이 읽는 글은 결과 중심으로(2026-11-23 팀장 요구: 번호는 모르고 열어 보지도 않음, 결과만 보고 판단) */
+const PLAIN_TEXT = '팀장이 읽는 글(작업 제목·summary·question·gaps·결과·진척 title·note)은 "어느 화면에서 무엇을 하면 어떻게 되는지"로 쓴다. 팀장은 기능 번호·문서 번호·파일·함수 이름을 모르고 열어 보지 않는다. 번호·이름은 꼭 필요할 때만 문장 끝 괄호에 둔다(예: "승인함에서 처리 대기와 처리 완료를 나눠 보여 줌 (W35)").';
+const PLAIN_RULES = ['## 팀장에게 보이는 글과 진행 방식',
+  `- ${PLAIN_TEXT}`,
+  '- 팀장의 답을 기다리며 일을 세우지 않는다. 기획서·진척 목록대로 계속 만들고, 팀장의 피드백은 들어오는 대로 다음 계획에 반영한다. 자잘한 선택은 정해서 진행하고 결과와 함께 무엇을 정했는지 한 줄로 알린다. 묻는 것은 제품 방향·돈·권한·외부 공개처럼 팀장만 정할 수 있는 것뿐이다(답이 없는 것을 승인으로 보지 않는다).',
+  '- 기능 하나를 닫으면 결과의 demo에 시연 주소·들어가는 경로·무엇을 보면 되는지를 채워 팀장이 바로 열어 볼 수 있게 한다.', ''];
 const DROP_RULES = ['## 버릴 것(계획 규칙)',
   '- 지난 리뷰의 사소한 지적(P2), 이번 작업 전부터 깨져 있던 시험, 지난 사이클의 증빙·보고 갱신은 계획에 넣지 않는다. 기능을 닫는 데 꼭 필요한 것만 그 기능의 작업 안에서 한다.',
   '- 예외: 완료 기준에 적힌 것은 버리지 않는다. 기준에 전체 검사 통과(예: EXIT_CODE=0)가 있으면 원래 깨져 있던 시험도 그 기능의 작업에서 고친다. 고치지 못하면 그 기능을 완료로 닫지 않는다.',

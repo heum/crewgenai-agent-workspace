@@ -15,7 +15,7 @@ import { BLOCKED_PREFIX } from '../../shared/types';
 import { cleanDomains } from '../netallow';
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
-import { CODEX_REVIEW_SCHEMA, CODEX_VERIFY_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
+import { CODEX_REVIEW_SCHEMA, CODEX_VERIFY_SCHEMA, codexArgs, codexAuthorArgs, codexAuthorModel, codexEnv, interpretCodexLine, type CodexSink } from '../cli/codexCli';
 import { checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { commandNote, levelNote, materializeLink, referencedRepos, repoDirs, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
@@ -1149,6 +1149,8 @@ export class Engine {
     const ex = this.o.executor();
     const run = this.s.getRun(runId);
     const auto = this.o.autoAssist?.() ?? false;
+    // 직원의 실행 도구가 Codex인 작성자: 같은 격리·검사·반영 절차를 거치고, 프로세스만 Codex로 띄운다
+    const codexRun = role === 'author' && agent.runner === 'codex';
     // 검토자는 읽기 도구만. 'Skill'을 켠 직원이면 검토 절차 스킬(코드 리뷰·보안 검토 등)은 쓸 수 있다(쓰기 권한은 생기지 않음)
     const tools: ToolName[] = role === 'reviewer' ? ['Read', 'Grep', 'Glob', ...(agent.tools.includes('Skill') ? ['Skill' as ToolName] : [])] : agent.tools.filter((t) => t !== 'WebFetch');
     // 자동 처리: 파일을 쓰는 작성자는 스킬을 기본으로 쓴다
@@ -1183,13 +1185,15 @@ export class Engine {
       try {
         const sk = this.o.skills?.(plan.folder);
         const bundle = sk ? prepareSkillBundle(sk.dirs, sk.cacheDir) : null;
-        if (bundle) { pluginDirs.push(bundle.pluginRoot); readDirs.push(bundle.pluginRoot); prompt = `${prompt}\n\n${skillNote(bundle.skills, role)}`; }
+        if (bundle) { pluginDirs.push(bundle.pluginRoot); readDirs.push(bundle.pluginRoot); prompt = `${prompt}\n\n${codexRun ? codexSkillNote(bundle.skills, bundle.pluginRoot) : skillNote(bundle.skills, role)}`; }
         if (bundle) unpinLater = () => unpinSkillBundle(bundle.pluginRoot);
       } catch (e) { prompt = `${prompt}\n\n(스킬 사본을 만들지 못해 이번 실행은 기본 제공 스킬만 쓸 수 있습니다: ${redact(String((e as Error).message ?? e)).slice(0, 200)})`; }
     }
-    const sessionId = resumeSession ? null : randomUUID();
-    // Bash를 쓰는 작성자는 격리 복사본에서 실행한다(같은 실행·단계는 같은 경로 → 세션 이어서 작업 가능).
-    const isolate = role === 'author' && tools.includes('Bash');
+    // Codex 실행은 세션을 남기지 않는다(--ephemeral): 시간 초과로 끊겨도 이어 가지 않고 새로 시작한다
+    const sessionId = codexRun ? null : resumeSession ? null : randomUUID();
+    if (codexRun) resumeSession = null;
+    // Bash를 쓰는 작성자는 격리 복사본에서 실행한다(같은 실행·단계는 같은 경로 → 세션 이어서 작업 가능). Codex 작성자는 항상 셸을 쓰므로 늘 격리한다
+    const isolate = role === 'author' && (tools.includes('Bash') || codexRun);
     const workDir = isolate ? isolatedDir(`${runId}:${node.id}`) : plan.folder;
     // 자동 처리: 저장소에 실제로 있는 시험 명령을 허용한다(격리 복사본에 들어가는 저장소만)
     // 수정 범위의 저장소 + 입력 자료·지시에 이름이 나온 저장소(시험·빌드 대상). 고칠 수 있는 곳은 여전히 수정 범위뿐이다.
@@ -1211,12 +1215,17 @@ export class Engine {
       readDirs, ownOutputs: isolate, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, effort: agent.effort, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs, commandLevel: role === 'author' ? level : 'low',
       writeDirs: [...(procTmp ? [procTmp] : []), ...cmds.flatMap((c) => c.writeDirs)], allowedDomains: role === 'author' && isolate ? cleanDomains(agent.allowedDomains) : [], localBinding: sockets && isolate, // 로컬 포트 열기를 허용했으면 격리 실행 작성자는 127.0.0.1에 서버·시험 서버를 띄울 수 있다(외부 네트워크는 계속 막힘)
     });
-    const file = run.executor === 'mock' ? process.execPath : ex.cliPath;
-    if (!file) { unpinLater(); dropTmp(); throw new Error('Claude CLI 경로가 없습니다.'); }
-    const argv = run.executor === 'mock' ? [this.o.mockScript, ...args] : args;
+    const cx = codexRun ? (this.o.codex?.() ?? { path: null, model: 'gpt-6.2-astra', effort: 'high' }) : null;
+    const codexOut = codexRun && procTmp ? join(procTmp, 'codex-last.txt') : null;
+    const codexModel = cx ? codexAuthorModel(agent.model, cx.model) : '';
+    const runArgs = codexRun && codexOut ? codexAuthorArgs(codexModel, agent.effort || cx?.effort || 'high', workDir, codexOut) : args;
+    if (codexRun) prompt = `## 역할\n당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000) + `\n\n${prompt}\n\n${CODEX_AUTHOR_NOTE}`;
+    const file = codexRun ? (run.executor === 'mock' ? process.execPath : cx?.path ?? null) : run.executor === 'mock' ? process.execPath : ex.cliPath;
+    if (!file || (codexRun && run.executor === 'mock' && !this.o.mockCodexScript)) { unpinLater(); dropTmp(); throw new Error(codexRun ? 'Codex CLI 경로가 없습니다(설정에서 Codex 연결 확인).' : 'Claude CLI 경로가 없습니다.'); }
+    const argv = run.executor === 'mock' ? [codexRun ? this.o.mockCodexScript! : this.o.mockScript, ...runArgs] : runArgs;
     const attempt: Attempt = {
       id: uid(), runId, nodeId: node.id, visit, attemptNo, agentId: agent.id, agentVersion: agent.version, role, status: 'running', pid: null, procStart: null,
-      sessionId: sessionId ?? resumeSession, resumedFrom: resumeSession, promptHash: sha256(prompt), argvRedacted: redactArgs(args), exitCode: null, resultSubtype: null,
+      sessionId: sessionId ?? resumeSession, resumedFrom: resumeSession, promptHash: sha256(prompt), argvRedacted: redactArgs(runArgs), exitCode: null, resultSubtype: null,
       isError: null, costUsd: null, usage: null, permissionDenials: [], acceptance: null, changedFiles: [], outOfScopeChanges: [], summary: '', error: '', startedAt: now(), finishedAt: null,
     };
     try { this.s.insertAttempt(attempt); } catch { unpinLater(); dropTmp(); throw new Error(`중복 시도 차단: ${node.label} 방문 ${visit} 시도 ${attemptNo}`); }
@@ -1226,6 +1235,8 @@ export class Engine {
     const release = await this.acquire(runId, node.id, plan.folder, lockScope).catch((e) => { unpinLater(); dropTmp(); attempt.status = 'cancelled'; attempt.finishedAt = now(); this.saveAttempt(attempt); throw e; });
     let seq = 0;
     const sink: StreamSink = { sessionId: attempt.sessionId, result: null, limit: null };
+    const cxs: CodexSink = { thread: null, usage: null, last: '', failed: '' };
+    let errText = '';
     const addEv = (kind: Parameters<typeof this.s.addEvent>[0]['kind'], summary: string, raw: string) => {
       if (this.closed) return;
       const ev = { attemptId: attempt.id, seq: ++seq, at: now(), kind, summary: redact(summary), raw };
@@ -1248,10 +1259,15 @@ export class Engine {
       const before = iso ? new Map(iso.before) : snapshot(workDir); // 세션 이어서 작업이면 중단 전 작업까지 포함해 비교
       const timeout = node.timeoutSec || agent.timeoutSec;
       if (ctl.abort.signal.aborted) throw new Cancelled(); // 한도·취소로 멈춘 실행에서 새 프로세스를 띄우지 않는다
+      if (codexRun) addEv('init', `Codex 작성 시작 · 모델 ${codexModel} · 강도 ${agent.effort || cx?.effort || 'high'} · 격리 작업 폴더에서만 쓰기 · 네트워크 꺼짐`, '');
+      const baseEnv = run.executor === 'mock' ? cleanEnv({ ELECTRON_RUN_AS_NODE: '1', ...procEnv }) : codexRun ? codexEnv(file, procEnv) : cleanEnv(procEnv);
       const h = startProcess(file, argv, {
-        cwd: workDir, env: isolate ? scrubSecretEnv(cleanEnv(run.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1', ...procEnv } : procEnv)) : cleanEnv(run.executor === 'mock' ? { ELECTRON_RUN_AS_NODE: '1', ...procEnv } : procEnv), stdin: prompt, timeoutSec: timeout,
-        onStdoutLine: (l) => { const ev = interpretLine(l, sink); if (ev) addEv(ev.kind, ev.summary, ev.raw); },
-        onStderrLine: (l) => { if (l.trim()) addEv('stderr', l.slice(0, 300), redact(l)); },
+        cwd: workDir, env: isolate ? scrubSecretEnv(baseEnv) : baseEnv, stdin: prompt, timeoutSec: timeout,
+        onStdoutLine: (l) => {
+          if (codexRun) { const ev = interpretCodexLine(l, cxs); if (ev) addEv(ev.kind, ev.summary, redact(l.length > 20000 ? `${l.slice(0, 20000)}…` : l)); return; }
+          const ev = interpretLine(l, sink); if (ev) addEv(ev.kind, ev.summary, ev.raw);
+        },
+        onStderrLine: (l) => { errText = `${errText}${l}\n`.slice(-20000); if (l.trim()) addEv('stderr', l.slice(0, 300), redact(l)); },
       });
       ctl.procs.set(attempt.id, h); // 취소·종료 대상에 먼저 등록한 뒤 시작 시각을 조회한다
       attempt.pid = h.pid; attempt.procStart = await processStart(h.pid); this.saveAttempt(attempt);
@@ -1311,7 +1327,13 @@ export class Engine {
         if (readOnly && outside.length) addEv('system', `검토 중에 다른 프로그램이 바꾼 파일 ${outside.length}개는 범위 검사에서 제외했습니다(검토 담당은 파일을 바꿀 수 없음): ${outside.slice(0, 5).join(', ')}`, '');
         attempt.outOfScopeChanges = readOnly ? [] : outside.filter((f) => !foreign.includes(f));
       }
-      attempt.exitCode = done.code; attempt.sessionId = sink.result?.sessionId ?? sink.sessionId ?? attempt.sessionId;
+      if (codexRun) {
+        // Codex 결과: 마지막 메시지 파일(없으면 기록의 마지막 메시지). 실패 사건이 있었거나 종료 코드가 0이 아니면 오류로 본다
+        let last = cxs.last;
+        try { if (codexOut && existsSync(codexOut)) last = readFileSync(codexOut, 'utf8') || last; } catch { /* 기록의 마지막 메시지 사용 */ }
+        sink.result = { subtype: done.code === 0 && !cxs.failed ? 'success' : 'error', isError: done.code !== 0 || !!cxs.failed, text: last || cxs.failed, sessionId: null, costUsd: null, usage: cxs.usage, permissionDenials: [], structured: null };
+      }
+      attempt.exitCode = done.code; attempt.sessionId = codexRun ? null : sink.result?.sessionId ?? sink.sessionId ?? attempt.sessionId;
       const r = sink.result;
       if (r) {
         attempt.resultSubtype = r.subtype; attempt.isError = r.isError; attempt.costUsd = r.costUsd; attempt.usage = r.usage; attempt.permissionDenials = r.permissionDenials.map(redact);
@@ -1329,7 +1351,7 @@ export class Engine {
       else if (attempt.acceptance.ok) attempt.status = 'succeeded';
       else { attempt.status = 'failed'; attempt.error = attempt.acceptance.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join(' / '); }
       // 사용 한도로 끝났으면 실패가 아니라 '중단'으로 남긴다 — 해제 후 같은 세션을 이어서 작업한다(재시도로 한도를 더 소모하지 않음)
-      const lim = attempt.status === 'failed' ? claudeLimit(sink, done.code) : null;
+      const lim = attempt.status === 'failed' ? (codexRun ? codexLimit(`${errText}\n${cxs.failed}`, done.code === 0 && cxs.failed ? 1 : done.code) : claudeLimit(sink, done.code)) : null;
       if (lim) { attempt.status = 'interrupted'; attempt.error = `사용 한도 도달: ${redact(lim.text)}`; }
       attempt.finishedAt = now();
       this.atomic(() => { if (attempt.status === 'succeeded' && role === 'author') this.registerArtifacts(runId, node, attempt, plan); this.saveAttempt(attempt); });
@@ -1523,6 +1545,16 @@ export class Engine {
 }
 
 /** 직원 지시에 붙이는 스킬 안내: 작업에 맞는 스킬을 먼저 불러 쓰게 한다(이름 목록은 길면 자른다) */
+/** Codex 작성자에게: 앱이 지키는 경계를 알린다(실제 차단은 샌드박스와 앱의 반영 검사가 한다) */
+const CODEX_AUTHOR_NOTE = ['## 실행 환경(Codex)',
+  '- 지금 작업 폴더는 프로젝트의 격리 복사본이다. 파일은 작업 폴더 안에서만 고친다. 다른 폴더에 쓰면 막히고, 수정 가능 경로 밖 변경은 앱이 원본에 반영하지 않는다.',
+  '- 네트워크는 꺼져 있다(패키지 설치·외부 호출 불가). 이미 설치된 도구로 시험·빌드를 돌린다. 막히면 같은 시도를 되풀이하지 말고 보고에 무엇이 필요한지 쓴다.',
+  '- 비밀값 파일(.env 등)·인증 파일을 읽거나 출력하거나 다른 파일에 옮기지 않는다. 커밋·푸시는 하지 않는다(앱이 한다).'].join('\n');
+function codexSkillNote(names: string[], root: string): string {
+  const list = [...new Set(names.map((n) => n.split(':').pop() ?? n))].slice(0, 80);
+  return ['## 쓸 수 있는 스킬(읽어서 따르는 절차서)', `- 스킬 절차서는 ${root} 아래 각 폴더의 SKILL.md에 있다. 작업에 맞는 것이 있으면 먼저 읽고 그 절차를 따른다(읽기 전용).`,
+    '- 스킬은 수정 범위·실행 환경을 넓히지 않는다. 쓴 스킬 이름을 보고에 적는다.', `- 목록: ${list.join(', ')}`].join('\n');
+}
 export function skillNote(names: string[], role: 'author' | 'reviewer'): string {
   const list = [...new Set(names.map((n) => n.split(':').pop() ?? n))].slice(0, 80);
   return ['## 쓸 수 있는 스킬',

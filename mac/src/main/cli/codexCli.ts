@@ -69,3 +69,40 @@ export const CODEX_REVIEW_SCHEMA = {
 export function codexArgs(model: string, effort: string, schemaFile: string, outFile: string): string[] {
   return ['exec', '-m', model, '-c', `model_reasoning_effort="${effort.replace(/[^a-z]/gi, '')}"`, '-s', 'read-only', '--skip-git-repo-check', '--ephemeral', '--output-schema', schemaFile, '-o', outFile, '-'];
 }
+
+// ───────── 작성 실행(직원별 실행 도구가 Codex인 작성자) ─────────
+// 앱이 만든 격리 복사본(작업 폴더)에서만 쓴다: 쓰기는 작업 폴더와 임시 폴더만, 네트워크는 끈다, 셸에는 기본 환경 변수만 넘긴다.
+// 범위 밖 변경 차단·충돌 검사·원본 반영·커밋은 Claude 작성자와 같은 앱 코드가 한다(Codex 쪽 판단에 맡기지 않음).
+export function codexAuthorArgs(model: string, effort: string, cwd: string, outFile: string): string[] {
+  return ['exec', '-m', model, '-c', `model_reasoning_effort="${effort.replace(/[^a-z]/gi, '') || 'high'}"`, '-c', 'sandbox_workspace_write.network_access=false', '-c', 'shell_environment_policy.inherit="core"',
+    '-s', 'workspace-write', '-C', cwd, '--skip-git-repo-check', '--ephemeral', '--json', '-o', outFile, '-'];
+}
+/** Codex 작성자의 모델: 직원에 Codex 모델(gpt-…)이 적혀 있으면 그것, 아니면 앱 설정의 Codex 모델 */
+export function codexAuthorModel(agentModel: string | undefined, fallback: string): string {
+  const m = String(agentModel ?? '').trim();
+  return /^gpt-[0-9A-Za-z.\-]+$/.test(m) ? m : fallback;
+}
+export interface CodexSink { thread: string | null; usage: Record<string, number> | null; last: string; failed: string }
+/** codex exec --json 한 줄을 기록용 사건으로 바꾼다(모르는 형식은 그대로 짧게 남긴다) */
+export function interpretCodexLine(line: string, sink: CodexSink): { kind: 'init' | 'text' | 'tool' | 'tool_result' | 'result' | 'system'; summary: string } | null {
+  let d: Record<string, unknown>;
+  try { d = JSON.parse(line); } catch { return line.trim() ? { kind: 'system', summary: line.slice(0, 300) } : null; }
+  const it = (d.item ?? {}) as Record<string, unknown>;
+  const s = (v: unknown, n = 300) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+  switch (d.type) {
+    case 'thread.started': sink.thread = s(d.thread_id, 80) || null; return { kind: 'init', summary: 'Codex 작업 시작' };
+    case 'turn.completed': {
+      const u = d.usage as Record<string, unknown> | undefined;
+      if (u && typeof u === 'object') sink.usage = Object.fromEntries(Object.entries(u).filter(([, v]) => typeof v === 'number')) as Record<string, number>;
+      return { kind: 'result', summary: `Codex 작업 끝 · 입력 ${sink.usage?.input_tokens ?? '?'} · 출력 ${sink.usage?.output_tokens ?? '?'} 토큰` };
+    }
+    case 'turn.failed': case 'error': sink.failed = s((d.error as Record<string, unknown> | undefined)?.message ?? d.message ?? line, 500); return { kind: 'system', summary: `Codex 오류: ${sink.failed}` };
+    case 'item.started': return it.type === 'command_execution' ? { kind: 'tool', summary: `명령: ${s(it.command, 240)}` } : null;
+    case 'item.completed':
+      if (it.type === 'agent_message') { sink.last = String(it.text ?? ''); return { kind: 'text', summary: s(it.text) }; }
+      if (it.type === 'command_execution') return { kind: 'tool_result', summary: `명령 끝(종료 코드 ${s(it.exit_code, 8)}): ${s(it.command, 160)}` };
+      if (it.type === 'file_change') return { kind: 'tool', summary: `파일 변경: ${s(JSON.stringify(it.changes ?? it), 240)}` };
+      return it.type ? { kind: 'system', summary: `${s(it.type, 40)}` } : null;
+    default: return null;
+  }
+}

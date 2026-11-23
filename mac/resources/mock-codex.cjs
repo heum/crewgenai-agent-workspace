@@ -9,6 +9,27 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { input += d; });
 process.stdin.on('end', () => {
+  // 작성 모드(-s workspace-write): 직원의 실행 도구가 Codex인 작성자. 산출물을 작업 폴더(-C)에 쓰고 JSON 줄 사건과 마지막 메시지를 낸다
+  if (argv.includes('workspace-write')) {
+    const cwd = opt('-C') || process.cwd();
+    const outs = [...((input.split('## 산출물')[1] || '').split('\n## ')[0]).matchAll(/^- (\S+) \((\w+)\)/gm)].map((m) => ({ path: m[1], format: m[2] }));
+    const say = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+    say({ type: 'thread.started', thread_id: 'mock-thread' });
+    say({ type: 'turn.started' });
+    if (input.includes('[[mock:codex-limit]]')) { process.stderr.write('ERROR: You have hit your usage limit. Try again later.\n'); process.exit(1); }
+    for (const o of outs) {
+      const abs = path.resolve(cwd, o.path);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, o.format === 'json' ? JSON.stringify({ ok: true, by: 'codex-mock' }) : `# Codex 모의 작성 결과\n\n작성: codex(모의)\n`);
+      say({ type: 'item.completed', item: { id: 'f' + o.path, type: 'file_change', changes: [{ path: o.path, kind: 'add' }] } });
+    }
+    say({ type: 'item.completed', item: { id: 'cmd', type: 'command_execution', command: 'echo 시험', aggregated_output: '시험\n', exit_code: 0, status: 'completed' } });
+    const last = `수행 요약: 산출물 ${outs.length}개 작성(codex 모의)\n변경 파일: ${outs.map((o) => o.path).join(', ')}\n실행한 검증: echo 시험 — 통과\n남은 문제: 없음`;
+    say({ type: 'item.completed', item: { id: 'msg', type: 'agent_message', text: last } });
+    say({ type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20 } });
+    fs.writeFileSync(opt('-o'), last);
+    process.exit(0);
+  }
   const sec = (input.split('## 검토 대상')[1] || '').split('\n## ')[0];
   const targets = [...sec.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
   const findings = [];

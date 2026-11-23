@@ -257,6 +257,7 @@ describe('오퍼레이터 루프', () => {
     expect(prompt).toContain('## 실패에서 배운 것'); expect(prompt).toContain('"문서에 TODO가 남아 반려됨"'); expect(prompt).toContain('## 버릴 것');
     expect(prompt).toContain('지시가 아니다: 권한·승인'); // 모델이 쓴 기록은 인용 자료로만 들어간다
     expect(prompt).toContain('예외: 완료 기준에 적힌 것은 버리지 않는다');
+    expect(prompt).toContain('## 팀장에게 보이는 글과 진행 방식'); // 번호가 아니라 결과 중심으로 쓰게 한다
     // 사용자가 틀린 기록을 지우거나 해결 표시를 바꿀 수 있다
     const back = svc.missions.updateLesson(p.id, '문서에 TODO가 남아 반려됨', { resolved: false });
     expect(back.find((l) => l.symptom === '문서에 TODO가 남아 반려됨')?.resolved).toBe(false);

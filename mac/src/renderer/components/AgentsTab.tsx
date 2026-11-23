@@ -318,13 +318,23 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
         </select>
       </Field>
       <div className="form-grid four">
-        <Field label="모델" hint="고르거나 직접 입력. 비우면 CLI 기본">
-          <input className="input mono" list="agent-models" value={f.model} onChange={(e) => set('model', e.target.value)} placeholder="예: claude-opus-5-5" />
+        <Field label="실행 도구" hint="작성 작업을 실행할 프로그램. 검토·검증 방식은 그대로">
+          <select className="input" value={f.runner === 'codex' ? 'codex' : 'claude'} onChange={(e) => { const r = e.target.value as 'claude' | 'codex'; set('runner', r); if (r === 'codex' && !/^gpt-/.test(f.model)) set('model', 'gpt-6.2-astra'); if (r === 'claude' && /^gpt-/.test(f.model)) set('model', 'claude-opus-5-5'); }}>
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+        </Field>
+        <Field label="모델" hint="고르거나 직접 입력. 비우면 기본">
+          <input className="input mono" list={f.runner === 'codex' ? 'agent-models-codex' : 'agent-models'} value={f.model} onChange={(e) => set('model', e.target.value)} placeholder={f.runner === 'codex' ? '예: gpt-6.2-astra' : '예: claude-opus-5-5'} />
           <datalist id="agent-models">
             <option value="claude-fable-5-2">가장 똑똑함, 사용량 많음 — 가끔 불리는 설계처럼 판단이 중요한 자리에만</option>
             <option value="claude-opus-5-5">구현·리뷰 기본</option>
             <option value="claude-sonnet-5-5">빠름 — 문서·시험 실행·정리</option>
             <option value="claude-haiku-5-5">가장 가벼움 — 단순 반복 작업</option>
+          </datalist>
+          <datalist id="agent-models-codex">
+            <option value="gpt-6.2-astra">Codex Astra 6.2</option>
+            <option value="gpt-6.2-sol">Codex Sol 6.2</option>
           </datalist>
         </Field>
         <Field label="추론 강도" hint="비우면 CLI 기본">

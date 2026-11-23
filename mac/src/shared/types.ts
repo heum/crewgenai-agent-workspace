@@ -51,6 +51,7 @@ export interface AgentFields {
   doneCriteria: string;
   reviewerAgentId: ID | null; // 독립 검토 담당
   model: string; // 빈 값이면 CLI 기본
+  runner?: 'claude' | 'codex'; // 작성 실행 도구(기본 Claude). Codex면 model에 Codex 모델(gpt-…)을 쓰고, 검토·검증은 실행 도구와 상관없이 그대로
   effort?: string; // 추론 강도(low·medium·high·xhigh·max). 빈 값이면 CLI 기본
   maxBudgetUsd: number | null; // CLI --max-budget-usd
   timeoutSec: number;

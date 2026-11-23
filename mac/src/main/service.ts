@@ -258,6 +258,11 @@ export class Service {
     if (badDomains) throw new Error(`내려받기 허용 주소 ${badDomains}개의 표기가 틀렸습니다. 정확한 주소 하나씩만 쓸 수 있습니다(예: registry.npmjs.org — https://, 포트, 경로, *, IP는 쓸 수 없음).`);
     if (new Set(rawDomains.map((x) => cleanDomain(x))).size > MAX_DOMAINS) throw new Error(`내려받기 허용 주소는 직원당 ${MAX_DOMAINS}개까지입니다.`);
     f = { ...f, allowedDomains: cleanDomains(rawDomains) };
+    // 실행 도구: Claude(기본) 또는 Codex. Codex면 모델은 Codex 모델 이름(gpt-…)이거나 비워 둔다(비우면 설정의 Codex 모델)
+    const runner = f.runner === 'codex' ? 'codex' : 'claude';
+    if (runner === 'codex' && f.model.trim() && !/^gpt-[0-9A-Za-z.\-]+$/.test(f.model.trim())) throw new Error('실행 도구가 Codex인 직원의 모델은 Codex 모델 이름(예: gpt-6.2-astra)이어야 합니다.');
+    if (runner === 'claude' && /^gpt-/.test(f.model.trim())) throw new Error('Codex 모델을 쓰려면 실행 도구를 Codex로 바꾸세요.');
+    f = { ...f, runner };
     return this.store.saveAgent(projectId, agentId, { ...f, character, timeoutSec: Math.max(10, Number(f.timeoutSec) || 1800), maxRetries: Math.max(0, Math.min(10, Number(f.maxRetries) || 0)) });
   }
   duplicateAgent(agentId: string): Agent {
