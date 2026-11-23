@@ -395,6 +395,9 @@ describe('격리 반영 규칙(Codex 4차)', () => {
     expect(r4.conflicts).toEqual(['docs/config.md']); expect(r4.left).toEqual([]); expect(r4.applied).toEqual([]);
     expect(fs.existsSync(join(proj, 'docs/caller.md'))).toBe(false);
     // 복사 시점의 내용을 모르는 파일(기준 없음)과 폴더가 얽힌 충돌은 일부 제외 대상이 아니다
+    // 복사 시점에 링크였던 자리(기준이 파일 해시가 아님)도 일부 제외 대상이 아니다
+    const r6 = applyIsolated(proj, dir, ['docs/config.md', 'docs/out/more.md'], { ...st.base, 'docs/config.md': 'link:../elsewhere' }, must);
+    expect(r6.conflicts).toEqual(['docs/config.md']); expect(r6.applied).toEqual([]);
     const r5 = applyIsolated(proj, dir, ['docs/config.md', 'docs/out/more.md'], {}, must);
     expect(r5.conflicts).toEqual(['docs/config.md']); expect(r5.applied).toEqual([]);
     // mustApply를 주지 않으면 어떤 충돌이든 전부 반영하지 않는다

@@ -222,6 +222,8 @@ export interface Attempt {
   permissionDenials: string[];
   acceptance: AcceptanceResult | null;
   changedFiles: string[];
+  /** 실행 중 다른 곳에서 복사본과 같은 내용으로 바뀐 파일: 앱이 쓴 것이 아니라 커밋·소유 판단에는 넣지 않고, 리뷰 대상에만 넣는다 */
+  observedFiles?: string[];
   outOfScopeChanges: string[];
   summary: string;
   error: string;

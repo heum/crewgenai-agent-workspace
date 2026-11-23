@@ -2171,7 +2171,7 @@ export class MissionRunner {
     const d = this.d.engine.detail(runId);
     const md = d.deliverable?.markdown ?? '(결과물 없음)';
     const failed = d.nodes.filter((n) => n.status === 'failed').map((n) => `${d.graph.nodes.find((g) => g.id === n.nodeId)?.label}: ${n.failureReason}`);
-    const reviews = d.reviews.map((r) => `- ${r.kind === 'codex' ? 'Codex' : r.kind === 'agent' ? 'Claude 재검토' : '사용자'}: ${r.verdict} — ${r.comments.slice(0, r.kind === 'codex' ? 2000 : 300).replace(/\n/g, ' ')}`);
+    const reviews = d.reviews.map((r) => `- ${r.kind === 'codex' ? 'Codex' : r.kind === 'agent' ? 'Claude 재검토' : '사용자'}: ${r.verdict} — ${r.comments.slice(0, r.kind === 'codex' ? 4000 : 300).replace(/\n/g, ' ')}`);
     return [
       '# 오퍼레이터 판단', '',
       '당신은 00 총괄 오퍼레이터다. 이번 사이클 결과를 사용자 지시와 산출물 기준으로 판단한다. 파일은 수정하지 않는다.', '',
@@ -2191,7 +2191,7 @@ export class MissionRunner {
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
       '## 판단 규칙',
-      '- 사이클 Codex 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. Codex 지적만으로 이번 작업을 실패로 되돌리지 않는다.',
+      '- 사이클 Codex 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. Codex 지적만으로 이번 작업을 실패로 되돌리지 않는다. 리뷰 기록에 P0·P1이 있거나 "일부만 리뷰"라고 적혀 있으면 결과물 목록의 Codex 보고서 파일(reviews/codex-…)을 Read로 끝까지 읽고 판단한다.',
       '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다. 작업 목록이 있으면 모든 단원이 완료일 때만 done이다(앱이 남은 단원이 있는 done은 받지 않는다). 작업 목록 갱신은 진척 관리 직원이 하니 summary에 단원 상태를 길게 다시 쓰지 않는다.',
       FLOW_RULE, CHECKPOINT_RULE, ...this.assumptionsSection(m),
       '- ask_user: 그 결정·정보 없이는 어떤 작업도 진행할 수 없을 때만. question에 한 가지 질문을 쓴다. 고르면 되는 질문이면 questionChoices에 2~4개의 선택지를 쓴다: label(선택지), effect(고르면 무엇이 달라지는지 쉬운 한 문장), recommended(추천하는 안 하나만 true), why(추천 이유 한 문장, 추천 안에만).',

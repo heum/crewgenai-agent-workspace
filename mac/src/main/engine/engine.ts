@@ -117,6 +117,9 @@ const REVIEW_BAR = [
   '- issues에는 막는 결함만 쓴다.',
 ].join('\n');
 
+/** 지적 심각도 순서: P0·치명 → P1·높음 → 그 밖 (판단 단계에 잘려 전달돼도 심각한 것이 앞에 오게) */
+const sevRank = (v: string) => (/p0|critical|치명/i.test(v) ? 0 : /p1|high|높음|major/i.test(v) ? 1 : /p2|medium|중간/i.test(v) ? 2 : 3);
+
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: { verdict: { type: 'string', enum: ['approve', 'changes_requested'] }, summary: { type: 'string' }, issues: { type: 'array', items: { type: 'string' } }, followUps: { type: 'array', items: { type: 'string' } } },
@@ -762,7 +765,7 @@ export class Engine {
       return { status: 'fail' as const, summary: '', outputs: [], reason: lastReason, feedbackText: lastReason };
     }
     // 다음 단계(Codex 리뷰·재검토·검사)가 볼 대상: 계획된 산출물 + 이번 단계에서 실제로 바뀐 파일(보고 파일만이 아니라 바뀐 코드까지)
-    const changed = [...new Set(this.s.runAttempts(runId).filter((x) => x.nodeId === node.id && x.role === 'author').flatMap((x) => x.changedFiles))].slice(0, 80);
+    const changed = [...new Set(this.s.runAttempts(runId).filter((x) => x.nodeId === node.id && x.role === 'author').flatMap((x) => [...x.changedFiles, ...(x.observedFiles ?? [])]))].slice(0, 80);
     const reviewTargets = [...new Set([...node.outputs.map((o) => o.path), ...changed])];
 
     // 노드 단위 독립 검토(작성자와 다른 담당, 읽기 전용)
@@ -848,7 +851,7 @@ export class Engine {
     if (!authors.size) return null;
     const atts = this.s.runAttempts(runId).filter((a) => a.role === 'author');
     // 작성 단계마다 따로 본다: 하나라도 바뀐 파일을 알 수 없거나(기록 없음) 문서 밖을 바꿨으면 리뷰한다
-    const per = [...authors].map((id) => atts.filter((a) => a.nodeId === id).flatMap((a) => a.changedFiles));
+    const per = [...authors].map((id) => atts.filter((a) => a.nodeId === id).flatMap((a) => [...a.changedFiles, ...(a.observedFiles ?? [])]));
     if (!per.every((files) => docsOnly(files))) return null;
     const changed = per.flat();
     return { status: 'ok' as const, summary: `건너뜀: 문서·화면 사진만 바뀜(${new Set(changed).size}개) — 코드·시험 변경이 없어 리뷰하지 않음`, outputs: upstream };
@@ -860,10 +863,17 @@ export class Engine {
    * Codex가 없거나 실행에 실패해도 사이클을 막지 않는다(사용 한도는 예외 — 한도 처리대로 멈춘다).
    */
   private async runCycleCodex(runId: string, node: GraphNode, visit: number, plan: PlanFields, upstream: string[]) {
-    const code = [...new Set(this.s.runAttempts(runId).filter((a) => a.role === 'author').flatMap((a) => a.changedFiles))].filter((f) => !isDocFile(f) && existsSync(join(plan.folder, f)));
-    if (!code.length) return { status: 'ok' as const, summary: '건너뜀: 이번 사이클에 바뀐 코드가 없습니다(문서·화면 사진만 바뀜).', outputs: upstream };
-    const r = await this.runCodexNode(runId, { ...node, inputs: code.slice(0, 150) }, visit, plan, []);
-    if (r.status === 'ok') return { status: 'ok' as const, summary: r.summary, outputs: [...new Set([...r.outputs.slice(0, 1), ...upstream])] };
+    const all = [...new Set(this.s.runAttempts(runId).filter((a) => a.role === 'author').flatMap((a) => [...a.changedFiles, ...(a.observedFiles ?? [])]))].filter((f) => !isDocFile(f));
+    if (!all.length) return { status: 'ok' as const, summary: '건너뜀: 이번 사이클에 바뀐 코드가 없습니다(문서·화면 사진만 바뀜).', outputs: upstream };
+    const code = all.filter((f) => existsSync(join(plan.folder, f))); const deleted = all.filter((f) => !code.includes(f));
+    const CAP = 150; const shown = code.slice(0, CAP);
+    // 지워진 파일과 한도를 넘은 파일도 리뷰가 알게 한다(목록에서 조용히 빠지지 않게)
+    const extra = [
+      ...(deleted.length ? [`이번 사이클에 지워진 파일 ${deleted.length}개도 본다(지워서 깨지는 곳이 없는지): ${deleted.slice(0, 40).join(', ')}`] : []),
+      ...(code.length > CAP ? [`바뀐 코드 파일이 ${code.length}개라 앞의 ${CAP}개만 검토 대상에 넣었다. 나머지 ${code.length - CAP}개는 이번 리뷰가 보지 못했다고 summary 첫 줄에 적는다.`] : []),
+    ];
+    const r = await this.runCodexNode(runId, { ...node, inputs: shown, doneCriteria: [node.doneCriteria, ...extra].filter(Boolean).join('\n') }, visit, plan, []);
+    if (r.status === 'ok') return { status: 'ok' as const, summary: `${code.length > CAP ? `[일부만 리뷰: ${code.length}개 중 ${CAP}개] ` : ''}${r.summary}`, outputs: [...new Set([...r.outputs.slice(0, 1), ...upstream])] };
     if (/한도/.test(r.reason ?? '')) return r;
     return { status: 'ok' as const, summary: `사이클 Codex 리뷰를 끝내지 못해 리뷰 없이 진행합니다: ${r.reason ?? '원인 미상'}`, outputs: upstream };
   }
@@ -944,7 +954,7 @@ export class Engine {
       this.atomic(() => {
         this.saveAttempt(attempt);
         this.s.addArtifact({ id: uid(), runId, nodeId: node.id, attemptId: attempt.id, path: abs, relPath: reportRel, kind: 'report', sha256: fileSha(abs), size: statSync(abs).size, createdAt: now() });
-        this.s.addReview({ id: uid(), runId, nodeId: node.id, kind: 'codex', reviewerAgentId: null, verdict: safeRes.verdict === 'approve' ? 'approve' : 'changes_requested', comments: [safeRes.summary, ...safeRes.findings.map((f) => `- [${f.severity}] ${f.file}: ${f.issue}`)].join('\n'), targetNodeId: null, subjectHash: sha256(targets.map((t) => fileSha(join(plan.folder, t))).join('|')), graphVersionId: run.graphVersionId, stale: false, createdAt: now() });
+        this.s.addReview({ id: uid(), runId, nodeId: node.id, kind: 'codex', reviewerAgentId: null, verdict: safeRes.verdict === 'approve' ? 'approve' : 'changes_requested', comments: [safeRes.summary.slice(0, 500), ...[...safeRes.findings].sort((a, b) => sevRank(a.severity) - sevRank(b.severity)).map((f) => `- [${f.severity}] ${f.file}: ${f.issue}`)].join('\n'), targetNodeId: null, subjectHash: sha256(targets.map((t) => fileSha(join(plan.folder, t))).join('|')), graphVersionId: run.graphVersionId, stale: false, createdAt: now() });
       });
       await this.commitFor(runId, node, plan, [reportRel], { name: 'CREWGENAI Codex 리뷰', email: 'codex@crewgenai.local' }, 'Codex 리뷰', attempt);
       this.saveAttempt(attempt);
@@ -1109,7 +1119,7 @@ export class Engine {
         if (ign.size) { changed = changed.filter((f) => !ign.has(f)); addEv('system', `git이 무시하는 빌드·시험 산출물 ${ign.size}개는 반영하지 않았습니다.`, ''); }
       }
       if (snapshotTruncated(after)) addEv('system', `변경 감지 대상 파일이 너무 많아 일부만 비교했습니다(최대 ${SNAPSHOT_LIMIT}개). 연결 폴더를 좁히거나 큰 폴더를 정리하세요.`, '');
-      let conflicts: string[] = []; let left: string[] = []; let notOurs = new Set<string>();
+      let conflicts: string[] = []; let left: string[] = [];
       // 다른 작업이 실행 중이어도 검사를 면제하지 않는다. 다른 작업의 수정 범위(실제 경로)에 속한 변경만 제외한다.
       const base = realFolder(plan.folder);
       // 지금 실행 중이거나 이 시도 도중에 끝난 다른 쓰기 작업의 범위(실행 구간이 겹친 작업)
@@ -1136,8 +1146,8 @@ export class Engine {
         left = res.left;
         if (keepCopy) addEv('system', `시간 제한에 걸렸습니다. 지금까지의 작업(${changed.length}개 파일)은 원본에 반영하지 않고 복사본에 남겨 두었습니다. 다음 시도가 같은 세션·같은 복사본에서 이어 가고, 끝나서 검사를 통과해야 반영합니다.`, '');
         if (extend.length && !discard) addEv('system', `작업 범위 밖이지만 기획의 허용 경로 안이라 함께 반영했습니다(${extend.length}개): ${extend.slice(0, 5).join(', ')}`, '');
-        // 원본이 복사본과 같은 내용으로 바뀐 파일(same)도 리뷰 대상에는 넣는다(바뀐 파일 목록). 다만 앱이 쓴 것이 아니므로 직원 이름 커밋에서는 뺀다
-        attempt.changedFiles = [...res.applied, ...res.same]; notOurs = new Set(res.same); conflicts = [...res.conflicts, ...res.blocked];
+        // 원본이 복사본과 같은 내용으로 바뀐 파일(same)은 앱이 쓴 것이 아니다: 바뀐 파일(커밋·소유 판단)에는 넣지 않고 observedFiles로 따로 적어 리뷰 대상에만 넣는다
+        attempt.changedFiles = res.applied; attempt.observedFiles = res.same; conflicts = [...res.conflicts, ...res.blocked];
         if (res.skipped.length) addEv('system', `복사본에 새로 생긴 링크 ${res.skipped.length}개는 원본에 만들지 않고 나머지만 반영했습니다: ${res.skipped.slice(0, 3).join(', ')}`, '');
         attempt.outOfScopeChanges = outside.map((f) => `${f} (${roots.some((w) => within(f, w)) ? '다른 작업이 맡은 곳이거나 비밀값 파일' : '기획의 허용 경로 밖'}이라 반영 안 함)`);
         if (!keepCopy) cleanupIsolated(workDir);
@@ -1176,7 +1186,7 @@ export class Engine {
       if (lim) { attempt.status = 'interrupted'; attempt.error = `사용 한도 도달: ${redact(lim.text)}`; }
       attempt.finishedAt = now();
       this.atomic(() => { if (attempt.status === 'succeeded' && role === 'author') this.registerArtifacts(runId, node, attempt, plan); this.saveAttempt(attempt); });
-      if (attempt.status === 'succeeded' && role === 'author') { await this.commitFor(runId, node, plan, attempt.changedFiles.filter((x) => !notOurs.has(x)), agentIdentity(agent.code, agent.name), `${agent.code} ${agent.name}`, attempt, userDirty); this.saveAttempt(attempt); }
+      if (attempt.status === 'succeeded' && role === 'author') { await this.commitFor(runId, node, plan, attempt.changedFiles, agentIdentity(agent.code, agent.name), `${agent.code} ${agent.name}`, attempt, userDirty); this.saveAttempt(attempt); }
       this.o.tracer?.attemptFinished(run, attempt, node.label);
       if (attempt.status === 'cancelled') throw new Cancelled();
       if (lim) this.hitLimit(runId, node, lim);

@@ -200,7 +200,7 @@ export function applyIsolated(project: string, dir: string, changed: string[], b
     const nowSha = d ? (d.isFile() ? fileSha(dst) : 'DIR') : '';
     if (nowSha !== (base[rel] ?? '')) {
       if ((!d && !sl) || (d?.isFile() && sl?.isFile() && fileSha(src) === nowSha)) { same.push(rel); continue; } // 이미 같은 내용
-      if (mustApply && !mustApply(rel) && d?.isFile() && sl?.isFile() && (base[rel] ?? '') !== '') { left.push(rel); continue; } // 결과물이 아닌 보통 파일의 충돌: 원본 그대로 둘 후보
+      if (mustApply && !mustApply(rel) && d?.isFile() && sl?.isFile() && /^[0-9a-f]{64}$/.test(base[rel] ?? '')) { left.push(rel); continue; } // 결과물이 아닌 보통 파일의 충돌: 원본 그대로 둘 후보
       conflicts.push(rel); continue;
     }
     plan.push({ rel, write: !!sl?.isFile() });
