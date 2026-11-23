@@ -10,6 +10,7 @@
 //   [[mock:gaps-once:이름]]   오퍼레이터 계획이 처음 한 번만 '근거 문서 보완 요청(gaps)'을 돌려줌
 //   [[mock:limit-once:이름]]  처음 한 번만 사용 한도 도달(rate_limit_event rejected + is_error)로 끝남. 오퍼레이터가 먼저 맞고, 작업 지시에는 '이름-agent'로 넘긴다
 //   [[mock:todo-first]]      첫 작성에는 TODO를 남기고 재작업 요청을 받으면 제거
+//   [[mock:always-todo]]     (사이클 1 작업만) 재작업해도 TODO를 남겨 계속 반려됨 → 다음 계획은 같은 작업을 진단과 함께 다시 냄, 판단은 배운 것을 적음
 //   [[mock:code]]            작성 직원이 산출물 옆에 코드 파일(.mjs)도 하나 만든다(코드 변경이 있어야 붙는 리뷰 시험)
 //   [[mock:deny:bash:명령]] / [[mock:deny:read:경로]] 작성 직원이 권한 거부로 실패(오퍼레이터가 작업 지시에 넘김)
 //   [[mock:learn:global|project:preference|environment|rule|fact:문장]] 학습 정리 때 배운 것으로 돌려줌
@@ -201,13 +202,18 @@ async function main() {
     const needCmd = (user.match(/\[\[mock:needs:([^\]]+)\]\]/) || [])[1];
     const plan = ask ? { summary: '정보 부족', question: '어느 문서를 기준으로 할까요?', tasks: [] } : {
       summary: `사이클 ${cyc} 작업 1개`, question: '',
-      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:blocked-env]]') ? '[[mock:blocked-env]]' : ''} ${user.includes('[[mock:p2-only]]') ? '[[mock:p2-only]]' : ''} ${user.includes('[[mock:no-criteria]]') ? '[[mock:no-criteria]]' : ''} ${user.includes('[[mock:approve-but-failed]]') ? '[[mock:approve-but-failed]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
+      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:always-todo]]') && cyc === 1 ? '[[mock:always-todo]]' : ''} ${user.includes('[[mock:blocked-env]]') ? '[[mock:blocked-env]]' : ''} ${user.includes('[[mock:p2-only]]') ? '[[mock:p2-only]]' : ''} ${user.includes('[[mock:no-criteria]]') ? '[[mock:no-criteria]]' : ''} ${user.includes('[[mock:approve-but-failed]]') ? '[[mock:approve-but-failed]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
         writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [],
         ...(needCmd ? { needs: { commands: [needCmd], readPaths: [] } } : {}) }] };
     if (!ask && user.includes('[[mock:two-tasks]]')) plan.tasks.push({ title: `보조 문서 ${cyc}`, agentCode: code, instructions: `${mdir}-b/cycle-${cyc}.md를 작성한다.`, writeScope: [`${mdir}-b`], outputs: [{ path: `${mdir}-b/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: '작성', checkCommand: [] });
     if (!ask && user.includes('[[mock:ref]]')) plan.references = [{ url: 'https://example.com/board', why: '화면 구성 참고' }, { url: 'http://192.168.0.10/admin', why: '사설망(막혀야 함)' }];
     // 산출물을 작업 수정 경로 옆(같은 허용 경로 안)에 낸다: 앱이 그 파일을 수정 경로에 더해야 한다
     if (!ask && user.includes('[[mock:out-sibling]]')) plan.tasks[0].outputs = [{ path: `docs/tests/cycle-${cyc}.md`, format: 'markdown' }];
+    // 반복 실패 진단: 지난 사이클에 반복 실패한 작업을 같은 제목으로 다시 내되, 처음에는 진단을 빼고(앱이 받지 않아야 함) 다시 계획할 때 넣는다
+    if (!ask && prompt.includes('## 반복 실패 진단')) {
+      plan.tasks[0].title = '문서 작성 1';
+      if (prompt.includes('## 직전 계획이 앱 검사에서 걸림')) plan.diagnoses = [{ task: '문서 작성 1', cause: 'TODO를 남긴 채 끝내 두 번 반려됨', change: 'TODO 없이 한 번에 작성하도록 지시를 바꿈' }];
+    }
     // 처음 계획은 허용 경로 밖을 쓴다(앱 검사 실패) → 앱이 이유를 알려 주면 고쳐서 다시 낸다
     if (!ask && user.includes('[[mock:bad-plan-once]]') && !prompt.includes('## 직전 계획이 앱 검사에서 걸림')) { plan.tasks[0].writeScope = ['outside']; plan.tasks[0].outputs = [{ path: 'outside/x.md', format: 'markdown' }]; }
     // 보류한 업무(거부·필요 명령이 있는 첫 작업)는 다시 계획하지 않는다
@@ -236,7 +242,9 @@ async function main() {
   if (schema && prompt.includes('# 오퍼레이터 판단')) {
     const cyc = Number((prompt.match(/## 사이클: (\d+)/) || [])[1] || 1);
     const failed = /## 실행 결과: (failed|cancelled)/.test(prompt) && !prompt.includes('## 보류한 업무(');
-    const dec = failed ? { decision: 'ask_user', summary: '실행 실패', question: '실패를 어떻게 처리할까요?', nextFocus: '' }
+    const always = prompt.includes('[[mock:always-todo]]');
+    const dec = failed && !always ? { decision: 'ask_user', summary: '실행 실패', question: '실패를 어떻게 처리할까요?', nextFocus: '' }
+      : failed ? { decision: 'continue', summary: '반복 반려로 실패, 다시 정의해 진행', question: '', nextFocus: '다시 정의' }
       : cyc >= 2 ? { decision: 'done', summary: '두 사이클로 목표 충족', question: '', nextFocus: '' }
       : { decision: 'continue', summary: '1차 결과 확인, 보완 필요', question: '', nextFocus: '보완' };
     // 큰 결과가 준비되면 검토 지점(review): 기능·시연 순서·검증 범위·결정(최대 3)·가정을 한곳에
@@ -245,6 +253,7 @@ async function main() {
       if (!reviewed && cyc < 3) Object.assign(dec, { decision: 'review', summary: '전체 화면과 핵심 흐름 준비', nextFocus: '피드백 반영', checkpoint: { title: '회사 관리 전체 흐름', steps: '1. 목록 열기 → 2. 회사 선택 → 3. 메모 저장 → 다시 열어 저장값 확인', verified: '목록·상세·저장을 시연 환경에서 실제로 실행', unverified: '권한별 화면은 준비 중', features: [{ name: '회사 목록·상세', changed: '실제 API 연결', status: 'reviewable' }], decisions: [{ question: '삭제 기능을 1차에 넣을까요?', choices: [{ label: '넣는다', effect: '삭제 버튼과 확인 창을 만든다', recommended: false, why: '' }, { label: '2차로 미룬다', effect: '이번에는 숨긴다', recommended: true, why: '정책이 아직 없음' }] }], assumptions: ['메모는 최대 500자로 가정'] } });
       else Object.assign(dec, { decision: 'done', summary: '피드백 반영 완료', question: '', nextFocus: '' });
     }
+    if (always) dec.lessons = [{ symptom: '문서에 TODO가 남아 반려됨', cause: '작성 직원이 TODO를 지우지 않음', fix: cyc >= 2 ? 'TODO 없이 한 번에 작성' : '', resolved: cyc >= 2 }];
     if (prompt.includes('[[mock:perm-request]]') && cyc === 1) dec.permissionRequests = [{ agentCode: '09', command: 'curl -s http://localhost:8080/health', why: '시연 서버 응답을 직접 확인해야 합니다' }, { agentCode: '09', command: 'bash -c "echo x"', why: '넓은 셸은 묻지 않아야 함' }];
     // 내려받기 주소 요청: 정확한 주소 하나만 통과하고, 넓게 여는 표기는 앱이 버려야 한다
     if (prompt.includes('[[mock:net-request]]') && cyc === 1) dec.permissionRequests = [{ agentCode: '09', domain: 'registry.npmjs.org', why: '시험 도구 패키지를 내려받아야 합니다' }, { agentCode: '09', domain: '*.npmjs.org', why: '와일드카드' }, { agentCode: '09', domain: 'https://example.org/x', why: '경로' }, { agentCode: '09', domain: '10.0.0.5', why: 'IP' }, { agentCode: '09', domain: 'localhost', why: '내부' }];
@@ -283,7 +292,7 @@ async function main() {
       out({ type: 'user', session_id: sessionId, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: `Permission to write ${o.rel} has been denied.` }] } });
       continue;
     }
-    const todo = prompt.includes('[[mock:todo-first]]') && !rework;
+    const todo = (prompt.includes('[[mock:todo-first]]') && !rework) || prompt.includes('[[mock:always-todo]]');
     let body;
     if (o.format === 'json') body = JSON.stringify({ status: 'done', fixed: rework, todo: todo ? 'TODO' : undefined }, null, 2);
     else if (o.format === 'html') body = `<!doctype html><html><body><h1>모의 산출물</h1><p>${todo ? 'TODO' : '완료'}</p></body></html>`;

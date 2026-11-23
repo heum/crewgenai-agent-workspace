@@ -235,6 +235,40 @@ describe('오퍼레이터 루프', () => {
     c.svc.close();
   });
 
+  it('두 번 반려되면 재작업을 멈추고, 다음 계획은 원인·바꾼 방법(진단) 없이는 받지 않으며, 배운 것을 프로젝트에 쌓아 매 계획에 넣는다(사용자에게 묻지 않음)', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:always-todo]] [[mock:code]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    expect(m.status).toBe('done');
+    const d = svc.missions.detail(m.id);
+    const r1 = svc.engine.detail(d.cycles[0].runId);
+    expect(r1.attempts.filter((a) => a.role === 'author').length).toBe(2); // 첫 작성 + 재작업 한 번에서 멈춤
+    expect(r1.run.status).toBe('failed');
+    const texts = svc.missions.events(m.id).map((e) => e.text);
+    expect(texts.some((x) => x.startsWith('반복 실패한 작업을 진단 없이 다시 계획해'))).toBe(true); // 진단 없는 첫 계획은 받지 않음
+    expect(texts.some((x) => x.startsWith('반복 실패 진단(다시 정의한 작업)'))).toBe(true);
+    const ls = svc.missions.lessons(p.id);
+    const todo = ls.find((l) => l.symptom === '문서에 TODO가 남아 반려됨')!;
+    expect(todo.resolved).toBe(true); expect(todo.count).toBe(2); // 같은 증상은 합치고, 풀리면 해결로 바뀐다
+    expect(ls.some((l) => l.symptom.startsWith('문서 작성 1') && l.fix.includes('바꾼 방법'))).toBe(true);
+    expect(svc.pendingDecisions().filter((x) => x.missionId === m.id && x.kind === 'blocker')).toHaveLength(0); // 사용자 몫이 아니면 묻지 않는다
+    // 최근 기록 창과 상관없이 매 계획에 들어간다
+    const prompt = (svc.missions as unknown as { planPrompt: (m: unknown, pl: unknown, ag: unknown) => string }).planPrompt(svc.missions.get(m.id), p.plan, svc.store.listAgents(p.id));
+    expect(prompt).toContain('## 실패에서 배운 것'); expect(prompt).toContain('문서에 TODO가 남아 반려됨'); expect(prompt).toContain('## 버릴 것');
+    svc.close();
+  });
+
+  it('진단 판정: 같은 제목이나 기능 ID로 다시 계획했는데 원인·바꾼 방법이 없으면 잡는다', async () => {
+    const { missingDiagnoses, lessonKey } = await import('../src/main/mission');
+    const xs = [{ label: 'W26 기록 화면 (13 AI)', title: 'W26 기록 화면', ids: ['W26'], rejections: 2, failed: true, reasons: [] }, { label: '문서 정리 (06 문서)', title: '문서 정리', ids: [], rejections: 2, failed: false, reasons: [] }];
+    expect(missingDiagnoses(xs, { tasks: [{ title: 'W26 다시: 저장 실패 드러내기' }, { title: '다른 일' }] })).toEqual(['W26']);
+    expect(missingDiagnoses(xs, { tasks: [{ title: 'W26 다시' }], diagnoses: [{ task: 'W26', cause: '저장이 조용히 실패', change: '실패를 드러내는 작업으로 쪼갬' }] })).toEqual([]);
+    expect(missingDiagnoses(xs, { tasks: [{ title: 'W26 다시' }], diagnoses: [{ task: 'W26', cause: '', change: '' }] })).toEqual(['W26']); // 빈 진단은 진단이 아니다
+    expect(missingDiagnoses(xs, { tasks: [{ title: '문서 정리' }] })).toEqual(['문서 정리']);
+    expect(missingDiagnoses(xs, { tasks: [{ title: '새 기능' }] })).toEqual([]); // 다시 계획하지 않았으면(버렸으면) 필요 없다
+    expect(lessonKey('문서에 TODO가 남아 반려됨 (3번)')).toBe(lessonKey('문서에 TODO가 남아 반려됨'));
+  });
+
   it('작업 결과는 사이클 끝을 기다리지 않고 바로 알린다: 작성이 끝나면 결과(검증 전), 검증이 통과하면 검증 통과 — 같은 방문은 한 번만', async () => {
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 문서를 정리하라');

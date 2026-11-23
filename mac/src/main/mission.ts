@@ -120,6 +120,7 @@ const PLAN_SCHEMA = {
       secret: { type: 'object', required: ['file', 'name'], properties: { file: { type: 'string' }, name: { type: 'string' }, source: { type: 'string' } } },
       refs: { type: 'array', items: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } } } } },
     references: { type: 'array', items: { type: 'object', required: ['url', 'why'], properties: { url: { type: 'string' }, why: { type: 'string' } } } },
+    diagnoses: { type: 'array', items: { type: 'object', required: ['task', 'cause', 'change'], properties: { task: { type: 'string' }, cause: { type: 'string' }, change: { type: 'string' } } } },
     tasks: { type: 'array', items: { type: 'object', required: ['title', 'agentCode', 'instructions', 'writeScope', 'outputs', 'doneCriteria', 'checkCommand'],
       properties: { title: { type: 'string' }, agentCode: { type: 'string' }, instructions: { type: 'string' }, writeScope: { type: 'array', items: { type: 'string' } },
         outputs: { type: 'array', items: { type: 'object', required: ['path', 'format'], properties: { path: { type: 'string' }, format: { type: 'string', enum: ['markdown', 'json', 'html', 'text', 'code', 'image', 'any'] } } } },
@@ -137,6 +138,7 @@ const JUDGE_SCHEMA = {
   properties: { decision: { type: 'string', enum: ['continue', 'review', 'ask_user', 'done'] }, checkpoint: CHECKPOINT_SCHEMA, summary: { type: 'string' }, question: { type: 'string' }, questionOptions: { type: 'array', items: { type: 'string' } }, questionChoices: CHOICE_ITEMS, staffProposals: STAFF_ITEMS, nextFocus: { type: 'string' },
     results: { type: 'array', items: { type: 'object', required: ['task', 'title', 'path', 'changed', 'check'], properties: { task: { type: 'string' }, title: { type: 'string' }, path: { type: 'string' }, changed: { type: 'string' }, check: { type: 'string' }, verified: { type: 'string' }, remaining: { type: 'string' }, status: { type: 'string', enum: [...RESULT_STATUSES] },
       demo: { type: 'object', properties: { service: { type: 'string' }, path: { type: 'string' }, api: { type: 'string' }, steps: { type: 'string' }, expected: { type: 'string' }, data: { type: 'string', enum: ['api+db', 'screen-only', 'mock'] } } } } } },
+    lessons: { type: 'array', items: { type: 'object', required: ['symptom', 'cause', 'fix', 'resolved'], properties: { symptom: { type: 'string' }, cause: { type: 'string' }, fix: { type: 'string' }, resolved: { type: 'boolean' } } } },
     permissionRequests: { type: 'array', items: { type: 'object', required: ['agentCode', 'why'], properties: { agentCode: { type: 'string' }, command: { type: 'string' }, domain: { type: 'string' }, why: { type: 'string' } } } },
     closedDirectives: { type: 'array', items: { type: 'object', required: ['id', 'why'], properties: { id: { type: 'string' }, why: { type: 'string' } } } },
     milestone: { type: 'object', required: ['title', 'summary'], properties: { title: { type: 'string' }, summary: { type: 'string' } } },
@@ -144,11 +146,11 @@ const JUDGE_SCHEMA = {
 };
 interface PlanTask { title: string; agentCode: string; instructions: string; writeScope: string[]; outputs: { path: string; format: GraphNode['outputs'][number]['format'] }[]; doneCriteria: string; checkCommand: string[]; needs?: { commands?: string[]; readPaths?: string[] } }
 type RawStaff = { kind?: string; agentCode?: string; name?: string; role?: string; instructions?: string; workPaths?: string[]; reason?: string };
-interface Plan { references?: { url?: string; why?: string }[]; staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
+interface Plan { diagnoses?: { task?: string; cause?: string; change?: string }[]; references?: { url?: string; why?: string }[]; staffProposals?: RawStaff[]; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; gaps?: MissionGap[]; tasks: PlanTask[] }
 interface RawResult { status?: string; task?: string; title?: string; path?: string; changed?: string; check?: string; verified?: string; remaining?: string; demo?: { service?: string; path?: string; api?: string; steps?: string; expected?: string; data?: string } }
 interface RawCommit { repo?: string; files?: string[]; message?: string; why?: string; task?: string }
 interface RawCheckpoint { title?: string; steps?: string; verified?: string; unverified?: string; features?: { name?: string; changed?: string; status?: string }[]; decisions?: { question?: string; choices?: unknown }[]; assumptions?: string[] }
-interface Judge { closedDirectives?: { id?: string; why?: string }[]; permissionRequests?: { agentCode?: string; command?: string; domain?: string; why?: string }[]; milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
+interface Judge { lessons?: { symptom?: string; cause?: string; fix?: string; resolved?: boolean }[]; closedDirectives?: { id?: string; why?: string }[]; permissionRequests?: { agentCode?: string; command?: string; domain?: string; why?: string }[]; milestone?: { title?: string; summary?: string }; checkpoint?: RawCheckpoint; commitRequests?: RawCommit[]; results?: RawResult[]; staffProposals?: RawStaff[]; decision: 'continue' | 'review' | 'ask_user' | 'done'; summary: string; question: string; questionOptions?: string[]; questionChoices?: unknown; nextFocus: string }
 
 /** 오퍼레이터의 커밋 요청 정리: 형식이 맞는 것만, 이미 대기·승인된 같은 요청은 빼고, 대기 요청은 최대 5개 */
 export function cleanCommitRequests(raw: unknown, existing: MissionCommitRequest[], cycle: number): MissionCommitRequest[] {
@@ -294,7 +296,8 @@ export class MissionRunner {
       CREATE TABLE IF NOT EXISTS mission_snapshots (mission_id TEXT, tag TEXT, name TEXT, sha TEXT, cycle INTEGER, created_at TEXT, PRIMARY KEY(mission_id, tag));
       CREATE TABLE IF NOT EXISTS mission_snapshot_repos (mission_id TEXT, tag TEXT, repo TEXT, sha TEXT, PRIMARY KEY(mission_id, tag, repo));
       CREATE TABLE IF NOT EXISTS qa_messages (project_id TEXT, seq INTEGER, data TEXT, PRIMARY KEY(project_id, seq));
-      CREATE TABLE IF NOT EXISTS project_progress (project_id TEXT PRIMARY KEY, data TEXT, updated_at TEXT);`);
+      CREATE TABLE IF NOT EXISTS project_progress (project_id TEXT PRIMARY KEY, data TEXT, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS project_lessons (project_id TEXT PRIMARY KEY, data TEXT, updated_at TEXT);`);
   }
 
   // ───── 저장 ─────
@@ -1441,6 +1444,24 @@ export class MissionRunner {
           plan.tasks = pre.keep;
         }
 
+        // 2-b) 지난 사이클에 두 번 반려됐거나 실패한 작업을 다시 계획하면, 원인과 바뀐 방법(진단)이 있어야 받는다(같은 방법으로 다시 돌리지 않게)
+        { const missing = missingDiagnoses(this.repeatedFailures(m), plan);
+          if (missing.length) {
+            const prevFix = this.planFix.get(id); const tries = prevFix && prevFix.cycle === m.cycle ? prevFix.tries + 1 : 1;
+            if (tries <= PLAN_FIX_TRIES) {
+              this.planFix.set(id, { cycle: m.cycle, tries, error: `지난 사이클에 반복 실패한 작업(${missing.join(', ')})을 원인 정리와 바뀐 방법 없이 다시 계획했습니다. diagnoses에 원인 한 줄과 바꾼 방법을 적거나, 같은 방법이면 그 작업을 빼세요.` });
+              this.event(m, 'system', `반복 실패한 작업을 진단 없이 다시 계획해, 원인과 바뀐 방법을 적어 다시 계획하게 합니다(${tries}/${PLAN_FIX_TRIES}): ${missing.join(', ')}`);
+              continue;
+            }
+            this.event(m, 'system', `반복 실패한 작업의 진단이 끝내 빠졌지만 사용자에게 묻지 않고 진행합니다(배운 것에 기록): ${missing.join(', ')}`);
+          }
+          const ds = (plan.diagnoses ?? []).filter((d) => String(d?.cause ?? '').trim() && String(d?.change ?? '').trim());
+          if (ds.length) {
+            this.addLessons(m.projectId, ds.map((d) => ({ symptom: `${String(d.task ?? '').trim()}: 반려·실패 반복`, cause: d.cause, fix: `바꾼 방법: ${d.change}`, resolved: false })), m.cycle);
+            this.event(m, 'system', `반복 실패 진단(다시 정의한 작업):\n${ds.map((d) => `- ${redact(String(d.task ?? '')).slice(0, 120)}: 원인 ${redact(String(d.cause)).slice(0, 200)} → ${redact(String(d.change)).slice(0, 200)}`).join('\n')}`);
+          }
+        }
+
         // 3) 사이클 흐름 구성·실행
         const built = this.buildCycleGraph(m, project.plan, agents, plan);
         if ('error' in built) {
@@ -1574,6 +1595,7 @@ export class MissionRunner {
           const close = (judge.closedDirectives ?? []).map((c) => ({ seq: Number(/^D?(\d+)$/i.exec(String(c?.id ?? '').trim())?.[1] ?? NaN), why: String(c?.why ?? '').trim().slice(0, 300) })).filter((c) => open.has(c.seq) && c.why);
           if (close.length) { m = this.set(id, { closedDirectives: [...(this.get(id).closedDirectives ?? []), ...close.map((c) => c.seq)] }); this.event(m, 'system', `반영 완료로 닫은 사용자 지시: ${close.map((c) => `D${c.seq}(${c.why})`).join(' / ')}`); }
         }
+        if (Array.isArray(judge.lessons) && judge.lessons.length) this.addLessons(m.projectId, judge.lessons.slice(0, 8), m.cycle);
         this.askPermissions(id, (judge.permissionRequests ?? []).slice(0, 5).flatMap((r): MissionPermAsk[] => {
           const a = agents.find((x) => x.code === String(r.agentCode ?? '').trim().split(/\s/)[0]); const cmd = String(r.command ?? '').trim().slice(0, 300); const pre = commandPrefix(cmd);
           // 내려받기 주소 요청: 정확한 호스트 이름 하나만 받는다(와일드카드·IP·내부망 이름은 앱이 버린다). Bash를 쓰는 직원에게만 뜻이 있다
@@ -2041,7 +2063,8 @@ export class MissionRunner {
       // 예) 수정 경로 web/src에 시험 파일 web/tests/x.test.mjs를 산출물로 낸 경우. 허용 경로 밖이면 그대로 두어 검사에서 걸린다.
       for (const o of outs) if (!scope.some((sc) => within(o.path, sc)) && roots.some((w) => within(o.path, w))) scope.push(o.path);
       const x = 120 + i * 360;
-      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.\n[막혔을 때] 지시대로 할 수 없어 더 진행할 수 없으면(명령이 거부됨, 서버가 뜨지 않음, 허용 경로 밖을 고쳐야 함) 기다리거나 같은 시도를 되풀이하지 말고, 한 일과 막힌 이유·필요한 것을 적고 바로 끝낸다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn, timeoutSec: full ? 1800 : 3600 });
+      // 같은 작업은 두 번까지만 시킨다(첫 작성 + 재작업 한 번). 두 번째도 반려되면 같은 방법으로 다시 돌리지 않고 다음 계획이 원인을 정리해 다시 정의한다
+      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { maxVisits: 2, agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.\n[막혔을 때] 지시대로 할 수 없어 더 진행할 수 없으면(명령이 거부됨, 서버가 뜨지 않음, 허용 경로 밖을 고쳐야 함) 기다리거나 같은 시도를 되풀이하지 말고, 한 일과 막힌 이유·필요한 것을 적고 바로 끝낸다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn, timeoutSec: full ? 1800 : 3600 });
       const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, lightSkip: true });
       // 검증 방식 close(기본): 작업(기능) 하나에 다른 직원의 검증 한 번. 작업마다 붙던 Codex 리뷰는 넣지 않는다(지적이 다음 사이클의 일이 되는 것을 막음).
       const rv = full ? mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true,
@@ -2126,6 +2149,9 @@ export class MissionRunner {
       ...this.limitSection(m),
       ...this.planFixSection(m),
       ...this.techSection(m),
+      ...this.lessonsSection(m.projectId),
+      ...this.repeatSection(m),
+      ...DROP_RULES,
       ...workPlanSection(this.progress(m.projectId), m.cycle),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
@@ -2299,6 +2325,66 @@ export class MissionRunner {
     } finally { this.suggesting.delete(projectId); }
   }
 
+  /** 프로젝트에 쌓인 '실패에서 배운 것'(미션이 바뀌어도 이어진다) */
+  lessons(projectId: string): Lesson[] {
+    const r = this.d.store.db.prepare('SELECT data FROM project_lessons WHERE project_id=?').get(projectId) as Row | undefined;
+    try { const v = r ? JSON.parse(String(r.data)) : []; return Array.isArray(v) ? v : []; } catch { return []; }
+  }
+  /** 배운 것을 더한다: 같은 증상은 합치고(원인·해결을 새 것으로, 횟수 +1), 최근 것 위주로 LESSON_CAP개까지 둔다 */
+  private addLessons(projectId: string, raw: { symptom?: unknown; cause?: unknown; fix?: unknown; resolved?: unknown }[], cycle: number) {
+    const cur = this.lessons(projectId);
+    for (const x of raw) {
+      const symptom = redact(String(x?.symptom ?? '')).replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (symptom.length < 4) continue;
+      const cause = redact(String(x?.cause ?? '')).replace(/\s+/g, ' ').trim().slice(0, 300);
+      const fix = redact(String(x?.fix ?? '')).replace(/\s+/g, ' ').trim().slice(0, 300);
+      const k = lessonKey(symptom);
+      const hit = cur.find((l) => lessonKey(l.symptom) === k);
+      if (hit) { if (cause) hit.cause = cause; if (fix) hit.fix = fix; hit.resolved = x?.resolved === true; hit.cycle = cycle; hit.count = (hit.count ?? 1) + 1; }
+      else cur.push({ symptom, cause, fix, resolved: x?.resolved === true, cycle, count: 1 });
+    }
+    const keep = [...cur].sort((a, b) => b.cycle - a.cycle).slice(0, LESSON_CAP);
+    this.d.store.db.prepare('INSERT INTO project_lessons VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at').run(projectId, JSON.stringify(keep), now());
+  }
+  /** 계획·판단에 매번 넣는다(최근 기록 16건 창과 무관) */
+  private lessonsSection(projectId: string): string[] {
+    const ls = this.lessons(projectId);
+    if (!ls.length) return [];
+    const open = ls.filter((l) => !l.resolved); const done = ls.filter((l) => l.resolved);
+    return ['## 실패에서 배운 것(프로젝트 — 지난 미션 포함, 매 계획에서 먼저 읽는다)',
+      ...[...open, ...done].slice(0, 20).map((l) => `- [${l.resolved ? '해결' : '미해결'}·${l.count}회·사이클 ${l.cycle}] ${l.symptom} → 원인: ${l.cause || '(미확인)'} → ${l.fix || '(해결책 없음)'}`),
+      '- 미해결 항목과 같은 증상이 나올 작업은 이미 실패한 방법을 다시 쓰지 않는다. 해결된 항목의 방법은 그대로 쓴다.', ''];
+  }
+  /** 지난 사이클에 두 번 이상 반려됐거나(같은 작업) 실패로 끝난 작업. 작성자가 고칠 수 없어 이미 확인함에 올린 것은 뺀다 */
+  repeatedFailures(m: Mission): RepeatedFailure[] {
+    const row = this.d.store.db.prepare('SELECT run_id FROM mission_cycles WHERE mission_id=? AND cycle<? ORDER BY cycle DESC LIMIT 1').get(m.id, m.cycle) as { run_id: string } | undefined;
+    if (!row) return [];
+    let d: RunDetail;
+    try { d = this.d.engine.detail(row.run_id); } catch { return []; }
+    const out: RepeatedFailure[] = [];
+    for (const a of d.graph.nodes.filter((n) => n.kind === 'agent')) {
+      const gates = d.graph.edges.filter((e) => e.source === a.id && e.kind === 'next').map((e) => d.graph.nodes.find((n) => n.id === e.target)).filter((n): n is GraphNode => !!n && ((n.kind === 'review' && !n.cycleReview) || (n.kind === 'codexReview' && !!n.verify)));
+      const gateIds = new Set(gates.map((g) => g.id));
+      const rej = d.reviews.filter((r) => gateIds.has(r.nodeId) && r.verdict === 'changes_requested');
+      const chain = new Set([a.id, ...gateIds]);
+      const failed = d.nodes.filter((n) => chain.has(n.nodeId) && n.status === 'failed');
+      if (failed.some((n) => String(n.failureReason ?? '').startsWith(BLOCKED_PREFIX))) continue;
+      if (rej.length < 2 && !failed.length) continue;
+      const reasons = [...rej.slice(-2).map((r) => r.comments.split('\n')[0]), ...failed.map((n) => n.failureReason)].map((x) => redact(String(x ?? '')).replace(/\s+/g, ' ').slice(0, 220)).filter(Boolean);
+      out.push({ label: a.label, title: a.label.replace(/\s*\([^()]*\)\s*$/, '').trim(), ids: [...new Set(a.label.match(/\bW\d+\b/g) ?? [])], rejections: rej.length, failed: failed.length > 0, reasons });
+    }
+    return out;
+  }
+  private repeatSection(m: Mission): string[] {
+    const xs = this.repeatedFailures(m);
+    if (!xs.length) return [];
+    return ['## 반복 실패 진단(지난 사이클 — 앱이 모음. 같은 방법으로 다시 돌리지 않는다)',
+      ...xs.map((x) => `- ${x.label} — 반려 ${x.rejections}번${x.failed ? ', 실패로 끝남' : ''}: ${x.reasons.join(' / ')}`),
+      '- 위 작업을 다시 계획하려면 diagnoses에 {task: 지난 작업 제목 그대로(또는 기능 ID), cause: 반려·실패 사유를 묶은 원인 한 줄, change: 무엇을 바꾸는지(작업을 쪼갬 / 다른 방법 / 다른 담당 / 먼저 풀 선행 작업 / 완료 조건과 맞지 않는 부분은 빼고 확인함에 올림)}를 적는다. 진단 없이 같은 작업을 다시 내면 앱이 계획을 받지 않는다.',
+      '- 원인이 사용자만 풀 수 있는 것(제품 결정·권한·비밀값·외부 서비스)이면 작업 대신 gaps에 kind=decide로 원인과 선택지를 붙여 한 건만 올린다. 그 밖의 실패는 사용자에게 묻지 않고 스스로 다시 정의한다.',
+      '- 바꾼 방법으로도 다시 실패했으면(위 "실패에서 배운 것"에 같은 증상이 미해결로 있으면) 같은 일을 또 시도하지 않는다. 범위에서 뺄지는 사용자 몫이므로, gaps에 kind=decide로 "이 기능을 이번 범위에서 미룰지"를 이유와 함께 한 건 올리고 다른 일을 한다.', ''];
+  }
+
   /** 보류한 업무(사용자 확인 대기): 같은 업무·같은 권한이 필요한 작업을 다시 계획하지 않게 알린다 */
   private parkedSection(m: Mission): string[] {
     const ds = m.denials ?? []; const bs = m.blockers ?? [];
@@ -2344,7 +2430,9 @@ export class MissionRunner {
       ...this.directivesSection(m, true),
       ...this.decisionsSection(m),
       '## 이번 사이클 결과물(요약 보고서)', md.slice(0, 15000), '',
+      ...this.lessonsSection(m.projectId),
       '## 판단 규칙',
+      '- lessons: 이번 사이클에 실패·반려·막힘이 있었거나, 위 "실패에서 배운 것"의 미해결 항목이 풀렸으면 한 줄씩 적는다(최대 5건). symptom은 겉으로 보인 증상(같은 문제면 위 목록과 같은 말로 — 앱이 합친다), cause는 확인한 원인, fix는 해결 또는 우회 방법, resolved는 풀렸으면 true. 추측이면 cause에 "추정"이라고 쓴다. 없으면 빈 배열.',
       '- 사이클 Codex 리뷰 또는 사이클 최종 리뷰(이번 사이클에 바뀐 코드 전체를 한 번 본 것)의 P0·P1 지적은 원문 코드와 직접 대조해, 타당하면 nextFocus에 그 기능의 작업으로 넣는다(기각하면 이유를 summary에 쓴다). P2는 기록만 하고 작업으로 만들지 않는다. 이 리뷰의 지적만으로 이번 작업을 실패로 되돌리지 않는다. 리뷰 기록에 P0·P1이 있거나 "일부만 리뷰"라고 적혀 있으면 결과물 목록의 Codex 보고서 파일(reviews/codex-…)을 Read로 끝까지 읽고 판단한다.',
       '- done: 사용자 지시와 완료 조건을 산출물로 충족했을 때만. 실행이 실패했거나 검증이 없으면 done이 아니다. 작업 목록이 있으면 모든 단원이 완료일 때만 done이다(앱이 남은 단원이 있는 done은 받지 않는다). 작업 목록 갱신은 진척 관리 직원이 하니 summary에 단원 상태를 길게 다시 쓰지 않는다.',
       FLOW_RULE, CHECKPOINT_RULE, ...this.assumptionsSection(m),
@@ -2582,4 +2670,28 @@ export function buildNextDraft(r: { title?: string; prompt?: string; scopeIds?: 
     ...items.map((i) => `- ${i.id} ${i.title}: ${i.criteria || '(완료 기준 없음 — 팀장이 정해야 함)'}`),
   ].join('\n');
   return { title: String(r?.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 120) || '다음 미션', text, scopeIds: items.map((i) => i.id), ask, fromMissionId, generatedAt: at };
+}
+
+/** 지난 일은 끌고 오지 않는다(계획 규칙) */
+const DROP_RULES = ['## 버릴 것(계획 규칙)',
+  '- 지난 리뷰의 사소한 지적(P2), 이번 작업 전부터 깨져 있던 시험, 지난 사이클의 증빙·보고 갱신은 계획에 넣지 않는다. 기능을 닫는 데 꼭 필요한 것만 그 기능의 작업 안에서 한다.',
+  '- 지난 사이클에 하다 만 일을 그대로 이어 붙이지 않는다. 지금 목표에 필요한지 다시 보고, 필요 없으면 버린다.', ''];
+export const LESSON_CAP = 30;
+export interface Lesson { symptom: string; cause: string; fix: string; resolved: boolean; cycle: number; count: number }
+export interface RepeatedFailure { label: string; title: string; ids: string[]; rejections: number; failed: boolean; reasons: string[] }
+/** 같은 증상인지 비교용 키 */
+export function lessonKey(s: string): string { return String(s ?? '').toLowerCase().replace(/\([^()]*\)/g, '').replace(/[0-9]+/g, '').replace(/[^\p{L}]+/gu, '').slice(0, 40); }
+/** 반복 실패한 작업을 다시 계획했는데 진단(원인·바꾼 방법)이 없는 것. 작업 제목이 같거나 기능 ID가 겹치면 같은 작업으로 본다 */
+export function missingDiagnoses(xs: RepeatedFailure[], plan: { tasks?: { title?: string }[]; diagnoses?: { task?: string; cause?: string; change?: string }[] }): string[] {
+  const tasks = (plan.tasks ?? []).map((t) => String(t?.title ?? ''));
+  const ds = (plan.diagnoses ?? []).filter((d) => String(d?.cause ?? '').trim().length >= 4 && String(d?.change ?? '').trim().length >= 4).map((d) => String(d.task ?? ''));
+  const norm = (v: string) => v.replace(/\s+/g, ' ').trim();
+  const out: string[] = [];
+  for (const x of xs) {
+    const same = (t: string) => norm(t) === norm(x.title) || x.ids.some((id) => new RegExp(`\\b${id}\\b`).test(t));
+    if (!tasks.some(same)) continue; // 다시 계획하지 않았으면 진단도 필요 없다(버렸거나 확인함에 올림)
+    if (ds.some(same)) continue;
+    out.push(x.ids.length ? x.ids.join('·') : x.title.slice(0, 60));
+  }
+  return out;
 }
