@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { CLOSE_FIRST, mergeWorkPlan, needsUser, workPlanSection, workProgress } from '../src/main/workplan';
 import type { MissionWorkPlan, WorkItem } from '../src/shared/types';
+import { buildNextDraft } from '../src/main/mission';
 import { gitInit, mkService, plan, sleep, tmpProject } from './helpers';
 
 async function until<T>(f: () => T | null | undefined | false, ms = 60000): Promise<T> {
@@ -91,6 +92,35 @@ describe('진척 관리 직원', () => {
     expect(svc.missions.progress(p.id)!.items.find((i) => i.id === 'W3')!.status).toBe('doing');
     expect(texts(svc, m0.id).join('\n')).toContain('W3: 이유 없이 빼려 해 그대로 둠');
     await svc.missions.stop(m0.id); svc.close();
+  });
+
+  it('다음 미션 추천 초안: 남은 기능만 다루고 완료 기준은 진척 목록 원문을 그대로 붙이며, 미션을 시작하거나 상태를 바꾸지 않는다', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:workplan-stuck]] 문서를 정리하라');
+    await until(() => { const x = svc.missions.get(m0.id); return x.status === 'done' ? x : null; });
+    const before = svc.missions.list(p.id).map((m) => [m.id, m.status]);
+    const w3 = svc.missions.progress(p.id)!.items.find((i) => i.id === 'W3')!;
+    const d = await svc.missions.suggestNext(p.id);
+    expect(d.scopeIds).toEqual(['W3']); // 모델이 고른 것 중 진척 목록에 있고 완료되지 않은 것만(W999·완료 기능은 빠짐)
+    expect(d.text).toContain('모의 다음 미션 지시문');
+    expect(d.text).toContain('## 고정 완료 기준');
+    expect(d.text).toContain(`- W3 ${w3.title}: ${w3.criteria}`);
+    expect(d.ask).toEqual(['결제 키를 어디에 둘지']);
+    expect(d.fromMissionId).toBe(m0.id);
+    expect(svc.missions.list(p.id).map((m) => [m.id, m.status])).toEqual(before); // 새 미션 없음, 상태 그대로
+    expect(texts(svc, m0.id).join('\n')).toContain('다음 미션 추천 초안을 만들었습니다');
+    await svc.missions.stop(m0.id); svc.close();
+  });
+
+  it('다음 미션 초안 조립: 본문이 없으면 실패하고, 고른 기능이 하나도 맞지 않으면 남은 기능 전부의 기준을 붙인다', () => {
+    const open = [{ id: 'W1', phase: 'P1', refs: [], title: '가', criteria: '기준 가', status: 'todo', evidence: '', note: '', addedCycle: 1, updatedCycle: 1 }, { id: 'W2', phase: 'P1', refs: [], title: '나', criteria: '', status: 'doing', evidence: '', note: '', addedCycle: 1, updatedCycle: 1 }] as never;
+    expect(() => buildNextDraft({ prompt: '짧음', scopeIds: ['W1'] }, open, 'm', 't')).toThrow('본문 없음');
+    const body = '다음 미션 지시문\n\n## 목표\n남은 기능을 이어서 닫는다. 범위와 한도는 아래를 따른다.';
+    const d = buildNextDraft({ title: ' 이름 ', prompt: body, scopeIds: ['w2', 'X9'], ask: 'not-array' }, open, 'm', 't');
+    expect(d.scopeIds).toEqual(['W2']); expect(d.title).toBe('이름'); expect(d.ask).toEqual([]);
+    expect(d.text).toContain('- W2 나: (완료 기준 없음 — 팀장이 정해야 함)'); expect(d.text).not.toContain('- W1 가');
+    const all = buildNextDraft({ prompt: body, scopeIds: ['X9'] }, open, 'm', 't');
+    expect(all.scopeIds).toEqual(['W1', 'W2']); expect(all.text).toContain('- W1 가: 기준 가');
   });
 
   it('진척 관리 직원이 휴가 중이면 작업 목록을 갱신하지 않고 예전처럼 오퍼레이터 판단으로 끝난다', async () => {

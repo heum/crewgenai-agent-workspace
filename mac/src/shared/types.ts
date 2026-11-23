@@ -470,6 +470,8 @@ export interface WorkspaceApi {
   deleteLearning(id: ID): Promise<void>;
   markLearningsReviewed(ids: ID[]): Promise<void>;
   missionReadiness(projectId: ID, refresh?: boolean): Promise<MissionReadiness>;
+  /** 지난 미션의 기록(지시·결정·진척)에서 다음 미션 지시문 초안을 만든다. 시작하지는 않는다. */
+  suggestNextMission(projectId: ID): Promise<NextMissionDraft>;
   startMission(projectId: ID, prompt: string, limits?: MissionLimits | null): Promise<Mission>;
   /** eventLimit: 최근 기록 몇 개만(기본 150, 0이면 전부) */
   missionDetail(missionId: ID, eventLimit?: number): Promise<MissionDetail>;
@@ -836,6 +838,18 @@ export const MISSION_STAGE_LABEL: Record<MissionStage, string> = {
 
 /** 운영 지시 전 필수 준비 항목. 하나라도 빠지면 지시할 수 없다(서버에서도 같은 기준으로 막는다). */
 export interface ReadinessItem { key: string; label: string; ok: boolean; detail: string; tab: 'plan' | 'agents' | 'settings' | null; /** 참고 항목(부족해도 지시는 받음) */ info?: boolean }
+/** 다음 미션 추천 초안: 앱이 지난 미션의 기록에서 만들어 보여 주는 지시문. 사용자가 고쳐서 직접 시작할 때만 쓰인다(자동으로 시작하지 않음). */
+export interface NextMissionDraft {
+  title: string;
+  /** 새 지시 입력창에 넣을 전체 글(오퍼레이터가 쓴 본문 + 앱이 진척 목록에서 그대로 붙인 완료 기준) */
+  text: string;
+  /** 이 초안이 다루는 기능 ID(진척 목록에 있고 아직 완료되지 않은 것만) */
+  scopeIds: string[];
+  /** 사용자가 먼저 정해야 한다고 오퍼레이터가 꼽은 것 */
+  ask: string[];
+  fromMissionId: string;
+  generatedAt: string;
+}
 export interface MissionReadiness {
   ready: boolean;
   items: ReadinessItem[];

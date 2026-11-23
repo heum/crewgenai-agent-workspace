@@ -81,6 +81,13 @@ async function main() {
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(ans), structured_output: ans, permission_denials: [] });
     process.exit(0);
   }
+  // 다음 미션 초안: 남은 기능 중 앞의 둘과 목록에 없는 ID 하나를 고르고(앱이 걸러야 함), 본문에는 완료 기준을 쓰지 않는다
+  if (schema && prompt.includes('# 다음 미션 초안')) {
+    const ids = [...prompt.split('### 아직 완료되지 않은 기능')[1].split('## 지난 미션의 유효한 사용자 지시')[0].matchAll(/^- (W\d+) /gm)].map((x) => x[1]);
+    const ans = { title: '모의 다음 미션', prompt: '모의 다음 미션 지시문\n\n## 목표\n남은 기능을 이어서 닫는다.\n\n## 범위와 출발점\n진척 목록의 지금 상태를 출발점으로 쓴다.', scopeIds: [...ids.slice(0, 2), 'W999'], ask: ['결제 키를 어디에 둘지', ' '] };
+    out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(ans), structured_output: ans, permission_denials: [] });
+    process.exit(0);
+  }
   // 진척 관리 직원: 프로젝트 진척(큰 단계·기능 목록) 갱신
   if (schema && prompt.includes('# 진척 갱신')) {
     const dec = (prompt.match(/오퍼레이터 판단\((\w+)\)/) || [])[1];

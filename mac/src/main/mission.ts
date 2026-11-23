@@ -5,12 +5,12 @@
 // 오퍼레이터는 작업 완료·검토 필요·추가 정보 필요·사이클 상한 도달 때만 사용자에게 묻는다.
 import { HD_AGENT, HD_CODE, PM_AGENT, PM_CODE } from './engine/templates';
 import { defaultCharacter } from '../shared/characterIds';
-import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, progressLine, workPlanSection, WORK_STATUS_LABEL, type RawWorkPlan } from './workplan';
+import { WORKPLAN_SCHEMA, allDone, mergeWorkPlan, phaseLines, progressLine, workPlanSection, WORK_STATUS_LABEL, type RawWorkPlan } from './workplan';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsc, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { isolatedDir } from './engine/fsutil';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus } from '../shared/types';
+import type { MissionCheckpoint, MissionLimits, MissionUsage, ResultStatus, NextMissionDraft, WorkItem } from '../shared/types';
 import { envFileProblem, normEnvRel, VAR_NAME } from './secrets';
 import type { DemoAsk, MissionWorkPlan, QaMessage } from '../shared/types';
 import type { Agent, GraphEdge, GraphNode, LiveEvent, Mission, MissionDetail, MissionEvent, MissionFile, MissionGap, MissionDecision, MissionResult, MissionChoice, MissionCommitRequest, MissionMergeRequest, MissionSecretSpec, ResultDemo, MissionPick, StaffProposal, MissionDenial, MissionPermAsk, MissionBlocker, ProjectDoc, WorkingItem, MissionSnapshot, MissionStage, MissionStatus, PlanFields, RunDetail, WorkGraph } from '../shared/types';
@@ -124,6 +124,10 @@ const PLAN_SCHEMA = {
         doneCriteria: { type: 'string' }, checkCommand: { type: 'array', items: { type: 'string' } },
         needs: { type: 'object', properties: { commands: { type: 'array', items: { type: 'string' } }, readPaths: { type: 'array', items: { type: 'string' } } } } } } },
   },
+};
+const NEXT_SCHEMA = {
+  type: 'object', required: ['title', 'prompt', 'scopeIds', 'ask'],
+  properties: { title: { type: 'string' }, prompt: { type: 'string' }, scopeIds: { type: 'array', items: { type: 'string' } }, ask: { type: 'array', items: { type: 'string' } } },
 };
 const QA_SCHEMA = { type: 'object', required: ['answer', 'directive'], properties: { answer: { type: 'string' }, directive: { type: 'string' } } };
 const JUDGE_SCHEMA = {
@@ -2146,6 +2150,54 @@ export class MissionRunner {
       '  3) 위 "사용자 결정"에 이미 답이 있거나 이미 올려서 답을 기다리는 것: 다시 올리지 않는다.', ''];
   }
 
+  private suggesting = new Set<string>();
+  /**
+   * 다음 미션 추천 초안. 새 미션은 지난 미션의 지시·결정을 넘겨받지 않으므로(진척 목록과 학습만 이어짐),
+   * 지난 미션의 기록에서 '아직 유효한 것'을 내용으로 풀어 쓴 지시문을 오퍼레이터가 쓰게 하고,
+   * 완료 기준은 오퍼레이터가 고치지 못하게 앱이 진척 목록 원문을 그대로 붙인다.
+   * 초안일 뿐이다: 시작하지 않고, 미션 상태도 바꾸지 않는다. 사용자가 고쳐서 직접 시작한다.
+   */
+  async suggestNext(projectId: string): Promise<NextMissionDraft> {
+    const last = this.list(projectId)[0];
+    if (!last) throw new Error('이 프로젝트에는 지난 미션이 없습니다. 새 지시를 직접 적어 주세요.');
+    if (this.suggesting.has(projectId)) throw new Error('다음 미션 초안을 만드는 중입니다. 잠시 뒤 다시 확인해 주세요.');
+    const wp = this.progress(projectId);
+    const open = (wp?.items ?? []).filter((i) => i.status !== 'done');
+    if (!open.length) throw new Error('진척 목록에 남은 기능이 없습니다. 새 지시를 직접 적어 주세요.');
+    const plan = this.d.store.getProject(projectId).plan;
+    const m = this.get(last.id);
+    const dirs = this.openDirectives(m, false).slice(-40).map((e) => `- D${e.seq} [사이클 ${e.cycle}] ${e.text.replace(/\s+/g, ' ').slice(0, 500)}`);
+    const decs = (m.decisions ?? []).slice(-90).map((d) => `- ${String(d.issue ?? '').replace(/\s+/g, ' ').slice(0, 220)} → ${String(d.choice ?? '').replace(/\s+/g, ' ').slice(0, 200)}`);
+    const judges = this.events(m.id).filter((e) => e.kind === 'operator_judge').slice(-2).map((e) => `- [사이클 ${e.cycle}] ${e.text.replace(/\s+/g, ' ').slice(0, 1200)}`);
+    const prompt = [
+      '# 다음 미션 초안', '',
+      '당신은 00 총괄 오퍼레이터다. 이 프로젝트의 지난 미션을 이어받을 "다음 미션 지시문"의 추천 초안을 쓴다. 파일은 수정하지 않는다(읽기만). 이 글은 사용자가 읽고 고친 뒤 직접 시작할 때만 쓰인다.', '',
+      '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 완료 조건: ${plan.doneCriteria || '(미입력)'}`, '',
+      `## 지난 미션(사이클 ${m.cycle}, 상태 ${m.status})의 지시문`, m.prompt.slice(0, 7000), '',
+      '## 진척 목록', `- ${progressLine(wp)}`, ...phaseLines(wp).map((l) => `- ${l}`),
+      '### 아직 완료되지 않은 기능', ...open.map((i) => `- ${i.id} [${WORK_STATUS_LABEL[i.status]}] ${i.phase ?? ''} ${i.title} — 완료 기준: ${i.criteria || '(없음)'}${i.note ? ` · 메모: ${i.note.slice(0, 200)}` : ''}`), '',
+      '## 지난 미션의 유효한 사용자 지시', ...(dirs.length ? dirs : ['- (없음)']), '',
+      '## 지난 미션의 사용자 결정(최근 것부터 아래)', ...(decs.length ? decs : ['- (없음)']), '',
+      '## 지난 미션의 마지막 판단', ...(judges.length ? judges : ['- (없음)']), '',
+      '## 쓰는 규칙',
+      '- 새 미션은 지난 미션의 지시·결정을 볼 수 없다. D번호나 "이전 결정대로"라고만 쓰지 말고, 지켜야 할 내용을 문장으로 풀어 쓴다.',
+      '- scopeIds: 다음 미션이 다룰 기능 ID를 위 "아직 완료되지 않은 기능"에서만 고른다. 지난 미션이 범위를 차수로 나눴고 지금 차수의 기능이 남아 있으면 그 남은 기능을 고른다. 지금 차수가 끝났으면 미뤄 둔 다음 차수의 기능을 고른다. 새 기능을 지어내지 않는다.',
+      '- prompt: 한국어로, 다음 순서의 절로 쓴다 — 목표 / 범위와 출발점 / 팀장이 먼저 정할 것 / 시작 순서(제안) / 일하는 방식 / 지켜야 할 한도 / 이어받는 결정(scopeIds에 걸린 것만) / 기능 결과를 적는 방법. 첫 줄은 제목 한 줄이다.',
+      '- 완료 기준은 prompt에 쓰지 않는다. 앱이 진척 목록의 원문을 그대로 붙인다. 완료 기준을 고치거나 요약하지 않는다.',
+      '- 사용자가 정하지 않은 것을 정한 것처럼 쓰지 않는다. 당신의 제안은 "(제안)"으로 표시하고, 사용자만 정할 수 있는 것(돈, 운영 환경, 권한, 비밀값, 약관, 범위 변경, 사람이 해야 하는 확인)은 "팀장이 먼저 정할 것"과 ask에 적는다.',
+      '- 지난 미션에서 승인된 일회성 실행(외부 호출, 결제, 배포, 프로그램 종료)을 다음 미션의 포괄 승인으로 옮기지 않는다. 실제 돈, 운영 서버·DB, 비밀값을 다루는 권한을 이 글로 주지 않는다.',
+      '- 지난 미션에서 되풀이된 문제(같은 검사를 반복, 완료 기준을 고침, 증빙만 만드는 작업)가 판단 기록에 보이면, 그것을 막는 규칙을 "일하는 방식"에 한 줄씩 넣는다.',
+      '- title: 다음 미션의 한 줄 이름. ask: 사용자가 먼저 정할 것을 한 항목에 한 문장으로(없으면 빈 배열).',
+    ].join('\n');
+    this.suggesting.add(projectId);
+    try {
+      const r = await this.callOperator<{ title?: string; prompt?: string; scopeIds?: unknown; ask?: unknown }>(m, plan, prompt, NEXT_SCHEMA, `${m.id}:next`);
+      const draft = buildNextDraft(r, open, m.id, now());
+      this.event(this.get(m.id), 'system', `다음 미션 추천 초안을 만들었습니다(기능 ${draft.scopeIds.length}개). 초안일 뿐이며, 사용자가 고쳐서 직접 시작할 때만 쓰입니다.`);
+      return draft;
+    } finally { this.suggesting.delete(projectId); }
+  }
+
   /** 보류한 업무(사용자 확인 대기): 같은 업무·같은 권한이 필요한 작업을 다시 계획하지 않게 알린다 */
   private parkedSection(m: Mission): string[] {
     const ds = m.denials ?? []; const bs = m.blockers ?? [];
@@ -2409,4 +2461,21 @@ export function collectStaffAsks(texts: string[]): string[] {
     if (out.length >= 12) return out;
   }
   return out;
+}
+
+
+/** 오퍼레이터가 쓴 다음 미션 본문에, 앱이 진척 목록의 완료 기준 원문을 그대로 붙여 초안을 만든다(완료 기준은 모델이 고치지 못한다) */
+export function buildNextDraft(r: { title?: string; prompt?: string; scopeIds?: unknown; ask?: unknown } | null | undefined, open: WorkItem[], fromMissionId: string, at: string): NextMissionDraft {
+  const body = String(r?.prompt ?? '').trim();
+  if (body.length < 40) throw new Error('다음 미션 초안을 만들지 못했습니다(본문 없음). 다시 시도하거나 직접 적어 주세요.');
+  const want = new Set((Array.isArray(r?.scopeIds) ? r!.scopeIds as unknown[] : []).map((x) => String(x).trim().toUpperCase()));
+  const picked = open.filter((i) => want.has(i.id.toUpperCase())); // 진척 목록에 있고 아직 완료되지 않은 것만
+  const items = picked.length ? picked : open; // 고른 것이 하나도 맞지 않으면 남은 기능 전부를 붙인다(빠뜨리는 것보다 낫다)
+  const ask = (Array.isArray(r?.ask) ? r!.ask as unknown[] : []).map((x) => String(x).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 12);
+  const text = [
+    body, '',
+    '## 고정 완료 기준 (진척 목록 원문 — 앱이 그대로 붙임. 팀장 지시 없이 고치지 않는다)',
+    ...items.map((i) => `- ${i.id} ${i.title}: ${i.criteria || '(완료 기준 없음 — 팀장이 정해야 함)'}`),
+  ].join('\n');
+  return { title: String(r?.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 120) || '다음 미션', text, scopeIds: items.map((i) => i.id), ask, fromMissionId, generatedAt: at };
 }

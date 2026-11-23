@@ -277,6 +277,7 @@ function register() {
   h('markLearningsReviewed', (ids) => { s().learnings.markReviewed(ids); emit({ type: 'learning' }); });
   h('workingNow', (pid) => s().missions.working(pid));
   h('missionReadiness', (pid, refresh) => s().missionReadiness(pid, !!refresh));
+  h('suggestNextMission', (pid) => s().missions.suggestNext(pid));
   h('startMission', (pid, prompt, limits) => s().startMission(pid, prompt, limits && typeof limits === 'object' ? limits as never : null));
   h('missionDetail', (id, n) => s().missions.detail(id, typeof n === 'number' && n >= 0 ? Math.floor(n) : 150));
   h('reviewMission', (id, picks, feedback, action) => s().missions.review(id, Array.isArray(picks) ? picks : [], String(feedback ?? ''), action === 'stop' ? 'stop' : 'continue'));
