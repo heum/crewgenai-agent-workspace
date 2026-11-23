@@ -122,6 +122,10 @@ describe('자동 처리: 저장소 시험 명령·스킬·문서 저장소', () 
     expect(on.sandbox.credentials.envVars.map((x: { name: string; mode: string }) => `${x.name}:${x.mode}`)).toEqual(['ANTHROPIC_API_KEY:deny', 'ANTHROPIC_AUTH_TOKEN:deny', 'CLAUDE_CODE_OAUTH_TOKEN:deny']);
     expect(on.permissions.allow).toContain('Bash(./r/scripts/gradle.sh *)');
     const off = JSON.parse(buildClaudeArgs(base).find((x, i, a) => a[i - 1] === '--settings')!);
+    expect(off.sandbox.network.allowedDomains).toEqual([]); // 기본은 외부 접속 없음
+    const net = JSON.parse(buildClaudeArgs({ ...base, allowedDomains: ['registry.npmjs.org', '*', '10.0.0.5', 'evil.example.com:443'] }).find((x, i, a) => a[i - 1] === '--settings')!);
+    expect(net.sandbox.network.allowedDomains).toEqual(['registry.npmjs.org']); // 실행 직전에 한 번 더 거른다
+    expect(net.sandbox.enabled).toBe(true); expect(net.sandbox.allowUnsandboxedCommands).toBe(false);
     expect(off.sandbox.filesystem.allowWrite).toBeUndefined();
     expect(off.sandbox.network).toEqual({ allowedDomains: [] });
   });

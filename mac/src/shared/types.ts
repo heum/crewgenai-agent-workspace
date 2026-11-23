@@ -45,6 +45,8 @@ export interface AgentFields {
   workPaths: string[]; // 작업 가능한 폴더(프로젝트 기준 상대 경로). 비어 있으면 기획의 writablePaths
   tools: ToolName[];
   allowedCommands: string[]; // Bash 허용 명령 접두어(예: "npm test", "git diff")
+  /** 격리 실행 중 나가는 접속을 허용한 주소(정확한 호스트 이름만, 기본 없음). 사용자가 확인함에서 허용했거나 직원 설정에서 직접 넣은 것만 */
+  allowedDomains?: string[];
   expectedOutput: string;
   doneCriteria: string;
   reviewerAgentId: ID | null; // 독립 검토 담당
@@ -782,7 +784,7 @@ export interface MissionDenial {
   agentId: ID | null;
   agent: string; // 예: '09 시험·품질'
   tool: string; // Bash, Read, Glob, Grep …
-  kind: 'command' | 'path' | 'other';
+  kind: 'command' | 'path' | 'domain' | 'other'; // domain: 격리 실행 환경에서 나가는 접속(내려받기) 주소
   target: string; // 거부된 명령 또는 경로
   suggestion: string | null; // 허용 명령 접두어(명령) 또는 참고 문서로 넣을 경로(경로)
   sig: string; // 반복 판별용

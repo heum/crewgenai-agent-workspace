@@ -36,4 +36,31 @@ describe('권한 허용 요청', () => {
     expect(svc.pendingDecisions().some((x) => x.key === it.key)).toBe(false);
     await svc.missions.stop(m0.id); svc.close();
   });
+  it('내려받기 주소 요청: 정확한 주소 하나만 확인함에 올리고, 허용하면 그 직원에게만 그 주소를 더한다(넓게 여는 표기는 버린다)', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    expect(svc.store.listAgents(p.id).every((x) => !(x.allowedDomains ?? []).length)).toBe(true); // 기본은 아무 주소도 열려 있지 않다
+    const m0 = await svc.startMission(p.id, '[[mock:net-request]] 문서를 정리하라');
+    const it = await until(() => svc.pendingDecisions().find((x) => x.missionId === m0.id && x.key.includes('|pa|')));
+    expect(svc.pendingDecisions().filter((x) => x.key.includes('|pa|'))).toHaveLength(1); // *.npmjs.org · 경로 · IP · localhost 는 걸렀다
+    expect(it.question).toContain("'registry.npmjs.org'에서 내려받기");
+    expect(it.choices[0].effect).toContain('한 곳으로 나가는 접속만');
+    expect(svc.applyDecisions([{ key: it.key, choice: it.choices[0].label }]).applied).toBe(1);
+    const agents = svc.store.listAgents(p.id);
+    expect(agents.find((x) => x.code === '09')!.allowedDomains).toEqual(['registry.npmjs.org']);
+    expect(agents.filter((x) => x.code !== '09').every((x) => !(x.allowedDomains ?? []).length)).toBe(true); // 다른 직원은 그대로
+    expect((svc.missions.get(m0.id).techNotes ?? []).some((x) => x.includes('registry.npmjs.org') && x.includes('허용'))).toBe(true);
+    await svc.missions.stop(m0.id); svc.close();
+  });
+
+  it('주소 검사: 정확한 호스트 이름만 받고 와일드카드·IP·포트·경로·내부망 이름은 버린다', async () => {
+    const { cleanDomain, cleanDomains, MAX_DOMAINS } = await import('../src/main/netallow');
+    expect(cleanDomain(' Registry.NPMJS.org ')).toBe('registry.npmjs.org');
+    for (const bad of ['*', '*.npmjs.org', 'npmjs.org:443', 'https://npmjs.org', 'npmjs.org/x', '10.0.0.5', '[::1]', 'localhost', 'db.internal', 'printer.local', 'a', 'a b.com', 'user@host.com', '', null, undefined, 'x'.repeat(260) + '.com'])
+      expect(cleanDomain(bad), String(bad)).toBeNull();
+    expect(cleanDomains(['db.internal', 'registry.npmjs.org', 'REGISTRY.npmjs.org', '*'])).toEqual(['registry.npmjs.org']);
+    expect(cleanDomains(Array.from({ length: 30 }, (_, i) => `h${i}.npmjs.org`)).length).toBe(MAX_DOMAINS);
+    expect(cleanDomains('registry.npmjs.org')).toEqual([]);
+  });
 });

@@ -12,6 +12,7 @@ import {
   buildClaudeArgs, claudeLimit, cleanEnv, codexLimit, interpretLine, type LimitInfo, type StreamSink, isOurProcess, killGroupAndWait, processStart, redact, redactArgs, redactDeep, startProcess, type ProcessHandle, type ResultInfo,
 } from '../cli/claudeCli';
 import { BLOCKED_PREFIX } from '../../shared/types';
+import { cleanDomains } from '../netallow';
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
 import { CODEX_REVIEW_SCHEMA, CODEX_VERIFY_SCHEMA, codexArgs, codexEnv } from '../cli/codexCli';
@@ -1206,7 +1207,7 @@ export class Engine {
       prompt, appendSystemPrompt: `당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000),
       cwd: workDir, tools: [...tools], editScopes: role === 'reviewer' ? [] : scope, allowedCommands: role === 'reviewer' ? [] : [...agent.allowedCommands, ...cmds.map((c) => c.prefix)],
       readDirs, ownOutputs: isolate, sessionId, resumeSessionId: resumeSession, jsonSchema: schema, model: agent.model, effort: agent.effort, maxBudgetUsd: agent.maxBudgetUsd, pluginDirs, commandLevel: role === 'author' ? level : 'low',
-      writeDirs: [...(procTmp ? [procTmp] : []), ...cmds.flatMap((c) => c.writeDirs)], localBinding: sockets && isolate, // 로컬 포트 열기를 허용했으면 격리 실행 작성자는 127.0.0.1에 서버·시험 서버를 띄울 수 있다(외부 네트워크는 계속 막힘)
+      writeDirs: [...(procTmp ? [procTmp] : []), ...cmds.flatMap((c) => c.writeDirs)], allowedDomains: role === 'author' && isolate ? cleanDomains(agent.allowedDomains) : [], localBinding: sockets && isolate, // 로컬 포트 열기를 허용했으면 격리 실행 작성자는 127.0.0.1에 서버·시험 서버를 띄울 수 있다(외부 네트워크는 계속 막힘)
     });
     const file = run.executor === 'mock' ? process.execPath : ex.cliPath;
     if (!file) { unpinLater(); dropTmp(); throw new Error('Claude CLI 경로가 없습니다.'); }

@@ -3,6 +3,7 @@
 // - 비대화 실행(-p, stream-json)의 인자 구성: 셸을 거치지 않고 argv 배열로 전달
 // - 도구·파일 접근 범위는 CLI의 권한 엔진(--restricted, dontAsk, allow 규칙, Bash 샌드박스)으로 집행
 // - 이벤트 해석, 세션 ID, 프로세스 그룹 단위 취소
+import { cleanDomains } from '../netallow';
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { highDenyRules, MEDIUM_COMMANDS, type CommandLevel } from '../autopilot';
 import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
@@ -123,6 +124,8 @@ export interface ClaudeRunSpec {
   commandLevel?: CommandLevel; // 명령 허용 범위(Bash가 있을 때만): 중간=조회·빌드·시험 명령, 높음=위험 명령 외 전부
   pluginDirs?: string[]; // 'Skill' 도구가 있을 때만 넘긴다(스킬 파일만 담은 읽기 전용 사본)
   writeDirs?: string[]; // 작업 폴더 밖에서 Bash 하위 프로그램이 쓸 수 있는 폴더(실행별 임시 폴더, 시험 명령의 의존성 캐시)
+  /** 격리 실행 중 나가는 접속을 허용할 주소(검사를 거친 호스트 이름). 없으면 외부 접속은 모두 막힌다 */
+  allowedDomains?: string[];
   localBinding?: boolean; // 로컬 소켓 열기 허용(Gradle 잠금·내장 서버 시험용). 외부 네트워크는 그대로 막는다
 }
 
@@ -220,7 +223,7 @@ export function buildClaudeArgs(spec: ClaudeRunSpec): string[] {
     disableAllHooks: true, // 스킬·플러그인이 훅으로 권한 통제 밖에서 명령을 실행하지 못하게
     disableSkillShellExecution: true, // 스킬 본문의 !`명령`·```! 블록을 불러올 때 실행하지 않게
     sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false,
-      network: { allowedDomains: [] as string[], ...(spec.localBinding ? { allowLocalBinding: true } : {}) },
+      network: { allowedDomains: cleanDomains(spec.allowedDomains), ...(spec.localBinding ? { allowLocalBinding: true } : {}) },
       // Claude 인증 정보는 CLI 자신만 쓰고, 격리된 명령(저장소 스크립트 등)에서는 지운다
       credentials: { envVars: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' as const })) },
       // 참고 자료 폴더(--add-dir)는 읽기 전용: Bash 하위 프로그램의 쓰기도 막는다

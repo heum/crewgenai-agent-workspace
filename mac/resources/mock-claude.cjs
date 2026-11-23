@@ -246,6 +246,8 @@ async function main() {
       else Object.assign(dec, { decision: 'done', summary: '피드백 반영 완료', question: '', nextFocus: '' });
     }
     if (prompt.includes('[[mock:perm-request]]') && cyc === 1) dec.permissionRequests = [{ agentCode: '09', command: 'curl -s http://localhost:8080/health', why: '시연 서버 응답을 직접 확인해야 합니다' }, { agentCode: '09', command: 'bash -c "echo x"', why: '넓은 셸은 묻지 않아야 함' }];
+    // 내려받기 주소 요청: 정확한 주소 하나만 통과하고, 넓게 여는 표기는 앱이 버려야 한다
+    if (prompt.includes('[[mock:net-request]]') && cyc === 1) dec.permissionRequests = [{ agentCode: '09', domain: 'registry.npmjs.org', why: '시험 도구 패키지를 내려받아야 합니다' }, { agentCode: '09', domain: '*.npmjs.org', why: '와일드카드' }, { agentCode: '09', domain: 'https://example.org/x', why: '경로' }, { agentCode: '09', domain: '10.0.0.5', why: 'IP' }, { agentCode: '09', domain: 'localhost', why: '내부' }];
     if (prompt.includes('[[mock:milestone]]') && prompt.includes('## 커밋·main 병합') && !prompt.includes('지금 main 병합을 묻는 중')) dec.milestone = { title: '첫 화면 완성', summary: '첫 화면과 시험이 통과' };
     if (prompt.includes('[[mock:commit-request]]') && !prompt.includes('## 커밋 요청(최근)')) dec.commitRequests = [{ repo: '', files: ['pending.txt'], message: '대기 변경 커밋', why: '다음 작업에 필요' }];
     out({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: JSON.stringify(dec), structured_output: dec, permission_denials: [] });

@@ -1,4 +1,5 @@
 // 앱 기능 계층 — Electron과 분리돼 있어 시험에서 직접 구동할 수 있다.
+import { MAX_DOMAINS, cleanDomain, cleanDomains } from './netallow';
 import { BLOCKER_LABEL } from '../shared/types';
 import { closeSync, constants as fsc, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -424,10 +425,10 @@ export class Service {
         }
         // 앱이 처리해 봤지만 꼭 필요한 권한(오퍼레이터 요청·같은 막힘 반복): 미션은 계속 진행하고, 허용하면 그 직원에게만 연다
         for (const a of m.pauseKind === 'restart' ? [] : m.permAsks ?? []) {
-          const what = a.kind === 'path' ? `경로 '${a.suggestion}' 읽기` : `명령 '${a.suggestion}'`;
-          const grant = a.kind === 'command' ? `허용 범위: ${a.agent} 한 명이 '${a.suggestion}'로 시작하는 명령을 격리 복사본 안에서 실행(다른 직원·다른 명령은 그대로 막힘).` : `허용 범위: 이 경로를 읽기 전용 참고 자료로 엶(쓰기는 그대로 막힘).`;
+          const what = a.kind === 'path' ? `경로 '${a.suggestion}' 읽기` : a.kind === 'domain' ? `'${a.suggestion}'에서 내려받기` : `명령 '${a.suggestion}'`;
+          const grant = a.kind === 'domain' ? `허용 범위: ${a.agent} 한 명의 격리 실행 환경에서 '${a.suggestion}' 한 곳으로 나가는 접속만 엶(다른 주소·다른 직원은 그대로 막힘). 내려받은 프로그램은 그 직원의 작업 중 실행될 수 있으니, 믿을 수 있는 주소만 허용하세요. 직원 설정에서 언제든 뺄 수 있습니다.` : a.kind === 'command' ? `허용 범위: ${a.agent} 한 명이 '${a.suggestion}'로 시작하는 명령을 격리 복사본 안에서 실행(다른 직원·다른 명령은 그대로 막힘).` : `허용 범위: 이 경로를 읽기 전용 참고 자료로 엶(쓰기는 그대로 막힘).`;
           out.push({ ...base, key: `${m.id}|pa|${a.sig}`, kind: 'permission', task: `권한 요청 · ${a.agent}`, question: `${a.agent}에게 ${what}을(를) 허용할까요?`, explain: `${a.why}${a.target && a.target !== a.suggestion ? `\n실제 명령: ${a.target}` : ''}`, doc: '', issue: '',
-            choices: [{ label: a.kind === 'command' ? `${a.agent}에게 '${a.suggestion}' 허용` : `참고 자료로 '${a.suggestion}' 추가`, effect: grant, recommended: false, why: '' }, { label: '허용하지 않음', effect: '오퍼레이터가 이 방법 없이 진행합니다. 같은 요청은 다시 묻지 않습니다.', recommended: false, why: '' }],
+            choices: [{ label: a.kind === 'domain' ? `${a.agent}에게 '${a.suggestion}' 내려받기 허용` : a.kind === 'command' ? `${a.agent}에게 '${a.suggestion}' 허용` : `참고 자료로 '${a.suggestion}' 추가`, effect: grant, recommended: false, why: '' }, { label: '허용하지 않음', effect: '오퍼레이터가 이 방법 없이 진행합니다. 같은 요청은 다시 묻지 않습니다.', recommended: false, why: '' }],
             waiting: false, denial: a, urgent: false, held: '미션은 멈추지 않고 계속 진행 중입니다. 허용하면 다음 계획부터 이 방법을 씁니다.', resumes: '허용하면 다음 계획부터 이 직원이 이 방법을 씁니다', grants: grant });
         }
         // 환경 실패 등으로 보류한 업무(위쪽 막대의 '보류한 업무'와 같은 것): 사용자가 해결했다고 하면 다시 시도
@@ -557,6 +558,16 @@ export class Service {
       if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
       const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a as Agent & { fired?: unknown };
       this.saveAgent(it.projectId, a.id, { ...fields, tools: fields.tools.includes('Bash') ? fields.tools : [...fields.tools, 'Bash'], allowedCommands: fields.allowedCommands.includes(d.suggestion) ? fields.allowedCommands : [...fields.allowedCommands, d.suggestion] });
+    } else if (d.kind === 'domain') {
+      // 내려받기 주소: 그 직원 한 명에게만, 검사를 통과한 호스트 이름 하나만 더한다
+      const dom = cleanDomain(d.suggestion);
+      if (!dom) throw new Error('허용할 수 없는 주소 표기입니다(정확한 호스트 이름 하나만 가능).');
+      const a = this.store.listAgents(it.projectId).find((x) => x.id === d.agentId);
+      if (!a) throw new Error('직원을 찾을 수 없습니다(해고됐을 수 있음).');
+      const cur = cleanDomains(a.allowedDomains);
+      if (!cur.includes(dom) && cur.length >= MAX_DOMAINS) throw new Error(`한 직원에게 허용할 수 있는 주소는 ${MAX_DOMAINS}개까지입니다. 직원 설정에서 쓰지 않는 주소를 먼저 빼 주세요.`);
+      const { id: _i, projectId: _p, version: _v, updatedAt: _u, fired: _f, ...fields } = a as Agent & { fired?: unknown };
+      this.saveAgent(it.projectId, a.id, { ...fields, allowedDomains: cur.includes(dom) ? cur : [...cur, dom] });
     } else if (d.kind === 'path') {
       const p = this.store.getProject(it.projectId);
       if (!p.plan.referenceDocs.includes(d.suggestion)) this.updatePlan(p.id, { ...p.plan, referenceDocs: [...p.plan.referenceDocs, d.suggestion] });

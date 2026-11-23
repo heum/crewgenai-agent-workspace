@@ -293,6 +293,11 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
           <LinesInput value={f.allowedCommands} onChange={(v) => set('allowedCommands', v)} rows={3} />
         </Field>
       )}
+      {f.tools.includes('Bash') && (
+        <Field label="내려받기 허용 주소(한 줄에 하나, 정확한 주소)" hint="예: registry.npmjs.org. 기본은 비어 있고 외부 접속은 모두 막힙니다. 이 직원의 격리 실행 환경에서 이 주소로 나가는 접속만 엽니다. *·IP·포트·경로는 쓸 수 없고 10개까지입니다. 내려받은 프로그램은 실행될 수 있으니 믿을 수 있는 주소만 넣으세요.">
+          <LinesInput value={f.allowedDomains ?? []} onChange={(v) => set('allowedDomains', v)} rows={2} />
+        </Field>
+      )}
       <Field label="기대 산출물">
         <textarea className="input" rows={2} value={f.expectedOutput} onChange={(e) => set('expectedOutput', e.target.value)} />
       </Field>
