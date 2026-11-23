@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Mission } from '../src/shared/types';
 import { gitInit, mkService, plan, sleep, tmpProject } from './helpers';
-import { buildCheckpoint, cleanLimits } from '../src/main/mission';
+import { buildCheckpoint, cleanLimits, collectStaffAsks } from '../src/main/mission';
 
 async function waitMission(svc: ReturnType<typeof mkService>, id: string, statuses: Mission['status'][], ms = 60000) {
   const t0 = Date.now();
@@ -572,5 +572,23 @@ describe('중단한 미션 이어서 다시 시작', () => {
     expect(svc.missions.detail(m0.id).cycles.map((c) => c.status)[0]).toBe('cancelled'); // 중단된 사이클은 다시 하지 않음
     await svc.missions.stop(m0.id);
     svc.close();
+  });
+});
+
+
+describe('직원이 올린 결정 필요', () => {
+  it('직원 보고와 검증 메모에서 결정이 필요하다고 적은 줄만 모으고 중복은 한 번만 넣는다', () => {
+    const asks = collectStaffAsks([
+      '## 수행 요약\n- 측정 도구: 도구가 없어 대체 도구로 측정했습니다.\n- 결정 필요: 화면 확인 도구를 설치할지, 지금 방식을 계속 인정할지 정해 주세요.',
+      '완료 조건 4개 중 4개 통과\n- [후속] 화면 확인 도구를 설치할지 결정이 필요합니다.\n- [후속] 판정용 속성을 두는 쪽이 안전합니다.',
+      '- [후속] 시연 데이터를 다음 시연 전에 정리할지 정해야 합니다.',
+    ]);
+    expect(asks).toEqual([
+      '화면 확인 도구를 설치할지, 지금 방식을 계속 인정할지 정해 주세요.',
+      '화면 확인 도구를 설치할지 결정이 필요합니다.',
+      '시연 데이터를 다음 시연 전에 정리할지 정해야 합니다.',
+    ]);
+    expect(collectStaffAsks(['통과했습니다.', ''])).toEqual([]);
+    expect(collectStaffAsks(Array.from({ length: 30 }, (_, i) => `- 결정 필요: 항목 ${i}번을 어떻게 할지 정해 주세요.`)).length).toBe(12);
   });
 });

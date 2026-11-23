@@ -2033,6 +2033,7 @@ export class MissionRunner {
       '## 지금까지의 판단·질문·사용자 답변', this.history(m), '',
       ...this.directivesSection(m),
       ...this.decisionsSection(m),
+      ...this.staffAsksSection(m),
       ...this.refSection(m),
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
@@ -2126,6 +2127,23 @@ export class MissionRunner {
     const ds = m.decisions ?? [];
     if (!ds.length) return [];
     return ['## 사용자 결정(확정 — 그대로 따르고 다시 묻지 않는다)', ...ds.map((d) => `- [${d.doc || '문서 미지정'}] ${d.issue} → ${d.choice}`), ''];
+  }
+
+  /**
+   * 직원·검증 직원이 지난 사이클 보고에 '결정 필요'로 적은 것을 계획에 넘긴다.
+   * 직원 보고와 검증 메모는 사용자 질문으로 이어지는 길이 없어, 오퍼레이터가 넘어가면 같은 메모만 사이클마다 되풀이됐다.
+   */
+  private staffAsksSection(m: Mission): string[] {
+    const row = this.d.store.db.prepare('SELECT run_id FROM mission_cycles WHERE mission_id=? AND cycle<=? ORDER BY cycle DESC LIMIT 1').get(m.id, m.cycle) as { run_id: string } | undefined;
+    if (!row) return [];
+    let asks: string[] = [];
+    try { const d = this.d.engine.detail(row.run_id); asks = collectStaffAsks([...d.attempts.filter((a) => a.role === 'author').map((a) => a.summary), ...d.reviews.map((r) => r.comments)]); } catch { return []; }
+    if (!asks.length) return [];
+    return ['## 직원이 올린 결정 필요(지난 사이클의 직원 보고·검증 메모에서 앱이 모음)', ...asks.map((a) => `- ${a}`),
+      '- 위 항목은 하나도 그냥 넘기지 않는다. 항목마다 셋 중 하나로 처리한다.',
+      '  1) 사용자만 정할 수 있는 것(도구·프로그램 설치, 제품 동작·범위, 비용, 외부 서비스 사용, 시연·운영 데이터 처리): gaps에 kind=decide, blocking=false로 올린다. 쉬운 말로 무엇을 정해야 하는지, 선택지(choices)와 추천, 답이 없는 동안 무엇으로 진행하는지를 쓴다. 개발은 멈추지 않는다.',
+      '  2) 되돌리기 쉬운 세부: kind=assume으로 무엇으로 가정했는지 적는다.',
+      '  3) 위 "사용자 결정"에 이미 답이 있거나 이미 올려서 답을 기다리는 것: 다시 올리지 않는다.', ''];
   }
 
   /** 보류한 업무(사용자 확인 대기): 같은 업무·같은 권한이 필요한 작업을 다시 계획하지 않게 알린다 */
@@ -2376,4 +2394,19 @@ export function parseSecretSpec(v: unknown): MissionSecretSpec | null {
   if (!file || envFileProblem(file) || !VAR_NAME.test(name)) return null;
   const source = String(o.source ?? '').trim().slice(0, 300);
   return { file, name, ...(source ? { source } : {}) };
+}
+
+
+/** 직원 보고·검증 메모에서 '결정이 필요하다'고 적은 줄을 모은다(중복 제거, 최대 12개) */
+export function collectStaffAsks(texts: string[]): string[] {
+  const out: string[] = []; const seen = new Set<string>();
+  for (const t of texts) for (const raw of String(t ?? '').split(/\r?\n/)) {
+    if (!/결정\s*(이|을)?\s*필요|결정해\s*주|정해\s*주세요|정해야\s*합니다/.test(raw)) continue;
+    const line = raw.replace(/^[\s>*-]+/, '').replace(/^\[후속\]\s*/, '').replace(/^\*\*?결정 필요:?\*\*?:?\s*/, '').replace(/^결정 필요:\s*/, '').trim().slice(0, 300);
+    const key = line.replace(/[\s.·,:]/g, '').slice(0, 40);
+    if (line.length < 8 || seen.has(key)) continue;
+    seen.add(key); out.push(line);
+    if (out.length >= 12) return out;
+  }
+  return out;
 }
