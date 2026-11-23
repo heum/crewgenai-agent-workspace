@@ -576,6 +576,8 @@ describe('직원이 올린 결정 필요', () => {
       '시연 데이터를 다음 시연 전에 정리할지 정해야 합니다.',
     ]);
     expect(collectStaffAsks(['통과했습니다.', ''])).toEqual([]);
+    expect(collectStaffAsks(['추가 결정이 필요하지 않습니다.', '- 결정은 필요 없습니다.'])).toEqual([]);
+    expect(collectStaffAsks(['결정은 필요합니다: 설치 방식은 사용자에게 확인해야 합니다.'])).toEqual(['결정은 필요합니다: 설치 방식은 사용자에게 확인해야 합니다.']);
     expect(collectStaffAsks(Array.from({ length: 30 }, (_, i) => `- 결정 필요: 항목 ${i}번을 어떻게 할지 정해 주세요.`)).length).toBe(12);
   });
 });

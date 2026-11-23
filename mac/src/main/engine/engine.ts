@@ -869,11 +869,11 @@ export class Engine {
     const CAP = 150; const shown = code.slice(0, CAP);
     // 지워진 파일과 한도를 넘은 파일도 리뷰가 알게 한다(목록에서 조용히 빠지지 않게)
     const extra = [
-      ...(deleted.length ? [`이번 사이클에 지워진 파일 ${deleted.length}개도 본다(지워서 깨지는 곳이 없는지): ${deleted.slice(0, 40).join(', ')}`] : []),
+      ...(deleted.length ? [`이번 사이클에 지워진 파일 ${deleted.length}개도 본다(지워서 깨지는 곳이 없는지): ${deleted.slice(0, 40).join(', ')}${deleted.length > 40 ? ` … 그 밖에 ${deleted.length - 40}개는 목록에 넣지 못했다. 이 사실을 summary 첫 줄에 적는다.` : ''}`] : []),
       ...(code.length > CAP ? [`바뀐 코드 파일이 ${code.length}개라 앞의 ${CAP}개만 검토 대상에 넣었다. 나머지 ${code.length - CAP}개는 이번 리뷰가 보지 못했다고 summary 첫 줄에 적는다.`] : []),
     ];
     const r = await this.runCodexNode(runId, { ...node, inputs: shown, doneCriteria: [node.doneCriteria, ...extra].filter(Boolean).join('\n') }, visit, plan, []);
-    if (r.status === 'ok') return { status: 'ok' as const, summary: `${code.length > CAP ? `[일부만 리뷰: ${code.length}개 중 ${CAP}개] ` : ''}${r.summary}`, outputs: [...new Set([...r.outputs.slice(0, 1), ...upstream])] };
+    if (r.status === 'ok') return { status: 'ok' as const, summary: `${code.length > CAP ? `[일부만 리뷰: ${code.length}개 중 ${CAP}개] ` : ''}${deleted.length > 40 ? `[지워진 파일 ${deleted.length}개 중 40개만 목록에 넣음] ` : ''}${r.summary}`, outputs: [...new Set([...r.outputs.slice(0, 1), ...upstream])] };
     if (/한도/.test(r.reason ?? '')) return r;
     return { status: 'ok' as const, summary: `사이클 Codex 리뷰를 끝내지 못해 리뷰 없이 진행합니다: ${r.reason ?? '원인 미상'}`, outputs: upstream };
   }

@@ -148,7 +148,7 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
           {sel && sel !== NEW ? (
             <MissionView key={sel} missionId={sel} agents={agents.data ?? noAgents} onOpenRun={openRun} onChanged={viewChanged} />
           ) : (
-            <NewMissionIntro ready={ready.data} onGoTab={onGoTab} onRecheck={() => void ready.reload()} projectId={project.id} hasPast={!!list.data?.length} hasText={!!prompt.trim()} onDraft={setPrompt} />
+            <NewMissionIntro ready={ready.data} onGoTab={onGoTab} onRecheck={() => void ready.reload()} projectId={project.id} hasPast={!!list.data?.length} text={prompt} onDraft={setPrompt} />
           )}
         </div>
         <Composer
@@ -169,9 +169,14 @@ export default function MissionTab({ project, onOpenRun, onGoTab, draft, onDraft
 const NEW = '__new__';
 
 /** 새 지시 화면: 무엇을 하는 곳인지와 준비 상태 */
-function NewMissionIntro({ ready, onGoTab, onRecheck, projectId, hasPast, hasText, onDraft }: { ready: MissionReadiness | null; onGoTab?: (tab: 'plan' | 'agents' | 'settings') => void; onRecheck: () => void; projectId: string; hasPast: boolean; hasText: boolean; onDraft: (text: string) => void }) {
+function NewMissionIntro({ ready, onGoTab, onRecheck, projectId, hasPast, text, onDraft }: { ready: MissionReadiness | null; onGoTab?: (tab: 'plan' | 'agents' | 'settings') => void; onRecheck: () => void; projectId: string; hasPast: boolean; text: string; onDraft: (text: string) => void }) {
   const act = useAction();
   const [made, setMade] = useState<NextMissionDraft | null>(null);
+  // 만드는 데 몇 분 걸린다. 그 사이 입력창 글이 바뀌었거나 이 화면을 떠났으면 초안으로 덮어쓰지 않는다.
+  const [held, setHeld] = useState(false);
+  const textRef = useRef(text); textRef.current = text;
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   return (
     <div className="mission-view">
       <div className="card">
@@ -185,14 +190,21 @@ function NewMissionIntro({ ready, onGoTab, onRecheck, projectId, hasPast, hasTex
           <p className="muted small">지난 미션의 지시·결정·진척 목록에서, 이어서 할 다음 미션의 지시문 초안을 만듭니다. 새 미션은 지난 미션의 지시와 결정을 넘겨받지 않으므로, 아직 유효한 것을 초안에 풀어 적습니다. 완료 기준은 진척 목록의 원문을 그대로 붙입니다.</p>
           <p className="muted small">초안은 추천일 뿐입니다. 아래 입력창에 채워지면 읽고 고친 뒤 직접 시작해 주세요. 만들기만 해서는 아무것도 시작되지 않습니다(1~3분 걸릴 수 있습니다).</p>
           <button className="btn" disabled={act.busy} onClick={() => {
-            if (hasText && !window.confirm('입력창에 적어 둔 글이 초안으로 바뀝니다. 계속할까요?')) return;
-            void act.run(async () => { const d = await ws().suggestNextMission(projectId); setMade(d); onDraft(d.text); });
+            if (text.trim() && !window.confirm('입력창에 적어 둔 글이 초안으로 바뀝니다. 계속할까요?')) return;
+            const startText = text;
+            void act.run(async () => {
+              const d = await ws().suggestNextMission(projectId);
+              if (!alive.current) return; // 다른 화면으로 갔으면 아무것도 바꾸지 않는다
+              setMade(d);
+              if (textRef.current === startText) { setHeld(false); onDraft(d.text); } else setHeld(true);
+            });
           }}>{act.busy ? '초안 만드는 중…' : made ? '초안 다시 만들기' : '다음 미션 초안 만들기'}</button>
           {act.error && <Banner>{act.error}</Banner>}
           {made && (
             <div className="banner banner-info" style={{ marginTop: 10 }}>
               <div>
-                <strong>초안을 입력창에 넣었습니다: {made.title}</strong>
+                <strong>{held ? '초안을 만들었습니다(입력창은 그대로 두었습니다)' : '초안을 입력창에 넣었습니다'}: {made.title}</strong>
+                {held && <div className="small">만드는 동안 입력창의 글이 바뀌어서 덮어쓰지 않았습니다. <button className="btn-link small" onClick={() => { if (window.confirm('입력창의 글이 초안으로 바뀝니다. 계속할까요?')) { onDraft(made.text); setHeld(false); } }}>초안을 입력창에 넣기</button></div>}
                 <div className="small">다루는 기능 {made.scopeIds.length}개 — {made.scopeIds.join(', ')}</div>
                 {made.ask.length > 0 && (<><div className="small" style={{ marginTop: 6 }}>시작하기 전에 정해 주시면 좋은 것</div><ul className="small">{made.ask.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
               </div>
