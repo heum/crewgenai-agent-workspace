@@ -1544,10 +1544,10 @@ export class MissionRunner {
           const dom = cleanDomain(r.domain);
           if (a && dom && a.tools.includes('Bash')) {
             if (cleanDomains(a.allowedDomains).includes(dom) || cleanDomains(a.allowedDomains).length >= MAX_DOMAINS) return [];
-            return [{ agentId: a.id, agent: `${a.code} ${a.name}`, tool: 'Bash', kind: 'domain' as const, target: dom, suggestion: dom, sig: `${a.id}|net|${dom}`, why: String(r.why ?? '').trim().slice(0, 400), cycle: m.cycle, from: 'operator' as const }];
+            return [{ agentId: a.id, agent: `${a.code} ${a.name}`, tool: 'Bash', kind: 'domain' as const, target: dom, suggestion: dom, sig: `${a.id}|net|${dom}`, why: redact(String(r.why ?? '')).trim().slice(0, 400), cycle: m.cycle, from: 'operator' as const }];
           }
           if (!a || !cmd || !pre || !okPermPrefix(pre)) return [];
-          return [{ agentId: a.id, agent: `${a.code} ${a.name}`, tool: 'Bash', kind: 'command' as const, target: cmd, suggestion: pre, sig: `${a.id}|Bash|${pre}`, why: String(r.why ?? '').trim().slice(0, 400), cycle: m.cycle, from: 'operator' as const }];
+          return [{ agentId: a.id, agent: `${a.code} ${a.name}`, tool: 'Bash', kind: 'command' as const, target: redact(cmd), suggestion: pre, sig: `${a.id}|Bash|${pre}`, why: redact(String(r.why ?? '')).trim().slice(0, 400), cycle: m.cycle, from: 'operator' as const }];
         }));
         { const reqs = this.devSyncOn() ? [] : cleanCommitRequests(judge.commitRequests, this.get(id).commitRequests ?? [], m.cycle);
           if (reqs.length) { m = this.set(id, { commitRequests: [...(this.get(id).commitRequests ?? []), ...reqs].slice(-30) }); for (const r of reqs) this.event(m, 'system', `커밋 승인 요청: ${r.repo || '(연결 폴더)'} · 파일 ${r.files.length}개 · "${r.message}" — 사용자가 승인해야 커밋합니다.`, { commitRequest: r.id }); } }
@@ -1813,7 +1813,7 @@ export class MissionRunner {
     const what = a.kind === 'path' ? `경로 '${a.suggestion}' 읽기` : a.kind === 'domain' ? `내려받기 주소 '${a.suggestion}'` : `명령 '${a.suggestion}'`;
     const notes = (m.techNotes ?? []).filter((x) => !(a.suggestion && x.includes(a.suggestion)));
     this.set(id, { permAsks: (m.permAsks ?? []).filter((x) => x.sig !== sig), techNotes: allowed ? [...notes, `사용자가 ${a.agent}에게 ${what}을(를) 허용함 — 이제 그 직원은 이 방법을 써도 된다`].slice(-20) : m.techNotes,
-      permDeclined: allowed ? m.permDeclined : [...new Set([...(m.permDeclined ?? []), sig])].slice(-50) });
+      permDeclined: allowed ? m.permDeclined : [...new Set([...(m.permDeclined ?? []), sig])].slice(-5000) });
     this.event(m, 'answer', `${a.agent}의 ${what}: ${allowed ? '허용' : '허용하지 않음'}`);
   }
   /** 막힌 방법: 오퍼레이터가 같은 방법을 다시 계획하지 않게 */

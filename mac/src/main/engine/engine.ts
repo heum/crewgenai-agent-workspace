@@ -152,11 +152,13 @@ export function criteriaIds(text: string): string[] {
   for (const line of text.split(/\r?\n/)) {
     const m = line.match(/^(?:(\d{1,2})[.)]|\((\d{1,2})\))\s/) ?? null;
     if (m) { top.push(String(Number(m[1] ?? m[2]))); continue; }
-    const c = CIRCLED.indexOf(line[0] ?? '');
+    const c = line.length ? CIRCLED.indexOf(line[0]) : -1; // 빈 줄을 ①로 세지 않는다
     if (c >= 0) top.push(String(c + 1));
   }
   const uniq = [...new Set(top)];
   if (uniq.length >= 2) return uniq;
+  // 한 줄에 이어 쓴 번호는 글이 '1.'·'(1)'·'①'로 시작할 때만 조건 목록으로 본다("버전 1. 2 배포" 같은 본문 속 숫자를 조건으로 세지 않게)
+  if (!/^\s*(?:1[.)]\s|\(1\)\s|①)/.test(text)) return uniq;
   const inline: string[] = []; let next = 1;
   for (const m of text.matchAll(/(?:^|\s)(?:(\d{1,2})[.)]|\((\d{1,2})\))\s|([①-⑳])/g)) {
     const n = m[3] ? CIRCLED.indexOf(m[3]) + 1 : Number(m[1] ?? m[2]);

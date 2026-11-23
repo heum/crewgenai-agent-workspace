@@ -203,6 +203,8 @@ describe('오퍼레이터 루프', () => {
     expect(verifyCoverage('한 가지 조건', [...one, ...one])).toContain('겹친 조건 번호 1'); // 번호 목록이 아니어도 겹친 줄은 잡는다
     expect(verifyCoverage('1. 가\n   1. 하위\n   2. 하위\n   3. 하위\n2. 나', [{ no: '1', pass: true, evidence: 'a' }, { no: '2', pass: true, evidence: 'b' }])).toBe(''); // 들여쓴 하위 목록은 조건으로 세지 않는다
     expect(verifyCoverage(dc, [null])).toContain('형식이 틀린 판정 1줄');
+    expect(verifyCoverage('\n② 하나뿐인 조건', one)).toBe(''); // 빈 줄을 조건으로 세지 않는다
+    expect(verifyCoverage('버전 1. 2 배포; 버전 2. 0 확인', one)).toBe(''); // 본문 속 숫자를 조건으로 세지 않는다
   });
 
   it('검증 방식 codex: 승인이라고 해도 실패한 완료 조건이 있으면 재작업시키고, 조건 판정이 없으면 통과로 보지 않으며, 문서만 바뀐 작업도 검증한다', async () => {

@@ -51,6 +51,14 @@ describe('권한 허용 요청', () => {
     expect(agents.find((x) => x.code === '09')!.allowedDomains).toEqual(['registry.npmjs.org']);
     expect(agents.filter((x) => x.code !== '09').every((x) => !(x.allowedDomains ?? []).length)).toBe(true); // 다른 직원은 그대로
     expect((svc.missions.get(m0.id).techNotes ?? []).some((x) => x.includes('registry.npmjs.org') && x.includes('허용'))).toBe(true);
+    // 직원 설정에서 직접 넣을 때도 틀린 표기는 저장하지 않고 거절한다(값을 오류 글에 되풀이하지 않는다)
+    const a09 = svc.store.listAgents(p.id).find((x) => x.code === '09')!;
+    const { id: _i, projectId: _p, version: _v, updatedAt: _u, ...fields } = a09 as typeof a09 & { fired?: unknown };
+    let err = '';
+    try { svc.saveAgent(p.id, a09.id, { ...fields, allowedDomains: ['registry.npmjs.org', 'https://user:tok3n@evil.example.org/x?k=1'] } as never); } catch (e) { err = (e as Error).message; }
+    expect(err).toContain('표기가 틀렸습니다'); expect(err).not.toContain('tok3n');
+    expect(svc.store.listAgents(p.id).find((x) => x.code === '09')!.allowedDomains).toEqual(['registry.npmjs.org']);
+    expect(svc.saveAgent(p.id, a09.id, { ...fields, allowedDomains: [' Registry.NPMJS.org ', 'registry.npmjs.org'] } as never).allowedDomains).toEqual(['registry.npmjs.org']);
     await svc.missions.stop(m0.id); svc.close();
   });
 

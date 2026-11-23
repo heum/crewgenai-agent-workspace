@@ -252,6 +252,12 @@ export class Service {
     if (f.reviewerAgentId && f.reviewerAgentId === agentId) throw new Error('자기 자신을 독립 검토 담당으로 지정할 수 없습니다.');
     for (const w of f.workPaths ?? []) if (escapes(w)) throw new Error(`프로젝트 밖을 가리키는 작업 폴더는 쓸 수 없습니다: ${w}`);
     const character = isCharacterId(f.character) ? f.character : undefined; // 캐릭터 번호는 정해진 20종만
+    // 내려받기 허용 주소는 저장할 때도 검사한다: 틀린 표기는 값을 그대로 보여 주거나 저장하지 않고 거절한다(주소에 섞인 계정·토큰이 남지 않게)
+    const rawDomains = Array.isArray(f.allowedDomains) ? f.allowedDomains.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+    const badDomains = rawDomains.filter((x) => !cleanDomain(x)).length;
+    if (badDomains) throw new Error(`내려받기 허용 주소 ${badDomains}개의 표기가 틀렸습니다. 정확한 주소 하나씩만 쓸 수 있습니다(예: registry.npmjs.org — https://, 포트, 경로, *, IP는 쓸 수 없음).`);
+    if (new Set(rawDomains.map((x) => cleanDomain(x))).size > MAX_DOMAINS) throw new Error(`내려받기 허용 주소는 직원당 ${MAX_DOMAINS}개까지입니다.`);
+    f = { ...f, allowedDomains: cleanDomains(rawDomains) };
     return this.store.saveAgent(projectId, agentId, { ...f, character, timeoutSec: Math.max(10, Number(f.timeoutSec) || 1800), maxRetries: Math.max(0, Math.min(10, Number(f.maxRetries) || 0)) });
   }
   duplicateAgent(agentId: string): Agent {
