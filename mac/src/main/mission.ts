@@ -1237,6 +1237,7 @@ export class MissionRunner {
   onLive(e: LiveEvent) {
     if (e.type !== 'node') return;
     if (e.state.status === 'failed' && String(e.state.failureReason ?? '').startsWith(BLOCKED_PREFIX)) { this.raiseBlocked(e.state.runId, e.state.nodeId, String(e.state.failureReason)); return; }
+    if (e.state.status === 'succeeded') { this.announceResult(e.state.runId, e.state.nodeId, e.state.visits); return; }
     if (!['running', 'checking', 'rework'].includes(e.state.status)) return;
     const r = this.d.store.db.prepare("SELECT data FROM missions WHERE json_extract(data,'$.currentRunId')=?").get(e.state.runId) as Row | undefined;
     if (!r) return;
@@ -1246,6 +1247,41 @@ export class MissionRunner {
     const stage: MissionStage | null = node?.kind === 'agent' ? 'execute' : node?.kind === 'codexReview' ? 'codex' : node?.kind === 'review' ? 'claude_review' : null;
     if (stage && stage !== m.stage) this.save({ ...m, stage });
   }
+
+  /**
+   * 작업 결과를 사이클이 끝나기를 기다리지 않고 바로 알린다.
+   * - 작성이 끝나면: "결과가 나왔습니다(검증 전)" — 바뀐 내용 요약과 파일 수. 같은 사이클의 다른 작업·검토가 끝나기를 기다리지 않는다.
+   * - 그 작업의 검증 단계(작업별 검증)가 통과하면: "검증 통과".
+   * 사이클 최종 리뷰·검사·취합 단계는 알리지 않는다. 같은 단계·같은 방문은 한 번만 알린다(재시작으로 다시 와도 되풀이하지 않음).
+   */
+  private announceResult(runId: string, nodeId: string, visit: number) {
+    const r = this.d.store.db.prepare("SELECT data FROM missions WHERE json_extract(data,'$.currentRunId')=?").get(runId) as Row | undefined;
+    if (!r) return;
+    const m = JSON.parse(String(r.data)) as Mission;
+    if (['stopped', 'failed', 'done'].includes(m.status)) return;
+    let graph: WorkGraph;
+    try { graph = this.d.store.getGraphVersion(this.d.store.getRun(runId).graphVersionId).graph; } catch { return; }
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const gate = (node.kind === 'codexReview' && node.verify) || (node.kind === 'review' && !node.cycleReview);
+    if (node.kind !== 'agent' && !gate) return;
+    const key = `${runId}|${nodeId}|${visit}|${node.kind === 'agent' ? 'result' : 'pass'}`;
+    if (this.announced.has(key)) return;
+    if (this.events(m.id).slice(-300).some((x) => (x.data as { announce?: string } | null)?.announce === key)) { this.announced.add(key); return; }
+    this.announced.add(key);
+    if (node.kind === 'agent') {
+      const a = this.d.store.runAttempts(runId).filter((x) => x.nodeId === nodeId && x.role === 'author' && x.status === 'succeeded').at(-1);
+      if (!a) return;
+      const files = a.changedFiles ?? [];
+      const code = files.filter((f) => /\.(tsx?|jsx?|mjs|cjs|css|scss|java|kt|py|sql|html)$/i.test(f) && !/(^|\/)(tests?|__tests__|docs?|live_out|screens?[^/]*)\//i.test(f)).length;
+      const head = redact(String(a.summary ?? '')).replace(/^#+\s*/gm, '').trim().split(/\n\s*\n/)[0].slice(0, 700);
+      this.event(m, 'system', `결과가 나왔습니다(검증 전): ${node.label}\n${head || '(요약 없음)'}\n바뀐 파일 ${files.length}개(제품 코드 ${code}개). 검증은 지금 진행 중이며, 통과하거나 고칠 것이 나오면 다시 알려 드립니다. 고칠 점이 있으면 추가 지시로 바로 주세요.`, { announce: key, runId, nodeId });
+    } else {
+      const author = graph.edges.filter((x) => x.target === nodeId && x.kind === 'next').map((x) => graph.nodes.find((n) => n.id === x.source)).find((n) => n?.kind === 'agent');
+      this.event(m, 'system', `검증 통과: ${author?.label ?? node.label}\n${redact(String(this.d.store.getRunNode(runId, nodeId)?.summary ?? '')).replace(/\s+/g, ' ').slice(0, 300)}`, { announce: key, runId, nodeId });
+    }
+  }
+  private announced = new Set<string>();
 
   /**
    * 검증이 '작성자가 고칠 수 없음'으로 끝낸 업무를, 사이클이 끝나기를 기다리지 않고 바로 보류하고 확인함에 올린다.

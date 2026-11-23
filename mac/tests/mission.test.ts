@@ -235,6 +235,23 @@ describe('오퍼레이터 루프', () => {
     c.svc.close();
   });
 
+  it('작업 결과는 사이클 끝을 기다리지 않고 바로 알린다: 작성이 끝나면 결과(검증 전), 검증이 통과하면 검증 통과 — 같은 방문은 한 번만', async () => {
+    const { svc, p } = setup();
+    const m0 = await svc.startMission(p.id, '[[mock:todo-first]] [[mock:code]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    const evs = svc.missions.events(m.id).filter((e) => e.cycle === 1 || e.kind === 'cycle_end');
+    const results = evs.filter((e) => e.text.startsWith('결과가 나왔습니다(검증 전)'));
+    const passes = evs.filter((e) => e.text.startsWith('검증 통과'));
+    const end1 = svc.missions.events(m.id).findIndex((e) => e.kind === 'cycle_end');
+    const all = svc.missions.events(m.id);
+    expect(results.length).toBe(2); // 첫 작성(TODO 남음)과 재작업 뒤 작성, 방문마다 한 번
+    expect(passes.length).toBe(1);
+    expect(all.indexOf(results[0])).toBeLessThan(end1); // 사이클이 끝나기 전에 알렸다
+    expect(all.indexOf(passes[0])).toBeLessThan(end1);
+    expect(results[0].text).toContain('바뀐 파일');
+    svc.close();
+  });
+
   it('문서만 바꾼 작업은 Codex 리뷰와 재검토를 건너뛴다(코드·시험을 바꾸면 리뷰한다)', async () => {
     const { validate } = { validate: await import('../src/main/engine/validate') };
     expect(validate.docsOnly(['docs/STATUS.md', 'docs/screens/a.png'])).toBe(true);
