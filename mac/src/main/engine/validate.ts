@@ -191,10 +191,13 @@ export function edgesFrom(g: WorkGraph, id: string, kind?: GraphEdge['kind']) {
 const LIGHT_EXT = /\.(md|png|jpe?g|gif|webp|pdf)$/i;
 /** 직원·도구가 지시로 읽는 문서는 문서라도 리뷰한다(행동을 바꾸는 파일) */
 const AGENT_DOC = /^(agents|claude|gemini|skill|codex)\.md$/i;
-/** 바뀐 파일이 문서·화면 사진뿐인가. 바뀐 파일을 알 수 없으면(빈 목록) 아니라고 본다(리뷰한다). 점으로 시작하는 폴더(.github·.claude·.tmp 등) 안은 문서로 보지 않는다. */
+/** 문서·증빙을 두는 폴더 이름: 이 폴더 안의 파일만 '문서'로 본다(코드 옆의 .md, 스킬·지시 문서는 리뷰한다) */
+const DOC_DIR = /^(docs?|screens|screenshots)$/i;
+const NOT_DOC_DIR = /^(skills?|prompts?|agents?|commands?|rules?)$/i;
+/** 바뀐 파일이 문서·화면 사진뿐인가. 바뀐 파일을 알 수 없으면(빈 목록) 아니라고 본다(리뷰한다). */
 export function docsOnly(files: string[]): boolean {
   return files.length > 0 && files.every((f) => {
-    const parts = normRel(f).split('/'); const name = parts[parts.length - 1] ?? '';
-    return LIGHT_EXT.test(name) && !AGENT_DOC.test(name) && !parts.some((p) => p.startsWith('.'));
+    const parts = normRel(f).split('/'); const name = parts[parts.length - 1] ?? ''; const dirs = parts.slice(0, -1);
+    return LIGHT_EXT.test(name) && !AGENT_DOC.test(name) && !parts.some((p) => p.startsWith('.')) && dirs.some((p) => DOC_DIR.test(p)) && !dirs.some((p) => NOT_DOC_DIR.test(p));
   });
 }

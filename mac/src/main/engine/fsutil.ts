@@ -171,9 +171,10 @@ function deepestExisting(p: string): string { let cur = p; while (!existsSync(cu
  * 다만 작업 전체를 버릴 이유가 아닌 두 가지는 충돌로 치지 않는다:
  * - 직원이 복사본 안에 새로 만든 링크(예: 시험 도구가 임시 폴더에 만드는 'current' 링크): 링크만 빼고 나머지를 반영한다(skipped).
  *   원본에 이미 있는 파일·폴더를 링크로 바꿨거나, 복사본 경로 중간에 링크가 끼어 있으면 예전처럼 전부 막는다(링크를 따라가 원본을 덮어쓰거나 지우지 않게).
- * - 원본이 바뀌었지만 지금 내용이 복사본과 같은 파일: 이미 같은 내용이라 쓸 것이 없다(반영한 것으로 센다).
+ * - 원본이 바뀌었지만 지금 내용이 복사본과 같은 파일: 이미 같은 내용이라 쓸 것이 없다. 충돌로도, 반영한 파일로도 세지 않는다(same) —
+ *   앱이 쓰지 않은 파일을 직원 이름으로 커밋하지 않게.
  */
-export function applyIsolated(project: string, dir: string, changed: string[], base: Record<string, string>): { applied: string[]; conflicts: string[]; blocked: string[]; skipped: string[] } {
+export function applyIsolated(project: string, dir: string, changed: string[], base: Record<string, string>): { applied: string[]; conflicts: string[]; blocked: string[]; skipped: string[]; same: string[] } {
   const projReal = realpathSync(project);
   const conflicts: string[] = []; const blocked: string[] = []; const skipped: string[] = []; const same: string[] = [];
   const plan: { rel: string; write: boolean }[] = [];
@@ -198,7 +199,7 @@ export function applyIsolated(project: string, dir: string, changed: string[], b
     }
     plan.push({ rel, write: !!sl?.isFile() });
   }
-  if (conflicts.length || blocked.length) return { applied: [], conflicts, blocked, skipped };
+  if (conflicts.length || blocked.length) return { applied: [], conflicts, blocked, skipped, same };
   // 삭제 먼저(파일→폴더 전환 대비), 비워진 폴더도 복사본에 없으면 지운다
   for (const x of plan.filter((y) => !y.write)) {
     const dst = join(project, x.rel);
@@ -210,7 +211,7 @@ export function applyIsolated(project: string, dir: string, changed: string[], b
     }
   }
   for (const x of plan.filter((y) => y.write)) { const dst = join(project, x.rel); mkdirSync(_dirname(dst), { recursive: true }); copyFileSync(join(dir, x.rel), dst); }
-  return { applied: [...plan.map((x) => x.rel), ...same], conflicts: [], blocked: [], skipped };
+  return { applied: plan.map((x) => x.rel), conflicts: [], blocked: [], skipped, same };
 }
 
 export function cleanupIsolated(dir: string) { for (const p of [dir, stateFile(dir)]) { try { rmSync(p, { recursive: true, force: true }); } catch { /* 무시 */ } } }

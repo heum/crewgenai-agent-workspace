@@ -349,7 +349,7 @@ describe('격리 반영 규칙(Codex 4차)', () => {
     const r = applyIsolated(proj, dir, diffSnapshots(new Map(st.before), snapshot(dir)), st.base);
     expect(r.conflicts).toEqual([]); expect(r.blocked).toEqual([]);
     expect(r.skipped).toEqual(['docs/tmp/current']);
-    expect([...r.applied].sort()).toEqual(['docs/a.md', 'docs/new.md']);
+    expect(r.applied).toEqual(['docs/new.md']); expect(r.same).toEqual(['docs/a.md']); // 같은 내용으로 바뀐 파일은 앱이 쓴 것이 아니므로 반영 목록에 넣지 않는다
     expect(fs.readFileSync(join(proj, 'docs/new.md'), 'utf8')).toBe('새 파일');
     expect(fs.existsSync(join(proj, 'docs/tmp/current'))).toBe(false);
     cleanupIsolated(dir);

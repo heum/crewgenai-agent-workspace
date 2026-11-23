@@ -836,13 +836,18 @@ export class Engine {
   private lightSkip(runId: string, graph: WorkGraph, node: GraphNode, upstream: string[]) {
     if (!node.lightSkip) return null;
     const rev = new Map<string, string[]>();
-    for (const e of graph.edges) if (e.kind !== 'fail') rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]);
-    // 이 단계로 들어오는 모든 길을 거슬러 올라가, 길마다 처음 만나는 작성 단계를 모은다(검사·분기·취합 같은 중간 단계는 지나간다)
-    const authors = new Set<string>(); const seen = new Set<string>([node.id]); const st = [...(rev.get(node.id) ?? [])];
+    for (const e of graph.edges) rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]); // 실패 연결로 들어오는 길도 본다
+    // 이 단계로 들어오는 모든 길을 거슬러 올라가 작성 단계를 모은다(검사·분기·취합은 지나가고, 작성 단계를 만나도 더 올라간다).
+    // 이미 작성 단계를 만난 길에서 다른 리뷰 단계에 닿으면 멈춘다: 그 앞의 작성은 그 리뷰가 맡았다.
+    const authors = new Set<string>(); const seen = new Set<string>(); const st: { id: string; found: boolean }[] = (rev.get(node.id) ?? []).map((id) => ({ id, found: false }));
     while (st.length) {
-      const x = st.pop()!; if (seen.has(x)) continue; seen.add(x);
-      const n = graph.nodes.find((g) => g.id === x);
-      if (n?.kind === 'agent') authors.add(x); else st.push(...(rev.get(x) ?? []));
+      const x = st.pop()!; const key = `${x.id}:${x.found ? 1 : 0}`;
+      if (x.id === node.id || seen.has(key)) continue; seen.add(key);
+      const n = graph.nodes.find((g) => g.id === x.id);
+      const isReview = n?.kind === 'review' || n?.kind === 'codexReview';
+      if (isReview && x.found) continue;
+      if (n?.kind === 'agent') authors.add(x.id);
+      for (const p of rev.get(x.id) ?? []) st.push({ id: p, found: x.found || n?.kind === 'agent' });
     }
     if (!authors.size) return null;
     const atts = this.s.runAttempts(runId).filter((a) => a.role === 'author');
@@ -1115,7 +1120,7 @@ export class Engine {
         // 작성 작업이 시간 제한에 걸리면 복사본을 남겨 두어, 다음 시도가 같은 세션·같은 복사본에서 끝까지 한 뒤 검사를 거쳐 반영한다
         const keepCopy = done.timedOut && !done.cancelled && role === 'author';
         const discard = done.cancelled || done.timedOut;
-        const res = discard ? { applied: [], conflicts: [], blocked: [], skipped: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base);
+        const res = discard ? { applied: [], conflicts: [], blocked: [], skipped: [], same: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base);
         if (keepCopy) addEv('system', `시간 제한에 걸렸습니다. 지금까지의 작업(${changed.length}개 파일)은 원본에 반영하지 않고 복사본에 남겨 두었습니다. 다음 시도가 같은 세션·같은 복사본에서 이어 가고, 끝나서 검사를 통과해야 반영합니다.`, '');
         if (extend.length && !discard) addEv('system', `작업 범위 밖이지만 기획의 허용 경로 안이라 함께 반영했습니다(${extend.length}개): ${extend.slice(0, 5).join(', ')}`, '');
         attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];

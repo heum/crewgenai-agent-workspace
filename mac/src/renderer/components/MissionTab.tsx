@@ -537,7 +537,7 @@ const STRIP: MissionStage[] = ['plan', 'execute', 'codex', 'claude_review', 'jud
 function LoopStrip({ stage, live, cycle, maxCycles, working, run, agents }: { stage: MissionStage; live: boolean; cycle: number; maxCycles: number; working: WorkingItem[]; run: RunDetail | null; agents: Agent[] }) {
   const [big, setBig] = useState(false);
   // 이 사이클의 흐름에 Codex 리뷰 단계가 없으면(검증 방식: 닫을 때 한 번) 띠에서 빼고, 재검토 칸은 '검증'으로 보여 준다
-  const noCodex = !!run && !run.graph.nodes.some((n) => n.kind === 'codexReview');
+  const noCodex = !!run && stage !== 'codex' && !run.graph.nodes.some((n) => n.kind === 'codexReview');
   const strip = noCodex ? STRIP.filter((s) => s !== 'codex') : STRIP;
   const idx = strip.indexOf(stage);
   const end = stage === 'ask_user' || stage === 'done' || stage === 'stopped';

@@ -111,7 +111,7 @@ describe('오퍼레이터 루프', () => {
     expect(validate.docsOnly(['docs/a.md', 'tests/a.test.ts'])).toBe(false);
     expect(validate.docsOnly(['docs/result.json'])).toBe(false);
     expect(validate.docsOnly([])).toBe(false); // 바뀐 파일을 모르면 리뷰한다
-    for (const f of ['src/.tmp/live.ts', 'CMakeLists.txt', 'requirements.txt', 'data/prices.csv', 'docs/run.log', 'AGENTS.md', 'skills/x/SKILL.md', '.github/pull_request_template.md', '.claude/commands/a.md', 'docs/.tmp/a.md'])
+    for (const f of ['src/.tmp/live.ts', 'CMakeLists.txt', 'requirements.txt', 'data/prices.csv', 'docs/run.log', 'AGENTS.md', 'skills/x/SKILL.md', '.github/pull_request_template.md', '.claude/commands/a.md', 'docs/.tmp/a.md', 'src/handler.md', 'README.md', 'skills/x/references/instructions.md', 'docs/prompts/a.md'])
       expect(validate.docsOnly([f]), f).toBe(false);
     const { svc, p } = setup();
     const m0 = await svc.startMission(p.id, '문서를 정리하라');
@@ -132,6 +132,16 @@ describe('오퍼레이터 루프', () => {
     const other = { ...au, id: 'other-author' }; const ck = { ...au, id: 'other-check', kind: 'check' };
     const mixed = { nodes: [...r1.graph.nodes, other, ck], edges: [...r1.graph.edges, { id: 'x1', source: 'other-author', target: 'other-check', kind: 'next' }, { id: 'x2', source: 'other-check', target: rv.id, kind: 'next' }] };
     expect(eng.lightSkip(runId, mixed, rv, [])).toBeNull();
+    // 작성 단계 앞에 리뷰 없이 이어진 다른 작성 단계도 본다(A → B → 검증)
+    const chain = { nodes: [...r1.graph.nodes, other], edges: [...r1.graph.edges, { id: 'x3', source: 'other-author', target: au.id, kind: 'next' }] };
+    expect(eng.lightSkip(runId, chain, rv, [])).toBeNull();
+    // 실패 연결로 들어오는 작성 단계도 본다
+    const failIn = { nodes: [...r1.graph.nodes, other], edges: [...r1.graph.edges, { id: 'x4', source: 'other-author', target: rv.id, kind: 'fail' }] };
+    expect(eng.lightSkip(runId, failIn, rv, [])).toBeNull();
+    // 앞 작성 단계가 자기 리뷰를 거쳤으면 그 리뷰에서 멈춘다(A → 리뷰A → B → 검증)
+    const rvA = { ...rv, id: 'other-review' };
+    const reviewed = { nodes: [...r1.graph.nodes, other, rvA], edges: [...r1.graph.edges, { id: 'x5', source: 'other-author', target: 'other-review', kind: 'next' }, { id: 'x6', source: 'other-review', target: au.id, kind: 'next' }] };
+    expect(eng.lightSkip(runId, reviewed, rv, [])).not.toBeNull();
     svc.close();
   });
 
