@@ -195,6 +195,14 @@ describe('오퍼레이터 루프', () => {
     expect(verifyCoverage(dc, [...ok, { no: '1', pass: true, evidence: 'd' }])).toContain('겹친 조건 번호 1');
     expect(verifyCoverage(dc, [{ no: '1', pass: 'yes', evidence: 'a' }])).toContain('형식이 틀린 판정 1줄');
     expect(verifyCoverage('TODO 없이 작성', [{ no: '1', pass: true, evidence: 'a' }])).toBe(''); // 번호 목록이 아니면 줄 형식만 본다
+    const one = [{ no: '1', pass: true, evidence: 'a' }];
+    expect(verifyCoverage('1. 가 2. 나', one)).toContain('판정이 빠진 조건 2'); // 한 줄에 이어 쓴 번호
+    expect(verifyCoverage('① 가\n② 나', one)).toContain('판정이 빠진 조건 2');
+    expect(verifyCoverage('(1) 가\n(2) 나', one)).toContain('판정이 빠진 조건 2');
+    expect(verifyCoverage('① 가\n② 나', [{ no: '①', pass: true, evidence: 'a' }, { no: '②', pass: true, evidence: 'b' }])).toBe('');
+    expect(verifyCoverage('한 가지 조건', [...one, ...one])).toContain('겹친 조건 번호 1'); // 번호 목록이 아니어도 겹친 줄은 잡는다
+    expect(verifyCoverage('1. 가\n   1. 하위\n   2. 하위\n   3. 하위\n2. 나', [{ no: '1', pass: true, evidence: 'a' }, { no: '2', pass: true, evidence: 'b' }])).toBe(''); // 들여쓴 하위 목록은 조건으로 세지 않는다
+    expect(verifyCoverage(dc, [null])).toContain('형식이 틀린 판정 1줄');
   });
 
   it('검증 방식 codex: 승인이라고 해도 실패한 완료 조건이 있으면 재작업시키고, 조건 판정이 없으면 통과로 보지 않으며, 문서만 바뀐 작업도 검증한다', async () => {

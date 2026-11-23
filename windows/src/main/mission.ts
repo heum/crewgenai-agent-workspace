@@ -1558,7 +1558,12 @@ export class MissionRunner {
           } }
         // 이번 실행이 실패로 끝났으면 오퍼레이터가 '완료'라고 해도 완료로 받지 않는다(실패한 작업이 있는 채로 끝내지 않게).
         // 다만 실패한 업무를 이미 보류해 사용자 확인을 기다리는 중이면 예전처럼 완료 보고에 '보류한 업무 N건'으로 알린다(할 일 없이 사이클만 도는 것을 막음).
-        if (judge.decision === 'done' && this.d.engine.detail(run.id).run.status !== 'succeeded' && !(this.get(id).blockers?.length || this.get(id).denials?.length)) {
+        const failedNow = this.d.store.runNodes(run.id).filter((n) => n.status === 'failed' && n.failureReason);
+        const labelOf = new Map(graphNodes.map((n) => [n.id, n.label]));
+        const parkedNow = new Set((this.get(id).blockers ?? []).map((b) => failureSig(b.reason, b.step)));
+        // 이번 실행의 실패가 '전부' 보류돼 있을 때만 예외다(관계없는 보류 하나가 있다고 다른 실패를 덮지 않는다)
+        const allParked = failedNow.length > 0 && failedNow.every((n) => parkedNow.has(failureSig(n.failureReason.slice(0, 600), labelOf.get(n.nodeId) ?? n.nodeId)));
+        if (judge.decision === 'done' && this.d.engine.detail(run.id).run.status !== 'succeeded' && !allParked) {
           this.event(m, 'system', "이번 사이클의 실행이 실패로 끝나 오퍼레이터의 '완료' 판단을 받지 않고 계속 진행합니다.");
           judge.decision = 'continue';
         }

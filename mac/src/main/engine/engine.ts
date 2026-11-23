@@ -124,15 +124,44 @@ const REVIEW_BAR = [
  * 완료 조건이 "1. … 2. …" 같은 번호 목록(2개 이상)일 때만 번호를 맞춰 본다. 번호가 없는 글이면 줄 형식만 본다.
  */
 export function verifyCoverage(doneCriteria: string, rows: unknown[]): string {
-  const bad = rows.filter((c) => !c || typeof (c as { pass?: unknown }).pass !== 'boolean').length;
+  const bad = rows.filter((c) => !c || typeof c !== 'object' || typeof (c as { pass?: unknown }).pass !== 'boolean').length;
   if (bad) return `형식이 틀린 판정 ${bad}줄`;
-  const want = [...new Set([...String(doneCriteria ?? '').matchAll(/(?:^|\n)\s*(\d{1,2})[.)]\s/g)].map((m) => String(Number(m[1]))))];
-  if (want.length < 2) return '';
-  const got = rows.map((c) => (String((c as { no?: unknown }).no ?? '').match(/\d+/) ?? [''])[0]).map((x) => (x ? String(Number(x)) : ''));
+  const got = rows.map((c) => criterionNo(String((c as { no?: unknown }).no ?? '')));
   const dup = got.filter((x, i) => x && got.indexOf(x) !== i);
   if (dup.length) return `겹친 조건 번호 ${[...new Set(dup)].join(', ')}`;
+  const want = criteriaIds(String(doneCriteria ?? ''));
+  if (want.length < 2) return '';
   const missing = want.filter((w) => !got.includes(w));
   return missing.length ? `판정이 빠진 조건 ${missing.join(', ')}` : '';
+}
+const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+/** 판정 줄의 조건 번호: 맨 앞 숫자(또는 ①·(1) 같은 표기)를 숫자 문자열로 */
+function criterionNo(v: string): string {
+  const c = [...v].map((ch) => CIRCLED.indexOf(ch)).find((x) => x >= 0);
+  if (c !== undefined) return String(c + 1);
+  const m = v.match(/\d+/);
+  return m ? String(Number(m[0])) : '';
+}
+/**
+ * 완료 조건 글에서 최상위 조건 번호를 뽑는다. 줄 맨 앞(들여쓰기 없음)의 "1." "2)" "(3)" "④"만 센다 — 들여쓴 하위 목록은 세지 않는다.
+ * 줄 맨 앞 번호가 2개 미만이면, 한 줄에 "1. … 2. …"처럼 1부터 차례로 이어 쓴 번호를 센다.
+ */
+export function criteriaIds(text: string): string[] {
+  const top: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^(?:(\d{1,2})[.)]|\((\d{1,2})\))\s/) ?? null;
+    if (m) { top.push(String(Number(m[1] ?? m[2]))); continue; }
+    const c = CIRCLED.indexOf(line[0] ?? '');
+    if (c >= 0) top.push(String(c + 1));
+  }
+  const uniq = [...new Set(top)];
+  if (uniq.length >= 2) return uniq;
+  const inline: string[] = []; let next = 1;
+  for (const m of text.matchAll(/(?:^|\s)(?:(\d{1,2})[.)]|\((\d{1,2})\))\s|([①-⑳])/g)) {
+    const n = m[3] ? CIRCLED.indexOf(m[3]) + 1 : Number(m[1] ?? m[2]);
+    if (n === next) { inline.push(String(n)); next++; }
+  }
+  return inline.length >= 2 ? inline : uniq;
 }
 
 /** 지적 심각도 순서: P0·치명 → P1·높음 → 그 밖 (판단 단계에 잘려 전달돼도 심각한 것이 앞에 오게) */
@@ -1034,7 +1063,7 @@ export class Engine {
       }
       const safeRes = redactDeep(res);
       const md = [`# Codex 리뷰 — ${node.label} (방문 ${visit})`, '', `- 모델: ${cx.model} · 강도: ${cx.effort} · 읽기 전용`, `- 판정: ${safeRes.verdict}`, `- 요약: ${safeRes.summary}`, '',
-        ...(safeRes.criteria?.length ? ['| 완료 조건 | 판정 | 근거 |', '| --- | --- | --- |', ...safeRes.criteria.map((c) => `| ${String(c.no).replace(/\|/g, '/')} | ${c.pass ? '통과' : '실패'} | ${String(c.evidence).replace(/\|/g, '/').replace(/\n/g, ' ')} |`), ''] : []),
+        ...((Array.isArray(safeRes.criteria) ? safeRes.criteria : []).some((c) => c && typeof c === 'object') ? ['| 완료 조건 | 판정 | 근거 |', '| --- | --- | --- |', ...(safeRes.criteria ?? []).filter((c) => c && typeof c === 'object').map((c) => `| ${String(c.no).replace(/\|/g, '/')} | ${c.pass ? '통과' : '실패'} | ${String(c.evidence).replace(/\|/g, '/').replace(/\n/g, ' ')} |`), ''] : []),
         '| 심각도 | 파일 | 지적 | 제안 |', '| --- | --- | --- | --- |',
         ...safeRes.findings.map((f) => `| ${f.severity} | ${f.file.replace(/\|/g, '/')} | ${f.issue.replace(/\|/g, '/').replace(/\n/g, ' ')} | ${f.fix.replace(/\|/g, '/').replace(/\n/g, ' ')} |`),
         ...(safeRes.findings.length ? [] : ['| - | - | 지적 없음 | - |'])].join('\n');
