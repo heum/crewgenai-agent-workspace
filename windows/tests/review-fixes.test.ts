@@ -339,6 +339,22 @@ describe('격리 반영 규칙(Codex 4차)', () => {
     cleanupIsolated(dir);
   });
 
+  it('복사본에 새로 생긴 링크는 빼고 나머지를 반영하고, 이미 같은 내용으로 바뀐 원본은 충돌로 치지 않는다', () => {
+    const proj = tmpProject(); fs.mkdirSync(join(proj, 'docs'), { recursive: true });
+    fs.writeFileSync(join(proj, 'docs/a.md'), '원본');
+    const dir = isolatedDir(`t2b:${proj}`); const st = prepareIsolated(proj, dir, inDocs, false);
+    fs.writeFileSync(join(dir, 'docs/a.md'), '에이전트'); fs.writeFileSync(join(dir, 'docs/new.md'), '새 파일');
+    fs.mkdirSync(join(dir, 'docs/tmp'), { recursive: true }); fs.symlinkSync(join(dir, 'docs/new.md'), join(dir, 'docs/tmp/current'));
+    fs.writeFileSync(join(proj, 'docs/a.md'), '에이전트'); // 실행 중 원본이 같은 내용으로 바뀜
+    const r = applyIsolated(proj, dir, diffSnapshots(new Map(st.before), snapshot(dir)), st.base);
+    expect(r.conflicts).toEqual([]); expect(r.blocked).toEqual([]);
+    expect(r.skipped).toEqual(['docs/tmp/current']);
+    expect([...r.applied].sort()).toEqual(['docs/a.md', 'docs/new.md']);
+    expect(fs.readFileSync(join(proj, 'docs/new.md'), 'utf8')).toBe('새 파일');
+    expect(fs.existsSync(join(proj, 'docs/tmp/current'))).toBe(false);
+    cleanupIsolated(dir);
+  });
+
   it('파일→폴더 전환과 폴더 삭제를 반영한다', () => {
     const proj = tmpProject(); fs.mkdirSync(join(proj, 'docs/old'), { recursive: true });
     fs.writeFileSync(join(proj, 'docs/a.md'), '파일'); fs.writeFileSync(join(proj, 'docs/old/x.md'), 'x');

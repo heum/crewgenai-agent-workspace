@@ -1099,9 +1099,10 @@ export class Engine {
         // 사용자 취소는 반영하지 않는다. 작성 작업이 시간 제한에 걸린 경우는 그때까지 한 일(범위 검사를 통과한 것)을 반영하고 다음 시도가 같은 세션으로 이어 간다
         const keepCopy = done.timedOut && !done.cancelled && role === 'author'; // 시간 초과: 반영하지 않고 복사본을 남겨 다음 시도가 이어 감
         const discard = done.cancelled || done.timedOut || outside.length > 0;
-        const res = discard ? { applied: [], conflicts: [], blocked: [] } : applyIsolated(plan.folder, workDir, changed.filter(inOwn), iso.base);
+        const res = discard ? { applied: [], conflicts: [], blocked: [], skipped: [] } : applyIsolated(plan.folder, workDir, changed.filter(inOwn), iso.base);
         if (keepCopy) addEv('system', `시간 제한에 걸렸습니다. 지금까지의 작업(${changed.length}개 파일)은 원본에 반영하지 않고 복사본에 남겨 두었습니다. 다음 시도가 같은 세션·같은 복사본에서 이어 가고, 끝나서 검사를 통과해야 반영합니다.`, '');
         attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];
+        if (res.skipped.length) addEv('system', `복사본에 새로 생긴 링크 ${res.skipped.length}개는 원본에 만들지 않고 나머지만 반영했습니다: ${res.skipped.slice(0, 3).join(', ')}`, '');
         attempt.outOfScopeChanges = outside.map((f) => `${f} (격리 실행에서 차단, 반영 안 함)`);
         if (!keepCopy) cleanupIsolated(workDir);
       } else {

@@ -1951,7 +1951,7 @@ export class MissionRunner {
       // 예) 수정 경로 web/src에 시험 파일 web/tests/x.test.mjs를 산출물로 낸 경우. 허용 경로 밖이면 그대로 두어 검사에서 걸린다.
       for (const o of outs) if (!scope.some((sc) => within(o.path, sc)) && roots.some((w) => within(o.path, w))) scope.push(o.path);
       const x = 120 + i * 360;
-      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn, timeoutSec: full ? 1800 : 3600 });
+      const a = mk('agent', `${t.title} (${author.code} ${author.name})`, x, 130, { agentId: author.id, instructions: `${t.instructions}${refNote}\n\n[문서 기준] 근거 문서·할 일 목록에 적힌 내용 그대로 작업한다. 문서에 없거나 애매한 기능·결정은 추측해 만들거나 바꾸지 말고, 결과 보고의 '확인 필요'에 적는다.\n[막혔을 때] 지시대로 할 수 없어 더 진행할 수 없으면(명령이 거부됨, 서버가 뜨지 않음, 허용 경로 밖을 고쳐야 함) 기다리거나 같은 시도를 되풀이하지 말고, 한 일과 막힌 이유·필요한 것을 적고 바로 끝낸다.`, writeScope: scope, outputs: outs, doneCriteria: t.doneCriteria, skipInlineReview: true, inputs: refIn, timeoutSec: full ? 1800 : 3600 });
       const cx = mk('codexReview', `Codex 리뷰: ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, lightSkip: true });
       // 검증 방식 close(기본): 작업(기능) 하나에 다른 직원의 검증 한 번. 작업마다 붙던 Codex 리뷰는 넣지 않는다(지적이 다음 사이클의 일이 되는 것을 막음).
       const rv = full ? mk('review', `Claude 재검토: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 390, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true,
@@ -2032,6 +2032,7 @@ export class MissionRunner {
       '## 규칙',
       '- 작업마다 writeScope(수정 경로)는 자동 수정 허용 경로 안이어야 하고, 작업끼리 겹치지 않게 나눈다. outputs는 writeScope 안에 둔다.',
       `- agentCode는 위 목록의 쓰기 가능한 직원 코드만 쓴다. 각 작업 결과는 ${this.d.reviewMode?.() === 'full' ? 'Codex 리뷰와 다른 직원의 Claude 재검토를 거친다' : '작업을 닫을 때 다른 직원의 검증을 한 번 거친다(완료 조건별 통과·실패)'}.`,
+      '- 작업 지시에 적는 폴더 이름·명령·포트는 그 저장소의 스크립트·설정이 허용하는 형식인지 Read로 확인하고 쓴다(허용되지 않는 이름을 지시해 직원이 시작도 못 하고 시간을 쓰는 일을 만들지 않는다).',
       '- 한 기능은 한 직원이 끝까지 맡는다: 지난 사이클에 그 기능을 맡았던 직원에게 이어서 맡긴다(맥락이 이어지게). 한 기능을 여러 직원에게 나누지 않는다.',
       '- 동시에 진행하는 작업은 서로 독립인 것만 둔다: 저장소나 폴더가 겹치지 않고, 한 작업이 다른 작업의 결과를 기다리지 않는다. 순서 의존이 있으면(예: 측정 → 그 결과로 문서) 한 작업으로 합쳐 한 직원에게 맡긴다.',
       '- doneCriteria는 검증 직원이 통과·실패를 낼 수 있게 번호를 붙여 3~7개로 쓴다. 화면 기능은 "어느 화면에서 무엇을 누르면 무엇이 보인다"로 쓰고, 그 화면 사진 파일을 outputs에 넣는다(작성 직원이 떠 있는 서버에서 직접 눌러 찍는다).',

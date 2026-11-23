@@ -1111,10 +1111,11 @@ export class Engine {
         // 작성 작업이 시간 제한에 걸리면 복사본을 남겨 두어, 다음 시도가 같은 세션·같은 복사본에서 끝까지 한 뒤 검사를 거쳐 반영한다
         const keepCopy = done.timedOut && !done.cancelled && role === 'author';
         const discard = done.cancelled || done.timedOut;
-        const res = discard ? { applied: [], conflicts: [], blocked: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base);
+        const res = discard ? { applied: [], conflicts: [], blocked: [], skipped: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base);
         if (keepCopy) addEv('system', `시간 제한에 걸렸습니다. 지금까지의 작업(${changed.length}개 파일)은 원본에 반영하지 않고 복사본에 남겨 두었습니다. 다음 시도가 같은 세션·같은 복사본에서 이어 가고, 끝나서 검사를 통과해야 반영합니다.`, '');
         if (extend.length && !discard) addEv('system', `작업 범위 밖이지만 기획의 허용 경로 안이라 함께 반영했습니다(${extend.length}개): ${extend.slice(0, 5).join(', ')}`, '');
         attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];
+        if (res.skipped.length) addEv('system', `복사본에 새로 생긴 링크 ${res.skipped.length}개는 원본에 만들지 않고 나머지만 반영했습니다: ${res.skipped.slice(0, 3).join(', ')}`, '');
         attempt.outOfScopeChanges = outside.map((f) => `${f} (${roots.some((w) => within(f, w)) ? '다른 작업이 맡은 곳이거나 비밀값 파일' : '기획의 허용 경로 밖'}이라 반영 안 함)`);
         if (!keepCopy) cleanupIsolated(workDir);
       } else {
