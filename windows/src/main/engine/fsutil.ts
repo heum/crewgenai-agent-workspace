@@ -173,10 +173,12 @@ function deepestExisting(p: string): string { let cur = p; while (!existsSync(cu
  *   원본에 이미 있는 파일·폴더를 링크로 바꿨거나, 복사본 경로 중간에 링크가 끼어 있으면 예전처럼 전부 막는다(링크를 따라가 원본을 덮어쓰거나 지우지 않게).
  * - 원본이 바뀌었지만 지금 내용이 복사본과 같은 파일: 이미 같은 내용이라 쓸 것이 없다. 충돌로도, 반영한 파일로도 세지 않는다(same) —
  *   앱이 쓰지 않은 파일을 직원 이름으로 커밋하지 않게.
+ * - mustApply를 주면: 충돌한 파일이 꼭 반영해야 하는 것(작업의 결과물)이 아니면 그 파일만 원본 그대로 두고(left) 나머지를 반영한다.
+ *   예) 떠 있는 개발 서버가 실행 중에 스스로 고쳐 쓴 설정 파일 하나 때문에 측정 결과 전체를 버리지 않게. 결과물이 충돌하면 전부 반영하지 않는다.
  */
-export function applyIsolated(project: string, dir: string, changed: string[], base: Record<string, string>): { applied: string[]; conflicts: string[]; blocked: string[]; skipped: string[]; same: string[] } {
+export function applyIsolated(project: string, dir: string, changed: string[], base: Record<string, string>, mustApply?: (rel: string) => boolean): { applied: string[]; conflicts: string[]; blocked: string[]; skipped: string[]; same: string[]; left: string[] } {
   const projReal = realpathSync(project);
-  const conflicts: string[] = []; const blocked: string[] = []; const skipped: string[] = []; const same: string[] = [];
+  const conflicts: string[] = []; const blocked: string[] = []; const skipped: string[] = []; const same: string[] = []; const left: string[] = [];
   const plan: { rel: string; write: boolean }[] = [];
   for (const rel of changed) {
     const src = join(dir, rel); const dst = join(project, rel);
@@ -195,11 +197,12 @@ export function applyIsolated(project: string, dir: string, changed: string[], b
     const nowSha = d ? (d.isFile() ? fileSha(dst) : 'DIR') : '';
     if (nowSha !== (base[rel] ?? '')) {
       if ((!d && !sl) || (d?.isFile() && sl?.isFile() && fileSha(src) === nowSha)) { same.push(rel); continue; } // 이미 같은 내용
+      if (mustApply && !mustApply(rel)) { left.push(rel); continue; } // 결과물이 아닌 파일의 충돌: 원본 그대로 둔다
       conflicts.push(rel); continue;
     }
     plan.push({ rel, write: !!sl?.isFile() });
   }
-  if (conflicts.length || blocked.length) return { applied: [], conflicts, blocked, skipped, same };
+  if (conflicts.length || blocked.length) return { applied: [], conflicts, blocked, skipped, same, left };
   // 삭제 먼저(파일→폴더 전환 대비), 비워진 폴더도 복사본에 없으면 지운다
   for (const x of plan.filter((y) => !y.write)) {
     const dst = join(project, x.rel);
@@ -211,7 +214,7 @@ export function applyIsolated(project: string, dir: string, changed: string[], b
     }
   }
   for (const x of plan.filter((y) => y.write)) { const dst = join(project, x.rel); mkdirSync(_dirname(dst), { recursive: true }); copyFileSync(join(dir, x.rel), dst); }
-  return { applied: plan.map((x) => x.rel), conflicts: [], blocked: [], skipped, same };
+  return { applied: plan.map((x) => x.rel), conflicts: [], blocked: [], skipped, same, left };
 }
 
 export function cleanupIsolated(dir: string) { for (const p of [dir, stateFile(dir)]) { try { rmSync(p, { recursive: true, force: true }); } catch { /* 무시 */ } } }

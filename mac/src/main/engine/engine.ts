@@ -1099,7 +1099,7 @@ export class Engine {
         if (ign.size) { changed = changed.filter((f) => !ign.has(f)); addEv('system', `git이 무시하는 빌드·시험 산출물 ${ign.size}개는 반영하지 않았습니다.`, ''); }
       }
       if (snapshotTruncated(after)) addEv('system', `변경 감지 대상 파일이 너무 많아 일부만 비교했습니다(최대 ${SNAPSHOT_LIMIT}개). 연결 폴더를 좁히거나 큰 폴더를 정리하세요.`, '');
-      let conflicts: string[] = [];
+      let conflicts: string[] = []; let left: string[] = [];
       // 다른 작업이 실행 중이어도 검사를 면제하지 않는다. 다른 작업의 수정 범위(실제 경로)에 속한 변경만 제외한다.
       const base = realFolder(plan.folder);
       // 지금 실행 중이거나 이 시도 도중에 끝난 다른 쓰기 작업의 범위(실행 구간이 겹친 작업)
@@ -1120,7 +1120,10 @@ export class Engine {
         // 작성 작업이 시간 제한에 걸리면 복사본을 남겨 두어, 다음 시도가 같은 세션·같은 복사본에서 끝까지 한 뒤 검사를 거쳐 반영한다
         const keepCopy = done.timedOut && !done.cancelled && role === 'author';
         const discard = done.cancelled || done.timedOut;
-        const res = discard ? { applied: [], conflicts: [], blocked: [], skipped: [], same: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base);
+        const res = discard ? { applied: [], conflicts: [], blocked: [], skipped: [], same: [], left: [] } : applyIsolated(plan.folder, workDir, [...changed.filter(inOwn), ...extend], iso.base,
+          // 작성 작업에 결과물이 정해져 있으면: 결과물이 아닌 파일의 충돌은 그 파일만 원본 그대로 두고 나머지를 반영한다
+          role === 'author' && node.outputs.length ? (rel) => node.outputs.some((o) => within(rel, normRel(o.path))) : undefined);
+        left = res.left;
         if (keepCopy) addEv('system', `시간 제한에 걸렸습니다. 지금까지의 작업(${changed.length}개 파일)은 원본에 반영하지 않고 복사본에 남겨 두었습니다. 다음 시도가 같은 세션·같은 복사본에서 이어 가고, 끝나서 검사를 통과해야 반영합니다.`, '');
         if (extend.length && !discard) addEv('system', `작업 범위 밖이지만 기획의 허용 경로 안이라 함께 반영했습니다(${extend.length}개): ${extend.slice(0, 5).join(', ')}`, '');
         attempt.changedFiles = res.applied; conflicts = [...res.conflicts, ...res.blocked];
@@ -1148,6 +1151,10 @@ export class Engine {
         if (r.structured) this.setMeta(runId, `structured:${attempt.id}`, JSON.stringify(redactDeep(r.structured)));
       }
       attempt.acceptance = this.acceptance(plan, role === 'author' ? node : { ...node, outputs: [] }, attempt, done.code, r, done.timedOut || done.cancelled, attempt.outOfScopeChanges);
+      if (left.length) {
+        addEv('system', `실행 중 원본이 바뀐 파일 ${left.length}개(이 작업의 결과물 아님)는 원본 그대로 두고 나머지를 반영했습니다: ${left.slice(0, 5).join(', ')}`, '');
+        attempt.acceptance.checks.push({ name: '격리 실행 반영(일부 제외)', ok: true, detail: `실행 중 원본이 바뀌어 원본 그대로 둔 파일(결과물 아님): ${left.slice(0, 10).join(', ')}` });
+      }
       if (conflicts.length) { attempt.acceptance.checks.push({ name: '격리 실행 반영', ok: false, detail: `실행 중 원본이 바뀌어 반영하지 않은 파일: ${conflicts.join(', ')}` }); attempt.acceptance.ok = false; }
       if (done.cancelled || ctl.abort.signal.aborted) { attempt.status = 'cancelled'; attempt.error = '취소로 프로세스를 종료했습니다.'; }
       else if (done.timedOut) { attempt.status = 'timeout'; attempt.error = `시간 제한(${timeout}초)을 넘어 프로세스를 종료했습니다.`; }

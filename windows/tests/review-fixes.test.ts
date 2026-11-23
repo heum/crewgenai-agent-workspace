@@ -371,6 +371,30 @@ describe('격리 반영 규칙(Codex 4차)', () => {
     cleanupIsolated(dir);
   });
 
+  it('결과물이 아닌 파일의 충돌은 그 파일만 원본 그대로 두고 나머지를 반영한다(결과물이 충돌하면 전부 반영하지 않음)', () => {
+    const proj = tmpProject(); fs.mkdirSync(join(proj, 'docs/out'), { recursive: true });
+    fs.writeFileSync(join(proj, 'docs/config.md'), '원본 설정');
+    const must = (rel: string) => rel.startsWith('docs/out/');
+    const dir = isolatedDir(`t2d:${proj}`); const st = prepareIsolated(proj, dir, inDocs, false);
+    fs.writeFileSync(join(dir, 'docs/config.md'), '복사본에서 바뀐 설정'); fs.writeFileSync(join(dir, 'docs/out/result.md'), '측정 결과');
+    fs.writeFileSync(join(proj, 'docs/config.md'), '서버가 고쳐 쓴 설정'); // 실행 중 원본이 다르게 바뀜
+    const changed = diffSnapshots(new Map(st.before), snapshot(dir));
+    const r = applyIsolated(proj, dir, changed, st.base, must);
+    expect(r.conflicts).toEqual([]); expect(r.left).toEqual(['docs/config.md']); expect(r.applied).toEqual(['docs/out/result.md']);
+    expect(fs.readFileSync(join(proj, 'docs/config.md'), 'utf8')).toBe('서버가 고쳐 쓴 설정');
+    expect(fs.readFileSync(join(proj, 'docs/out/result.md'), 'utf8')).toBe('측정 결과');
+    // 결과물 자체가 충돌하면 예전처럼 아무것도 반영하지 않는다
+    fs.writeFileSync(join(dir, 'docs/out/result.md'), '새 측정'); fs.writeFileSync(join(dir, 'docs/out/more.md'), '추가');
+    fs.writeFileSync(join(proj, 'docs/out/result.md'), '사용자가 고침');
+    const r2 = applyIsolated(proj, dir, ['docs/out/result.md', 'docs/out/more.md'], { ...st.base, 'docs/out/result.md': 'old' }, must);
+    expect(r2.conflicts).toEqual(['docs/out/result.md']); expect(r2.applied).toEqual([]);
+    expect(fs.existsSync(join(proj, 'docs/out/more.md'))).toBe(false);
+    // mustApply를 주지 않으면 어떤 충돌이든 전부 반영하지 않는다
+    const r3 = applyIsolated(proj, dir, ['docs/config.md', 'docs/out/more.md'], st.base);
+    expect(r3.conflicts).toEqual(['docs/config.md']); expect(r3.applied).toEqual([]);
+    cleanupIsolated(dir);
+  });
+
   it('파일→폴더 전환과 폴더 삭제를 반영한다', () => {
     const proj = tmpProject(); fs.mkdirSync(join(proj, 'docs/old'), { recursive: true });
     fs.writeFileSync(join(proj, 'docs/a.md'), '파일'); fs.writeFileSync(join(proj, 'docs/old/x.md'), 'x');
