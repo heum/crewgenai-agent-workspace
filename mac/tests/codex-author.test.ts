@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { codexAuthorArgs, codexAuthorModel, interpretCodexLine } from '../src/main/cli/codexCli';
+import { codexSkillNote } from '../src/main/engine/engine';
 import { gitInit, mkService, plan, tmpProject } from './helpers';
 
 async function waitMission(svc: ReturnType<typeof mkService>, id: string, statuses: string[], ms = 60000) {
@@ -25,6 +26,7 @@ describe('Codex 작성자', () => {
     const sink = { thread: null, usage: null, last: '', failed: '' };
     interpretCodexLine('{"type":"item.completed","item":{"type":"agent_message","text":"끝"}}', sink);
     interpretCodexLine('{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":2}}', sink);
+    expect(codexSkillNote(['superpowers:test-driven-development'], '/b')).toContain('/b/superpowers/skills/test-driven-development/SKILL.md'); // 스킬 파일 경로를 정확히 준다
     expect(sink.last).toBe('끝'); expect(sink.usage).toEqual({ input_tokens: 5, output_tokens: 2 });
   });
 

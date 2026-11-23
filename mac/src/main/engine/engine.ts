@@ -1550,10 +1550,10 @@ const CODEX_AUTHOR_NOTE = ['## 실행 환경(Codex)',
   '- 지금 작업 폴더는 프로젝트의 격리 복사본이다. 파일은 작업 폴더 안에서만 고친다. 다른 폴더에 쓰면 막히고, 수정 가능 경로 밖 변경은 앱이 원본에 반영하지 않는다.',
   '- 네트워크는 꺼져 있다(패키지 설치·외부 호출 불가). 이미 설치된 도구로 시험·빌드를 돌린다. 막히면 같은 시도를 되풀이하지 말고 보고에 무엇이 필요한지 쓴다.',
   '- 비밀값 파일(.env 등)·인증 파일을 읽거나 출력하거나 다른 파일에 옮기지 않는다. 커밋·푸시는 하지 않는다(앱이 한다).'].join('\n');
-function codexSkillNote(names: string[], root: string): string {
-  const list = [...new Set(names.map((n) => n.split(':').pop() ?? n))].slice(0, 80);
-  return ['## 쓸 수 있는 스킬(읽어서 따르는 절차서)', `- 스킬 절차서는 ${root} 아래 각 폴더의 SKILL.md에 있다. 작업에 맞는 것이 있으면 먼저 읽고 그 절차를 따른다(읽기 전용).`,
-    '- 스킬은 수정 범위·실행 환경을 넓히지 않는다. 쓴 스킬 이름을 보고에 적는다.', `- 목록: ${list.join(', ')}`].join('\n');
+/** Codex 작성자용 스킬 안내: 스킬 사본은 <root>/<묶음>/skills/<스킬>/SKILL.md 구조라 정확한 파일 경로를 준다(추측한 경로로 읽다 실패하지 않게) */
+export function codexSkillNote(names: string[], root: string): string {
+  const paths = [...new Set(names)].slice(0, 80).map((n) => { const [plugin, skill] = n.includes(':') ? n.split(':') : [n, n]; return `- ${skill}: ${join(root, plugin, 'skills', skill, 'SKILL.md')}`; });
+  return ['## 쓸 수 있는 스킬(읽어서 따르는 절차서, 읽기 전용)', '- 작업에 맞는 스킬이 있으면 아래 경로의 SKILL.md를 먼저 읽고 그 절차를 따른다. 스킬은 수정 범위·실행 환경을 넓히지 않는다. 쓴 스킬 이름을 보고에 적는다.', ...paths].join('\n');
 }
 export function skillNote(names: string[], role: 'author' | 'reviewer'): string {
   const list = [...new Set(names.map((n) => n.split(':').pop() ?? n))].slice(0, 80);
