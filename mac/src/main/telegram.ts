@@ -504,6 +504,8 @@ export class TelegramBridge {
   private pending(missionId?: string): PendingDecision[] { return this.d.svc.pendingDecisions().filter((x) => (!missionId || x.missionId === missionId) && this.wantsId(x.projectId, x.missionId)); }
   private wantsId(projectId: string, missionId: string) { const s = this.s(); return (!s.projects || s.projects.includes(projectId)) && (!s.missions || s.missions.includes(missionId)); }
   private itemMsg(it: PendingDecision): Out {
+    // 결과 검토 카드는 결정과 고르는 버튼까지 한 메시지로 보낸다('결과 검토 열기'를 따로 눌러야만 보이던 것)
+    if (it.kind === 'checkpoint') { try { const m = this.d.svc.missions.get(it.missionId); if (m.checkpoint) return this.checkpointMsg(m); } catch { /* 아래 기본 카드 */ } }
     const v = decisionVersion(it);
     const rec = it.choices.find((c) => c.recommended);
     const lines = [
@@ -540,6 +542,12 @@ export class TelegramBridge {
   private fillRec(): number {
     let n = 0;
     for (const it of this.pending()) {
+      // 결과 검토 카드의 결정도 추천으로 채운다(적용은 여전히 '선택한 내용 적용'을 눌러야 함)
+      if (it.kind === 'checkpoint') {
+        let c: Mission['checkpoint'] = null; try { c = this.d.svc.missions.get(it.missionId).checkpoint ?? null; } catch { c = null; }
+        c?.decisions.forEach((d, qi) => { const k = `cpd|${it.missionId}|${c!.at}|${qi}`; const r = d.choices.find((x) => x.recommended); if (r && !this.db().prepare('SELECT 1 FROM tg_draft WHERE item=?').get(k)) { this.draft(k, r.label, '', 'cp'); n++; } });
+        continue;
+      }
       if (it.kind !== 'question' && it.kind !== 'gap') continue; // 권한 허용·커밋은 추천으로 채우지 않음(직접 골라야 함)
       if (this.db().prepare('SELECT 1 FROM tg_draft WHERE item=?').get(it.key)) continue;
       const r = it.choices.find((c) => c.recommended); if (!r) continue;

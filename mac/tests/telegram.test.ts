@@ -306,6 +306,30 @@ describe('텔레그램 연동', () => {
     b2.close(); await svc.missions.stop(m0.id); svc.close();
   }, 90000);
 
+  it('확인함의 결과 검토 카드는 결정과 고르는 버튼을 함께 보내고, 추천안 모두 선택에 검토 카드 결정도 들어간다(적용 전에는 반영 안 됨)', async () => {
+    const { tg, svc, p, br } = await setup();
+    await br.setToken(TOKEN); br.setOptions({ enabled: true });
+    await until(() => br.status().state === 'connected');
+    const code = br.newLinkCode().settings.linkCode!.code;
+    tg.msg(ME, `/start ${code}`);
+    await until(() => br.status().settings.candidate?.userId === ME.id);
+    await br.confirmLink(true, ME.id);
+    const m0 = await svc.startMission(p.id, '[[mock:hang]] 문서를 정리하라');
+    await until(() => svc.missions.get(m0.id).status === 'running');
+    const { buildCheckpoint } = await import('../src/main/mission');
+    const cp = buildCheckpoint({ title: '카드', decisions: [{ question: '시연 서버 접속을 허용할까요?', choices: [{ label: '허용', effect: '', recommended: true, why: '' }, { label: '안 함', effect: '', recommended: false, why: '' }] }, { question: '오류 문구는 가짜 응답으로 닫을까요?', choices: [{ label: '닫기', effect: '', recommended: true, why: '' }] }] }, 1, [], [], [], 'ready', 'x');
+    set(svc, m0.id, { checkpoint: { ...cp, blocking: true } });
+    tg.msg(ME, '/pending');
+    await until(() => tg.texts().some((t) => t.includes('시연 서버 접속을 허용할까요?')));
+    expect(() => tg.button(/결정1: ⭐ 허용/)).not.toThrow(); // 카드 안에서 바로 고를 수 있다
+    tg.press(ME, tg.button(/추천안 모두 선택/));
+    await until(() => tg.texts().some((t) => t.includes('[검토 카드] 오류 문구는')));
+    expect(svc.missions.get(m0.id).decisions ?? []).toHaveLength(0); // 고르기만 해서는 반영되지 않는다
+    tg.press(ME, tg.button(/선택한 내용 적용/));
+    await until(() => (svc.missions.get(m0.id).decisions ?? []).length === 2);
+    br.close(); await svc.missions.stop(m0.id); svc.close();
+  }, 90000);
+
   it('변경 상세: 비밀값 파일만 든 요청이면 저장소 전체 차이를 보내지 않고, 보내는 차이에서도 비밀값 줄은 뺀다', async () => {
     const { svc, p, dir } = await setup();
     const m0 = await svc.startMission(p.id, '[[mock:hang]] 문서를 정리하라');
