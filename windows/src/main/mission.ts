@@ -1485,7 +1485,7 @@ export class MissionRunner {
           const labels = new Map(graphNodes.map((n) => [n.id, n.label]));
           const answered = new Set(this.get(id).resolvedFail ?? []); // 이 실행 도중 사용자가 이미 '다시 시도'를 고른 실패는 다시 보류하지 않는다
           const items = failed.map((n) => ({ step: labels.get(n.nodeId) ?? n.nodeId, reason: n.failureReason.slice(0, 600) })).filter((x) => !answered.has(`${run.id}|fail|${failureSig(x.reason, x.step)}`));
-          if (fin.status === 'failed' && !items.length && fin.reason) items.push({ step: '실행', reason: fin.reason.slice(0, 600) });
+          if (fin.status === 'failed' && !failed.length && fin.reason) items.push({ step: '실행', reason: fin.reason.slice(0, 600) }); // 사용자가 답한 실패를 걸러 비게 된 경우에는 다시 만들지 않는다
           const prev = this.get(id).failSigs ?? [];
           const blockers: MissionBlocker[] = items.flatMap((x): MissionBlocker[] => x.reason.startsWith(BLOCKED_PREFIX) ? [{ ...x, kind: 'needs_user' as const }] : ENV_FAILURE.test(x.reason) ? [{ ...x, kind: 'environment' as const }] : prev.includes(failureSig(x.reason, x.step)) ? [{ ...x, kind: 'repeated' as const }] : []);
           if (blockers.length) {
@@ -1965,7 +1965,7 @@ export class MissionRunner {
         : mk('review', `검증: ${t.title} (${reviewer.code} ${reviewer.name})`, x, 260, { agentId: reviewer.id, doneCriteria: t.doneCriteria, lightSkip: true, inputs: outs.map((o) => o.path),
           instructions: '이 작업(기능)을 닫는 검증이다. 시작 전에 정한 완료 조건을 하나씩 근거와 직접 대조해 통과·실패를 낸다. 근거는 직접 연 것만 쓴다: 시험 결과 파일, 화면 사진 파일(Read로 열어 본다), 바뀐 코드. 작성자의 보고 문장은 근거가 아니다. 통과하지 못한 완료 조건이 있거나 P0·P1(정확성·보안·요구 위반) 결함이 있을 때만 changes_requested를 내고, issues에 어느 조건이 왜 실패인지와 고칠 것을 쓴다. 다듬기·표현·있으면 좋은 추가 검증은 followUps에 적고 승인한다. summary 첫 줄에 "완료 조건 N개 중 M개 통과"를 쓴다.' });
       // 검증 방식 codex: 작업의 통과·재작업을 Codex가 정한다(완료 조건별 통과·실패). Claude 검증 호출을 작업마다 하지 않는다.
-      const cxv = codexMode ? mk('codexReview', `검증(Codex): ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, lightSkip: true, verify: true }) : null;
+      const cxv = codexMode ? mk('codexReview', `검증(Codex): ${t.title}`, x, 260, { inputs: outs.map((o) => o.path), doneCriteria: t.doneCriteria, timeoutSec: 1800, verify: true }) : null; // 이 작업의 유일한 검증이므로 문서만 바뀌어도 건너뛰지 않는다
       const gate = cxv ?? rv; // 이 단계가 통과해야 작업이 끝난다
       if (cxv) { nodes.push(a, cxv); e(a, cxv); }
       else if (full) { nodes.push(a, cx, rv); e(a, cx); e(cx, rv); } else { nodes.push(a, rv); e(a, rv); }
@@ -2473,7 +2473,7 @@ export function collectStaffAsks(texts: string[]): string[] {
   const out: string[] = []; const seen = new Set<string>();
   for (const t of texts) for (const raw of String(t ?? '').split(/\r?\n/)) {
     // 문장 단위로 본다: "결정이 필요하지 않습니다" 같은 부정문은 빼되, 같은 줄의 다른 문장에 있는 요청은 살린다
-    const asks = raw.split(/(?<=[.!?。])\s+/).some((c) => /결정\s*(이|은|을|도)?\s*필요|결정해\s*주|정해\s*주세요|정해야\s*합니다/.test(c) && !/필요\s*(하지|치)\s*않|필요\s*(가\s*)?없|필요하지는\s*않/.test(c));
+    const asks = raw.split(/(?<=[.!?。])\s*|,\s*|지만\s*|으나\s*|는데\s*|하고\s+/).some((c) => /결정\s*(이|은|을|도)?\s*필요|결정해\s*주|정해\s*주세요|정해야\s*합니다/.test(c) && !/필요\s*(하지|치)\s*않|필요\s*(가\s*)?없|필요하지는\s*않/.test(c));
     if (!asks) continue;
     const line = raw.replace(/^[\s>*-]+/, '').replace(/^\[후속\]\s*/, '').replace(/^\*\*?결정 필요:?\*\*?:?\s*/, '').replace(/^결정 필요:\s*/, '').trim().slice(0, 300);
     const key = line.replace(/[\s.·,:]/g, '').slice(0, 40);

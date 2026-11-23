@@ -22,6 +22,8 @@ process.stdin.on('end', () => {
   if (input.includes('# Codex 검증')) {
     const has = (w) => targets.some((t) => { const p = path.resolve(process.cwd(), t); return fs.existsSync(p) && fs.statSync(p).isFile() && fs.readFileSync(p, 'utf8').includes(w); });
     if (has('BLOCKED-ENV')) res = { verdict: 'changes_requested', summary: '완료 조건 1개 중 0개 통과', criteria: [{ no: '1', pass: false, evidence: '기록 0건' }], findings: [], blocked: true, needs: '시연 DB를 쥐고 있는 예전 서버를 정리해야 합니다(팀장 결정).' };
+    else if (has('NO-CRITERIA')) res = { verdict: 'approve', summary: '문제 없음', criteria: [], findings: [], blocked: false, needs: '' };
+    else if (has('APPROVE-BUT-FAILED')) res = { verdict: 'approve', summary: '완료 조건 1개 중 0개 통과', criteria: [{ no: '1', pass: false, evidence: '시험 결과 없음' }], findings: [], blocked: false, needs: '' };
     else if (has('P2-ONLY')) res = { verdict: 'changes_requested', summary: '완료 조건 1개 중 1개 통과', criteria: [{ no: '1', pass: true, evidence: '파일 확인' }], findings: [{ severity: 'P2', file: targets[0] || '', issue: '표현을 다듬으면 좋습니다.', fix: '다음에' }], blocked: false, needs: '' };
     else res = { verdict: findings.length ? 'changes_requested' : 'approve', summary: findings.length ? '완료 조건 1개 중 0개 통과' : '완료 조건 1개 중 1개 통과', criteria: [{ no: '1', pass: !findings.length, evidence: findings.length ? 'TODO가 남아 있음' : 'TODO 없음' }], findings, blocked: false, needs: '' };
   }

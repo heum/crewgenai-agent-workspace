@@ -201,7 +201,7 @@ async function main() {
     const needCmd = (user.match(/\[\[mock:needs:([^\]]+)\]\]/) || [])[1];
     const plan = ask ? { summary: '정보 부족', question: '어느 문서를 기준으로 할까요?', tasks: [] } : {
       summary: `사이클 ${cyc} 작업 1개`, question: '',
-      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:blocked-env]]') ? '[[mock:blocked-env]]' : ''} ${user.includes('[[mock:p2-only]]') ? '[[mock:p2-only]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
+      tasks: [{ title: `문서 작성 ${cyc}`, agentCode: code, instructions: `${mdir}/cycle-${cyc}.md를 작성한다. ${user.includes('[[mock:todo-first]]') ? '[[mock:todo-first]]' : ''} ${user.includes('[[mock:code]]') ? '[[mock:code]]' : ''} ${user.includes('[[mock:blocked-env]]') ? '[[mock:blocked-env]]' : ''} ${user.includes('[[mock:p2-only]]') ? '[[mock:p2-only]]' : ''} ${user.includes('[[mock:no-criteria]]') ? '[[mock:no-criteria]]' : ''} ${user.includes('[[mock:approve-but-failed]]') ? '[[mock:approve-but-failed]]' : ''} ${user.includes('[[mock:hang]]') ? '[[mock:hang]]' : ''} ${(user.match(/\[\[mock:limit-once:([\w-]+)\]\]/) || [])[1] ? `[[mock:limit-once:${user.match(/\[\[mock:limit-once:([\w-]+)\]\]/)[1]}-agent]]` : ''} ${(user.match(/\[\[mock:deny:[^\]]+\]\]/g) || []).join(' ')}`,
         writeScope: [mdir], outputs: [{ path: `${mdir}/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: 'TODO 없이 작성', checkCommand: user.includes('[[mock:check-sh]]') ? ['sh', '-c', 'touch pwned.txt'] : [],
         ...(needCmd ? { needs: { commands: [needCmd], readPaths: [] } } : {}) }] };
     if (!ask && user.includes('[[mock:two-tasks]]')) plan.tasks.push({ title: `보조 문서 ${cyc}`, agentCode: code, instructions: `${mdir}-b/cycle-${cyc}.md를 작성한다.`, writeScope: [`${mdir}-b`], outputs: [{ path: `${mdir}-b/cycle-${cyc}.md`, format: 'markdown' }], doneCriteria: '작성', checkCommand: [] });
@@ -285,7 +285,7 @@ async function main() {
     let body;
     if (o.format === 'json') body = JSON.stringify({ status: 'done', fixed: rework, todo: todo ? 'TODO' : undefined }, null, 2);
     else if (o.format === 'html') body = `<!doctype html><html><body><h1>모의 산출물</h1><p>${todo ? 'TODO' : '완료'}</p></body></html>`;
-    else body = `# 모의 산출물\n\n${rework ? 'FIXED: 재작업 요청을 반영했습니다.\n' : ''}${todo ? 'TODO: 남은 작업\n' : '내용 작성 완료\n'}${prompt.includes('[[mock:blocked-env]]') ? 'BLOCKED-ENV: 서버가 기록을 저장하지 못함\n' : ''}${prompt.includes('[[mock:p2-only]]') ? 'P2-ONLY\n' : ''}`;
+    else body = `# 모의 산출물\n\n${rework ? 'FIXED: 재작업 요청을 반영했습니다.\n' : ''}${todo ? 'TODO: 남은 작업\n' : '내용 작성 완료\n'}${prompt.includes('[[mock:blocked-env]]') ? 'BLOCKED-ENV: 서버가 기록을 저장하지 못함\n' : ''}${prompt.includes('[[mock:p2-only]]') ? 'P2-ONLY\n' : ''}${prompt.includes('[[mock:no-criteria]]') ? 'NO-CRITERIA\n' : ''}${prompt.includes('[[mock:approve-but-failed]]') && !rework ? 'APPROVE-BUT-FAILED\n' : ''}`;
     fs.mkdirSync(path.dirname(path.resolve(cwd, o.rel)), { recursive: true });
     fs.writeFileSync(path.resolve(cwd, o.rel), body);
     if (prompt.includes('[[mock:code]]') && editAllowed(`${o.rel}.mjs`)) fs.writeFileSync(path.resolve(cwd, `${o.rel}.mjs`), `export const done = ${!todo};\n`);

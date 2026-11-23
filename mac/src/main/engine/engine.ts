@@ -604,9 +604,11 @@ export class Engine {
     const preds = graph.edges.filter((e) => e.target === node.id && ['next', 'true', 'false'].includes(e.kind)).map((e) => e.source);
     const sat = (p: string) => (state.route[p] ?? []).includes(node.id) && !['stale', 'waiting', undefined].includes(state.records[p]?.status as RecStatus);
     const enteredByFail = !!state.feedback[node.id] && state.records[node.id]?.status !== 'ok';
+    // 이미 끝난 사이클 리뷰는 같은 진행 상태에서 다시 실행하지 않는다(앞 작업이 다시 돌면 기록이 낡은 것으로 바뀌어 다시 돈다)
+    if (node.cycleReview && state.records[node.id]?.status === 'ok') return { route: { [node.id]: [] }, records: {} };
     if (preds.length > 1 && !enteredByFail) {
       // 사이클 리뷰 단계는 앞의 작업이 '모두 끝났을 때'(통과했거나, 실패로 끝나 더 진행할 수 없을 때) 시작한다
-      const settled = (p: string) => sat(p) || (!!node.cycleReview && this.chainDead(runId, graph, p));
+      const settled = (p: string) => sat(p) || (!!node.cycleReview && this.chainDead(runId, graph, p, state));
       const ready = node.entryCondition === 'any' ? preds.some(sat) : preds.every(settled);
       const already = node.entryCondition === 'any' && state.records[node.id] && !['stale', 'waiting'].includes(state.records[node.id].status);
       if (!ready || already) return { route: { [node.id]: [] }, records: already ? {} : { [node.id]: { status: 'waiting', outputs: [], summary: '', at: now() } } };
@@ -892,15 +894,20 @@ export class Engine {
     const after = reach(forwardAdj(graph), node.id);
     return graph.nodes.filter((n) => n.cycleReview && n.id !== node.id && after.has(n.id)).map((n) => n.id);
   }
-  /** p로 끝나는 작업 줄이 실패로 끝났는가: 줄 안에 실패한 단계가 있고, 돌고 있거나 재작업 중인 단계가 없다 */
-  private chainDead(runId: string, graph: WorkGraph, p: string): boolean {
+  /**
+   * p로 끝나는 작업 줄이 실패로 끝났는가. 저장된 진행 상태로 판단한다:
+   * 줄 안에 '실패로 기록됐고 더 갈 곳이 없는(사이클 리뷰로만 넘어간)' 단계가 있고, 지금 돌고 있거나 재작업 중인 단계가 없다.
+   * (DB의 단계 상태만 보면, 다시 실행을 앞둔 단계의 예전 '실패'를 끝난 것으로 잘못 볼 수 있다)
+   */
+  private chainDead(runId: string, graph: WorkGraph, p: string, state: { records: Record<string, { status: string } | undefined>; route: Record<string, string[] | undefined> }): boolean {
     const rev = new Map<string, string[]>();
     for (const e of graph.edges) if (e.kind !== 'fail') rev.set(e.target, [...(rev.get(e.target) ?? []), e.source]);
     const chain = new Set<string>(); const st = [p];
     while (st.length) { const x = st.pop()!; if (chain.has(x)) continue; const n = graph.nodes.find((g) => g.id === x); if (!n || n.kind === 'input') continue; chain.add(x); st.push(...(rev.get(x) ?? [])); }
+    const cyc = new Set(graph.nodes.filter((n) => n.cycleReview).map((n) => n.id));
+    const ended = [...chain].some((id) => state.records[id]?.status === 'fail' && (state.route[id] ?? []).every((t) => cyc.has(t)));
     const status = new Map(this.s.runNodes(runId).map((n) => [n.nodeId, n.status]));
-    const of = [...chain].map((id) => status.get(id));
-    return of.some((x) => x === 'failed') && !of.some((x) => x === 'running' || x === 'checking' || x === 'rework');
+    return ended && ![...chain].some((id) => ['running', 'checking', 'rework'].includes(String(status.get(id))));
   }
 
   /** 이번 실행에서 바뀐 코드(문서·화면 사진 제외): 남아 있는 파일과 지워진 파일 */
@@ -940,9 +947,10 @@ export class Engine {
     const reportRel = normRel(join(plan.outputDir || 'crewgenai-output', 'reviews', `codex-${safe}-${runId.slice(0, 8)}-v${visit}.md`));
     if (finished && existsSync(join(plan.folder, reportRel))) {
       // 검증 모드: 끝난 시도의 판정을 그대로 다시 쓴다(중단 직후 재개 때 통과로 바뀌지 않게)
-      const kept = node.verify ? this.meta(runId, `codexverify:${finished.id}`) : null;
-      if (kept) { try { return JSON.parse(kept) as { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean }; } catch { /* 아래 기본값 */ } }
-      return { status: 'ok' as const, summary: finished.summary, outputs: [reportRel, ...targets] };
+      if (!node.verify) return { status: 'ok' as const, summary: finished.summary, outputs: [reportRel, ...targets] };
+      // 판정 기록이 없거나 읽을 수 없으면 통과로 보지 않는다: 아래로 내려가 다시 검증한다
+      const kept = this.meta(runId, `codexverify:${finished.id}`);
+      if (kept) { try { return JSON.parse(kept) as { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean }; } catch { /* 다시 검증 */ } }
     }
     const run = this.s.getRun(runId);
     const cx = this.o.codex?.() ?? { path: null, model: 'gpt-6.1-sol', effort: 'high' };
@@ -1018,28 +1026,31 @@ export class Engine {
       mkdirSync(dirname(abs), { recursive: true }); writeFileSync(abs, md);
       this.noteSystemWrite(runId, node.id, abs);
       attempt.summary = `${safeRes.verdict === 'approve' ? '승인' : '수정 요청'}: ${safeRes.summary} (지적 ${safeRes.findings.length}건)`;
+      // 검증 모드: Codex의 판정이 통과·재작업을 정한다. 승인이라고 써도 실패한 완료 조건이나 P0·P1이 있으면 통과가 아니다(P2뿐이면 통과).
+      // 완료 조건을 하나도 판정하지 않았으면 검증하지 않은 것으로 본다. 판정은 시도 저장과 한 묶음으로 남긴다(중단 뒤 통과로 바뀌지 않게).
+      let verifyOut: { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean } | null = null;
+      if (node.verify) {
+        const crit = Array.isArray(safeRes.criteria) ? safeRes.criteria.filter((c) => c && typeof c.pass === 'boolean') : [];
+        const failed = crit.filter((c) => c.pass === false);
+        const serious = safeRes.findings.filter((f) => sevRank(f.severity) <= 1);
+        if (safeRes.verdict === 'changes_requested' && safeRes.blocked === true)
+          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `${BLOCKED_PREFIX}${String(safeRes.needs ?? '').replace(/\s+/g, ' ').trim() || failed[0]?.evidence || safeRes.summary}`.slice(0, 700), noRework: true };
+        else if (!crit.length)
+          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: 'Codex 검증이 완료 조건을 하나도 판정하지 않아 통과로 볼 수 없습니다(검증을 다시 해야 합니다).', noRework: true };
+        else if (failed.length || serious.length)
+          verifyOut = { status: 'fail', summary: attempt.summary, outputs: [], reason: `Codex 검증 수정 요청: ${safeRes.summary}`.slice(0, 700),
+            feedbackText: ['Codex 검증 지적:', ...failed.map((c) => `- 완료 조건 ${c.no} 실패: ${c.evidence}`), ...serious.map((f) => `- [${f.severity}] ${f.file}: ${f.issue} → ${f.fix}`)].join('\n').slice(0, 6000) };
+        else verifyOut = { status: 'ok', summary: attempt.summary, outputs: [reportRel, ...targets] };
+      }
       this.atomic(() => {
         this.saveAttempt(attempt);
+        if (verifyOut) this.setMeta(runId, `codexverify:${attempt.id}`, JSON.stringify(verifyOut));
         this.s.addArtifact({ id: uid(), runId, nodeId: node.id, attemptId: attempt.id, path: abs, relPath: reportRel, kind: 'report', sha256: fileSha(abs), size: statSync(abs).size, createdAt: now() });
         this.s.addReview({ id: uid(), runId, nodeId: node.id, kind: 'codex', reviewerAgentId: null, verdict: safeRes.verdict === 'approve' ? 'approve' : 'changes_requested', comments: [safeRes.summary.slice(0, 500), ...[...safeRes.findings].sort((a, b) => sevRank(a.severity) - sevRank(b.severity)).map((f) => `- [${f.severity}] ${f.file}: ${f.issue}`)].join('\n'), targetNodeId: null, subjectHash: sha256(targets.map((t) => fileSha(join(plan.folder, t))).join('|')), graphVersionId: run.graphVersionId, stale: false, createdAt: now() });
       });
       await this.commitFor(runId, node, plan, [reportRel], { name: 'CREWGENAI Codex 리뷰', email: 'codex@crewgenai.local' }, 'Codex 리뷰', attempt);
       this.saveAttempt(attempt);
-      if (node.verify) {
-        // 검증 모드: Codex의 판정이 통과·재작업을 정한다. 재작업은 완료 조건 미충족이나 P0·P1일 때만(P2뿐이면 통과).
-        const failed = (safeRes.criteria ?? []).filter((c) => c && c.pass === false);
-        const serious = safeRes.findings.filter((f) => sevRank(f.severity) <= 1);
-        const needsFix = safeRes.verdict === 'changes_requested' && (failed.length > 0 || serious.length > 0);
-        let res2: { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean };
-        if (safeRes.verdict === 'changes_requested' && safeRes.blocked === true)
-          res2 = { status: 'fail', summary: attempt.summary, outputs: [], reason: `${BLOCKED_PREFIX}${String(safeRes.needs ?? '').replace(/\s+/g, ' ').trim() || failed[0]?.evidence || safeRes.summary}`.slice(0, 700), noRework: true };
-        else if (needsFix)
-          res2 = { status: 'fail', summary: attempt.summary, outputs: [], reason: `Codex 검증 수정 요청: ${safeRes.summary}`.slice(0, 700),
-            feedbackText: ['Codex 검증 지적:', ...failed.map((c) => `- 완료 조건 ${c.no} 실패: ${c.evidence}`), ...serious.map((f) => `- [${f.severity}] ${f.file}: ${f.issue} → ${f.fix}`)].join('\n').slice(0, 6000) };
-        else res2 = { status: 'ok', summary: attempt.summary, outputs: [reportRel, ...targets] };
-        this.setMeta(runId, `codexverify:${attempt.id}`, JSON.stringify(res2));
-        return res2;
-      }
+      if (verifyOut) return verifyOut;
       // Codex 결과는 판정이 아니라 다음 Claude 재검토의 입력이다(항상 다음 단계로 진행).
       return { status: 'ok' as const, summary: attempt.summary, outputs: [reportRel, ...targets] };
     } finally { release(); }

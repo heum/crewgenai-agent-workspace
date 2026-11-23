@@ -172,6 +172,33 @@ describe('오퍼레이터 루프', () => {
     b.svc.close();
   });
 
+  it('검증 방식 codex: 승인이라고 해도 실패한 완료 조건이 있으면 재작업시키고, 조건 판정이 없으면 통과로 보지 않으며, 문서만 바뀐 작업도 검증한다', async () => {
+    const a = setup();
+    a.svc.saveSettings({ reviewMode: 'codex' });
+    const ma = await a.svc.startMission(a.p.id, '[[mock:code]] [[mock:approve-but-failed]] 문서를 정리하라');
+    const mA = await waitMission(a.svc, ma.id, ['done', 'waiting_user', 'failed']);
+    const ra = a.svc.engine.detail(a.svc.missions.detail(mA.id).cycles[0].runId);
+    expect(ra.attempts.filter((x) => x.role === 'author').length).toBe(2); // 승인 판정이었지만 실패한 조건 때문에 다시 작업
+    expect(ra.run.status).toBe('succeeded');
+    a.svc.close();
+    const b = setup();
+    b.svc.saveSettings({ reviewMode: 'codex' });
+    const mb = await b.svc.startMission(b.p.id, '[[mock:code]] [[mock:no-criteria]] 문서를 정리하라');
+    const runB = await (async () => { for (let i = 0; i < 1200; i++) { const c = b.svc.missions.detail(mb.id).cycles[0]; if (c && ['succeeded', 'failed'].includes(b.svc.engine.detail(c.runId).run.status)) return c.runId; await sleep(50); } throw new Error('실행이 끝나지 않음'); })();
+    const rb = b.svc.engine.detail(runB);
+    expect(rb.run.status).toBe('failed');
+    expect(rb.nodes.find((n) => rb.graph.nodes.find((g) => g.id === n.nodeId)?.verify)?.failureReason).toContain('완료 조건을 하나도 판정하지 않아');
+    expect(rb.attempts.filter((x) => x.role === 'author').length).toBe(1);
+    await b.svc.missions.stop(mb.id).catch(() => {}); b.svc.close();
+    const c = setup();
+    c.svc.saveSettings({ reviewMode: 'codex' });
+    const mc = await c.svc.startMission(c.p.id, '문서를 정리하라'); // 문서만 바꾸는 작업
+    const mC = await waitMission(c.svc, mc.id, ['done', 'waiting_user', 'failed']);
+    const rc = c.svc.engine.detail(c.svc.missions.detail(mC.id).cycles[0].runId);
+    expect(rc.attempts.filter((x) => x.role === 'codex').length).toBe(1); // 문서만 바뀌어도 Codex 검증은 한다
+    c.svc.close();
+  });
+
   it('문서만 바꾼 작업은 Codex 리뷰와 재검토를 건너뛴다(코드·시험을 바꾸면 리뷰한다)', async () => {
     const { validate } = { validate: await import('../src/main/engine/validate') };
     expect(validate.docsOnly(['docs/STATUS.md', 'docs/screens/a.png'])).toBe(true);
@@ -643,6 +670,8 @@ describe('직원이 올린 결정 필요', () => {
     expect(collectStaffAsks(['통과했습니다.', ''])).toEqual([]);
     expect(collectStaffAsks(['추가 결정이 필요하지 않습니다.', '- 결정은 필요 없습니다.'])).toEqual([]);
     expect(collectStaffAsks(['추가 설치는 필요 없습니다. 결정 필요: 운영 DB를 정리할지 정해 주세요.']).length).toBe(1);
+    expect(collectStaffAsks(['추가 설치는 필요 없지만, 운영 DB를 정리할지 결정해 주세요.']).length).toBe(1);
+    expect(collectStaffAsks(['설치는 필요 없습니다.결정 필요: 포트를 바꿀지 정해 주세요.']).length).toBe(1);
     expect(collectStaffAsks(['결정은 필요합니다: 설치 방식은 사용자에게 확인해야 합니다.'])).toEqual(['결정은 필요합니다: 설치 방식은 사용자에게 확인해야 합니다.']);
     expect(collectStaffAsks(Array.from({ length: 30 }, (_, i) => `- 결정 필요: 항목 ${i}번을 어떻게 할지 정해 주세요.`)).length).toBe(12);
   });
