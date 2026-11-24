@@ -2,7 +2,7 @@
 
 CREWGENAI 개발팀 관리(앱 이름 `CREWGENAI Agent Workspace`)는 사용자가 팀장이 되어 AI 직원(Agent) 팀을 구성하고, 지시를 내려 작업을 맡기는 macOS 데스크톱 앱이다. 앱에는 AI 모델이 들어 있지 않다. 각 Mac에 설치되어 로그인된 **Claude CLI**(작업)와 **Codex CLI**(교차 검토)를 실행한다.
 
-- 버전: 검토본 `0.0.0-review.20261110`
+- 버전: `0.1.0` (첫 배포, 2026-11-24)
 - 지원 환경: macOS, Apple Silicon(M1 이상). Intel Mac용 빌드는 아직 없다.
 - 화면별 자세한 사용법: [resources/docs/GUIDE.md](resources/docs/GUIDE.md). 앱 안의 **사용법(?)** 에서도 같은 내용을 볼 수 있다.
 
