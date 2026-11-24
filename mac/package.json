@@ -1,7 +1,7 @@
 {
   "name": "crewgenai-agent-workspace",
   "productName": "CREWGENAI Agent Workspace",
-  "version": "0.0.0-review.20261110",
+  "version": "0.1.0",
   "private": true,
   "description": "CREWGENAI 개발팀 관리 — Claude CLI 기반 AI 직원 팀 관리 데스크톱 앱 (검토본)",
   "main": "dist/main/main.js",
