@@ -2212,7 +2212,7 @@ export class MissionRunner {
       ...workPlanSection(this.progress(m.projectId), m.cycle),
       '## 프로젝트', `- 이름: ${plan.name}`, `- 목표: ${plan.goal}`, `- 원하는 결과물: ${plan.deliverable}`, `- 완료 조건: ${plan.doneCriteria}`, `- 작업 범위: ${plan.scope}`,
       `- 자동 수정 허용 경로: ${allowedRoots(plan).join(', ') || '(없음)'}`, '',
-      '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}${a.runner === 'codex' ? ' · 실행 도구 Codex(네트워크·켜 둔 시연 서버 접속 불가 — 시연 서버로 화면을 재는 확인은 다른 직원에게 맡긴다)' : ''}`), '',
+      '## 사용 가능한 직원', ...agents.map((a) => `- ${a.code} ${a.name}: ${a.role} · 도구 ${a.tools.join(',')}${a.tools.includes('Edit') || a.tools.includes('Write') ? ' · 쓰기 가능' : ' · 읽기 전용'}${a.model ? ` · 모델 ${a.model}${a.effort ? `(${a.effort})` : ''}` : ''}${a.runner === 'codex' ? (a.codexNetwork ? ' · 실행 도구 Codex(네트워크 허용 — 켜 둔 시연 서버 확인 가능)' : ' · 실행 도구 Codex(네트워크·켜 둔 시연 서버 접속 불가 — 시연 서버로 화면을 재는 확인은 다른 직원에게 맡긴다)') : ''}`), '',
       ...this.skillSection(plan, agents),
       ...this.docsSection(plan, m.projectId),
       '## 지금까지의 판단·질문·사용자 답변', this.history(m), '',

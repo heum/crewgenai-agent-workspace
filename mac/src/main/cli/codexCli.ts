@@ -74,14 +74,20 @@ export function codexArgs(model: string, effort: string, schemaFile: string, out
 // ───────── 작성 실행(직원별 실행 도구가 Codex인 작성자) ─────────
 // 앱이 만든 격리 복사본(작업 폴더)에서만 쓴다: 쓰기는 작업 폴더와 임시 폴더만, 네트워크는 끈다, 셸에는 기본 환경 변수만 넘긴다.
 // 범위 밖 변경 차단·충돌 검사·원본 반영·커밋은 Claude 작성자와 같은 앱 코드가 한다(Codex 쪽 판단에 맡기지 않음).
-export function codexAuthorArgs(model: string, effort: string, cwd: string, outFile: string): string[] {
-  return ['exec', '-m', model, '-c', `model_reasoning_effort="${effort.replace(/[^a-z]/gi, '') || 'high'}"`, '-c', 'sandbox_workspace_write.network_access=false', '-c', 'shell_environment_policy.inherit="core"',
+export function codexAuthorArgs(model: string, effort: string, cwd: string, outFile: string, network = false): string[] {
+  return ['exec', '-m', model, '-c', `model_reasoning_effort="${effort.replace(/[^a-z]/gi, '') || 'high'}"`, '-c', `sandbox_workspace_write.network_access=${network ? 'true' : 'false'}`, '-c', 'shell_environment_policy.inherit="core"',
     '-s', 'workspace-write', '-C', cwd, '--skip-git-repo-check', '--ephemeral', '--json', '-o', outFile, '-'];
 }
 /** Codex 작성자의 모델: 직원에 Codex 모델(gpt-…)이 적혀 있으면 그것, 아니면 앱 설정의 Codex 모델 */
 export function codexAuthorModel(agentModel: string | undefined, fallback: string): string {
   const m = String(agentModel ?? '').trim();
   return /^gpt-[0-9A-Za-z.\-]+$/.test(m) ? m : fallback;
+}
+/** 교차 검증: 작성한 Codex 모델과 다른 계열(Sol ↔ Astra)로 검증한다. 짝이 없는 모델이면 그대로 */
+export function crossCodexModel(m: string): string {
+  if (/-sol(\b|$)/.test(m)) return m.replace(/-sol(\b|$)/, '-astra$1');
+  if (/-astra(\b|$)/.test(m)) return m.replace(/-astra(\b|$)/, '-sol$1');
+  return m;
 }
 export interface CodexSink { thread: string | null; usage: Record<string, number> | null; last: string; failed: string }
 /** codex exec --json 한 줄을 기록용 사건으로 바꾼다(모르는 형식은 그대로 짧게 남긴다) */

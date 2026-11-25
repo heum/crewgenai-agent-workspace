@@ -262,7 +262,7 @@ export class Service {
     const runner = f.runner === 'codex' ? 'codex' : 'claude';
     if (runner === 'codex' && f.model.trim() && !/^gpt-[0-9A-Za-z.\-]+$/.test(f.model.trim())) throw new Error('실행 도구가 Codex인 직원의 모델은 Codex 모델 이름(예: gpt-6.2-astra)이어야 합니다.');
     if (runner === 'claude' && /^gpt-/.test(f.model.trim())) throw new Error('Codex 모델을 쓰려면 실행 도구를 Codex로 바꾸세요.');
-    f = { ...f, runner };
+    f = { ...f, runner, codexNetwork: runner === 'codex' && f.codexNetwork === true }; // 네트워크 허용은 Codex 직원에만 뜻이 있다
     return this.store.saveAgent(projectId, agentId, { ...f, character, timeoutSec: Math.max(10, Number(f.timeoutSec) || 1800), maxRetries: Math.max(0, Math.min(10, Number(f.maxRetries) || 0)) });
   }
   duplicateAgent(agentId: string): Agent {

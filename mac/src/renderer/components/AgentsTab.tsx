@@ -323,6 +323,7 @@ function AgentForm({ project, agents, agent, onSaved, onFired }: { project: Proj
             <option value="claude">Claude</option>
             <option value="codex">Codex</option>
           </select>
+          {f.runner === 'codex' && <label className="small" style={{ display: 'block', marginTop: 6 }}><input type="checkbox" checked={f.codexNetwork === true} onChange={(e) => set('codexNetwork', e.target.checked)} /> 네트워크 허용(켜 둔 시연 서버 확인용 — 외부 인터넷도 열림)</label>}
         </Field>
         <Field label="모델" hint="고르거나 직접 입력. 비우면 기본">
           <input className="input mono" list={f.runner === 'codex' ? 'agent-models-codex' : 'agent-models'} value={f.model} onChange={(e) => set('model', e.target.value)} placeholder={f.runner === 'codex' ? '예: gpt-6.2-astra' : '예: claude-opus-5-5'} />

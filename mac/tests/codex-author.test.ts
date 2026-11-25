@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { codexAuthorArgs, codexAuthorModel, interpretCodexLine } from '../src/main/cli/codexCli';
+import { codexAuthorArgs, codexAuthorModel, crossCodexModel, interpretCodexLine } from '../src/main/cli/codexCli';
 import { codexSkillNote } from '../src/main/engine/engine';
 import { gitInit, mkService, plan, tmpProject } from './helpers';
 
@@ -21,6 +21,8 @@ describe('Codex 작성자', () => {
     const a = codexAuthorArgs('gpt-6.2-astra', 'high', '/w', '/o.txt');
     expect(a).toEqual(expect.arrayContaining(['-s', 'workspace-write', '-C', '/w', '--ephemeral', '--json', '-o', '/o.txt', 'sandbox_workspace_write.network_access=false', 'shell_environment_policy.inherit="core"']));
     expect(a).not.toContain('danger-full-access');
+    expect(codexAuthorArgs('m', 'high', '/w', '/o', true)).toContain('sandbox_workspace_write.network_access=true'); // 직원 설정으로만 연다
+    expect(crossCodexModel('gpt-6.2-sol')).toBe('gpt-6.2-astra'); expect(crossCodexModel('gpt-6.2-astra')).toBe('gpt-6.2-sol'); expect(crossCodexModel('gpt-reserve')).toBe('gpt-reserve');
     expect(codexAuthorModel('claude-opus-5-5', 'gpt-6.2-sol')).toBe('gpt-6.2-sol'); // Claude 모델이 남아 있으면 설정의 Codex 모델
     expect(codexAuthorModel('gpt-6.2-astra', 'gpt-6.2-sol')).toBe('gpt-6.2-astra');
     const sink = { thread: null, usage: null, last: '', failed: '' };
@@ -39,6 +41,31 @@ describe('Codex 작성자', () => {
     expect(() => svc.saveAgent(p.id, a.id, { ...f, runner: 'codex', model: 'claude-opus-5-5' })).toThrow('Codex 모델');
     expect(() => svc.saveAgent(p.id, a.id, { ...f, runner: 'claude', model: 'gpt-6.2-astra' })).toThrow('실행 도구를 Codex');
     expect(svc.saveAgent(p.id, a.id, { ...f, runner: 'codex', model: 'gpt-6.2-astra' }).runner).toBe('codex');
+    svc.close();
+  });
+
+  it('교차 검증: 검증 모델과 같은 Codex 모델로 쓴 작업은 짝 모델로 검증하고, 네트워크는 허용한 직원만 열린다', async () => {
+    const dir = tmpProject(); gitInit(dir); const svc = mkService(dir);
+    const p = svc.createProject(plan(dir, { writablePaths: ['docs'] }));
+    svc.loadAgentTemplates(p.id);
+    svc.saveSettings({ missionMaxCycles: 1, reviewMode: 'codex', codexModel: 'gpt-6.2-sol' });
+    for (const a of svc.store.listAgents(p.id).filter((x) => x.tools.includes('Edit') || x.tools.includes('Write'))) {
+      const { id: _i, projectId: _p, version: _v, updatedAt: _u, ...f } = a;
+      svc.saveAgent(p.id, a.id, { ...f, runner: 'codex', model: 'gpt-6.2-sol', codexNetwork: true });
+    }
+    const m0 = await svc.startMission(p.id, '[[mock:code]] 문서를 정리하라');
+    const m = await waitMission(svc, m0.id, ['done', 'waiting_user', 'failed']);
+    const r1 = svc.engine.detail(svc.missions.detail(m.id).cycles[0].runId);
+    const author = r1.attempts.find((a) => a.role === 'author')!;
+    expect(author.argvRedacted.join(' ')).toContain('gpt-6.2-sol');
+    expect(author.argvRedacted.join(' ')).toContain('network_access=true');
+    const verify = r1.attempts.filter((a) => a.role === 'codex');
+    expect(verify.length).toBeGreaterThan(0);
+    expect(verify.every((a) => a.argvRedacted.join(' ').includes('gpt-6.2-astra'))).toBe(true); // Sol이 쓴 것은 Astra가 검증
+    // 네트워크는 Codex 직원에게만 뜻이 있다(Claude 직원은 저장할 때 꺼짐)
+    const c = svc.store.listAgents(p.id).find((x) => x.runner === 'codex')!;
+    const { id: _i, projectId: _p, version: _v, updatedAt: _u, ...cf } = c;
+    expect(svc.saveAgent(p.id, c.id, { ...cf, runner: 'claude', model: 'claude-opus-5-5', codexNetwork: true }).codexNetwork).toBe(false);
     svc.close();
   });
 

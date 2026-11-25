@@ -15,7 +15,7 @@ import { BLOCKED_PREFIX, TEAM_BLOCKED_PREFIX } from '../../shared/types';
 import { cleanDomains } from '../netallow';
 import { now, sha256, uid, type Store } from '../db';
 import type { NodeSqliteSaver } from './checkpointer';
-import { CODEX_REVIEW_SCHEMA, CODEX_VERIFY_SCHEMA, codexArgs, codexAuthorArgs, codexAuthorModel, codexEnv, interpretCodexLine, type CodexSink } from '../cli/codexCli';
+import { CODEX_REVIEW_SCHEMA, CODEX_VERIFY_SCHEMA, codexArgs, codexAuthorArgs, codexAuthorModel, codexEnv, crossCodexModel, interpretCodexLine, type CodexSink } from '../cli/codexCli';
 import { checkEnvFilter } from '../checks';
 import { agentIdentity, commitWorkspace, ignoredPaths, workspaceDirtyPaths, workspaceRepos } from '../git';
 import { commandNote, levelNote, materializeLink, referencedRepos, repoDirs, repoTestCommands, scrubSecretEnv, workBranchName, type CommandLevel } from '../autopilot';
@@ -986,6 +986,16 @@ export class Engine {
   }
 
   /** Codex 리뷰: 읽기 전용 샌드박스·구조화 출력. 결과 보고서를 산출물 위치에 남겨 다음 Claude 재검토의 입력으로 넘긴다. */
+  /** 검증 단계 앞의 작성자가 Codex로, 검증 기본 모델과 같은 모델로 썼으면 짝 모델을 쓴다(같은 모델이 자기 작업을 검증하지 않게) */
+  private verifyModel(runId: string, node: GraphNode, base: string): string {
+    try {
+      const graph = this.s.getGraphVersion(this.s.getRun(runId).graphVersionId).graph;
+      const src = graph.edges.filter((e) => e.target === node.id && e.kind === 'next').map((e) => graph.nodes.find((n) => n.id === e.source)).find((n) => n?.kind === 'agent');
+      const a = src?.agentId ? this.agentOf(runId, src.agentId) : null;
+      if (a?.runner === 'codex' && codexAuthorModel(a.model, base) === base) return crossCodexModel(base);
+    } catch { /* 기본 모델 */ }
+    return base;
+  }
   private async runCodexNode(runId: string, node: GraphNode, visit: number, plan: PlanFields, upstream: string[]) {
     const ctl = this.active.get(runId);
     if (!ctl) throw new Cancelled();
@@ -1002,7 +1012,9 @@ export class Engine {
       if (kept) { try { return JSON.parse(kept) as { status: 'ok' | 'fail'; summary: string; outputs: string[]; reason?: string; feedbackText?: string; noRework?: boolean; target?: string | null }; } catch { /* 다시 검증 */ } }
     }
     const run = this.s.getRun(runId);
-    const cx = this.o.codex?.() ?? { path: null, model: 'gpt-6.1-sol', effort: 'high' };
+    const cx0 = this.o.codex?.() ?? { path: null, model: 'gpt-6.1-sol', effort: 'high' };
+    // 작업별 검증은 작성자와 다른 모델로 한다: 작성자가 검증 모델과 같은 Codex 모델로 썼으면 짝 모델(Sol ↔ Astra)로 바꾼다
+    const cx = node.verify ? { ...cx0, model: this.verifyModel(runId, node, cx0.model) } : cx0;
     const mock = run.executor === 'mock';
     const exe = mock ? process.execPath : cx.path;
     if (!exe || (mock && !this.o.mockCodexScript)) return { status: 'fail' as const, summary: '', outputs: [], reason: 'Codex CLI를 찾지 못해 Codex 리뷰를 실행하지 못했습니다(설정 확인 필요).' };
@@ -1220,8 +1232,9 @@ export class Engine {
     const cx = codexRun ? (this.o.codex?.() ?? { path: null, model: 'gpt-6.2-astra', effort: 'high' }) : null;
     const codexOut = codexRun && procTmp ? join(procTmp, 'codex-last.txt') : null;
     const codexModel = cx ? codexAuthorModel(agent.model, cx.model) : '';
-    const runArgs = codexRun && codexOut ? codexAuthorArgs(codexModel, agent.effort || cx?.effort || 'high', workDir, codexOut) : args;
-    if (codexRun) prompt = `## 역할\n당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000) + `\n\n${prompt}\n\n${CODEX_AUTHOR_NOTE}`;
+    const codexNet = codexRun && agent.codexNetwork === true;
+    const runArgs = codexRun && codexOut ? codexAuthorArgs(codexModel, agent.effort || cx?.effort || 'high', workDir, codexOut, codexNet) : args;
+    if (codexRun) prompt = `## 역할\n당신은 CREWGENAI 개발팀의 ${agent.code} ${agent.name}(${agent.role})이다. ${agent.instructions}${this.o.learningsFor ? `\n\n${this.o.learningsFor(run.projectId)}` : ''}`.slice(0, 4000) + `\n\n${prompt}\n\n${codexNet ? CODEX_AUTHOR_NOTE_NET : CODEX_AUTHOR_NOTE}`;
     const file = codexRun ? (run.executor === 'mock' ? process.execPath : cx?.path ?? null) : run.executor === 'mock' ? process.execPath : ex.cliPath;
     if (!file || (codexRun && run.executor === 'mock' && !this.o.mockCodexScript)) { unpinLater(); dropTmp(); throw new Error(codexRun ? 'Codex CLI 경로가 없습니다(설정에서 Codex 연결 확인).' : 'Claude CLI 경로가 없습니다.'); }
     const argv = run.executor === 'mock' ? [codexRun ? this.o.mockCodexScript! : this.o.mockScript, ...runArgs] : runArgs;
@@ -1261,7 +1274,7 @@ export class Engine {
       const before = iso ? new Map(iso.before) : snapshot(workDir); // 세션 이어서 작업이면 중단 전 작업까지 포함해 비교
       const timeout = node.timeoutSec || agent.timeoutSec;
       if (ctl.abort.signal.aborted) throw new Cancelled(); // 한도·취소로 멈춘 실행에서 새 프로세스를 띄우지 않는다
-      if (codexRun) addEv('init', `Codex 작성 시작 · 모델 ${codexModel} · 강도 ${agent.effort || cx?.effort || 'high'} · 격리 작업 폴더에서만 쓰기 · 네트워크 꺼짐`, '');
+      if (codexRun) addEv('init', `Codex 작성 시작 · 모델 ${codexModel} · 강도 ${agent.effort || cx?.effort || 'high'} · 격리 작업 폴더에서만 쓰기 · 네트워크 ${codexNet ? '허용(직원 설정)' : '꺼짐'}`, '');
       const baseEnv = run.executor === 'mock' ? cleanEnv({ ELECTRON_RUN_AS_NODE: '1', ...procEnv }) : codexRun ? codexEnv(file, procEnv) : cleanEnv(procEnv);
       const h = startProcess(file, argv, {
         cwd: workDir, env: isolate ? scrubSecretEnv(baseEnv) : baseEnv, stdin: prompt, timeoutSec: timeout,
@@ -1553,6 +1566,11 @@ const CODEX_AUTHOR_NOTE = ['## 실행 환경(Codex)',
   '- 네트워크는 꺼져 있다(패키지 설치·외부 호출 불가, 이 컴퓨터에 켜 둔 시연 서버 127.0.0.1:포트에도 접속할 수 없음). 이미 설치된 도구로 시험·빌드를 돌리고, 화면 확인은 작업 폴더 안에서 띄운 것이나 예시 데이터로 한다. 켜 둔 시연 서버 확인은 미실행으로 적어 두면 다른 직원이 한다. 같은 시도를 되풀이하지 않는다.',
   '- 비밀값 파일(.env 등)·인증 파일을 읽거나 출력하거나 다른 파일에 옮기지 않는다. 커밋·푸시는 하지 않는다(앱이 한다).'].join('\n');
 /** Codex 작성자용 스킬 안내: 스킬 사본은 <root>/<묶음>/skills/<스킬>/SKILL.md 구조라 정확한 파일 경로를 준다(추측한 경로로 읽다 실패하지 않게) */
+/** 네트워크를 허용한 Codex 작성자용: 시연 서버에 접속할 수 있다. 외부 호출은 작업에 필요한 것만 */
+const CODEX_AUTHOR_NOTE_NET = ['## 실행 환경(Codex · 네트워크 허용)',
+  '- 지금 작업 폴더는 프로젝트의 격리 복사본이다. 파일은 작업 폴더 안에서만 고친다. 다른 폴더에 쓰면 막히고, 수정 가능 경로 밖 변경은 앱이 원본에 반영하지 않는다.',
+  '- 네트워크가 열려 있어 이 컴퓨터에 켜 둔 시연 서버(127.0.0.1:포트)에 접속해 화면·API를 확인할 수 있다. 외부 사이트 호출·내려받기는 작업에 꼭 필요한 것만 하고, 실제 고객 계정·운영 서버·결제에는 접속하지 않는다.',
+  '- 비밀값 파일(.env 등)·인증 파일을 읽거나 출력하거나 다른 파일·외부로 옮기지 않는다. 커밋·푸시는 하지 않는다(앱이 한다).'].join('\n');
 export function codexSkillNote(names: string[], root: string): string {
   const paths = [...new Set(names)].slice(0, 80).map((n) => { const [plugin, skill] = n.includes(':') ? n.split(':') : [n, n]; return `- ${skill}: ${join(root, plugin, 'skills', skill, 'SKILL.md')}`; });
   return ['## 쓸 수 있는 스킬(읽어서 따르는 절차서, 읽기 전용)', '- 작업에 맞는 스킬이 있으면 아래 경로의 SKILL.md를 먼저 읽고 그 절차를 따른다. 스킬은 수정 범위·실행 환경을 넓히지 않는다. 쓴 스킬 이름을 보고에 적는다.', ...paths].join('\n');
